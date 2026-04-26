@@ -1,0 +1,11 @@
+.build/
+.swiftpm/
+Packages/
+*.xcodeproj
+*.xcworkspace
+DerivedData/
+.DS_Store
+*.swp
+xcuserdata/
+IDEWorkspaceChecks.plist
+/Tests/MacrecCoreTests/Output/

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.local.macrec-ui</string>
+    <key>CFBundleName</key>
+    <string>macrec-ui</string>
+    <key>CFBundleDisplayName</key>
+    <string>macrec-ui</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>0.1.0</string>
+    <key>CFBundleExecutable</key>
+    <string>macrec-ui</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>macrec-ui records the microphone alongside system audio. Audio is written only to the file path you choose. Nothing is sent over the network.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>macrec-ui uses the Screen Recording permission to capture system audio (the audio output of all running applications) via ScreenCaptureKit. No video frames are saved; only audio is recorded.</string>
+    <key>NSScreenCaptureDescription</key>
+    <string>macrec-ui uses the Screen Recording permission to capture system audio (the audio output of all running applications) via ScreenCaptureKit. No video frames are saved; only audio is recorded.</string>
+</dict>
+</plist>
