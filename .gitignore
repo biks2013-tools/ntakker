@@ -18,3 +18,6 @@ IDEWorkspaceChecks.plist
 /macrec-e2e.m4a
 /macrec-e2e.*.jsonl
 /macrec-e2e.*.m4a
+
+# Git worktrees created by the using-git-worktrees skill
+.worktrees/
