@@ -5697,3 +5697,2402 @@ locale.
 
 See plan-005-apple-speech-streaming.md §3–§7 for full contracts.
 
+
+---
+
+## Plan-007 Design — Additional STT Engines (Azure OpenAI + ElevenLabs)
+
+> **Added 2026-04-29.** Technical design that complements
+> `docs/design/plan-007-additional-stt-engines.md` (the WHAT) by specifying
+> the HOW: module boundaries, Swift type signatures, error mapping,
+> sequence diagrams, and back-compat impact on the existing
+> `TranscriptionProvider` contract introduced by plan-005 §4.1.
+>
+> **Mandatory inputs read for this design pass**:
+> - `docs/design/refined-request-additional-stt-engines.md`
+> - `docs/design/plan-007-additional-stt-engines.md`
+> - `docs/reference/codebase-scan-additional-stt-engines.md`
+> - `docs/reference/investigation-additional-stt-engines.md`
+> - `docs/research/azure-openai-gpt-4o-mini-transcribe-wire-schema.md`
+> - `docs/research/elevenlabs-stt-wire-schema.md`
+> - The actual codebase: `Sources/MacrecCore/Transcription/TranscriptionProvider.swift`,
+>   `…/StreamingTranscriptionSession.swift`, `…/TranscriptionOptions.swift`,
+>   `…/Providers/GeminiRESTTranscriptionProvider.swift`,
+>   `…/Providers/TranscriptionProviderFactory.swift`,
+>   `…/AudioWAVEncoder.swift`, `Sources/MacrecCore/Errors/MacrecError.swift`,
+>   `Sources/MacrecCore/Config/RecordingOptions.swift`,
+>   `Sources/MacrecCore/Config/ConfigResolver.swift`,
+>   `Sources/MacrecCore/Transcription/TranscriptEvent.swift` (TranscriptionMetrics).
+>
+> **Approved exceptions honoured**: Exception 001 (Swift, not TypeScript),
+> Exception 002 (macOS 26 deployment target).
+>
+> **Project rules honoured**: no fallback values for required configuration;
+> no new SwiftPM dependencies (Foundation `URLSession` + in-tree multipart
+> helper only); vendor-canonical env-var names (`AZURE_OPENAI_*`,
+> `ELEVENLABS_API_KEY`) per CLAUDE.md eight-standard-providers list;
+> expiration-companion env vars per CLAUDE.md `<configuration-guide>`.
+
+### §07D-1 Architecture overview
+
+#### §07D-1.1 Where the new modules slot in
+
+The two new providers live alongside the four existing concrete
+conformers under `Sources/MacrecCore/Transcription/Providers/`. Each new
+provider receives its own subfolder so its wire-format Codable types,
+typed error enum, config struct, and provider implementation stay
+colocated:
+
+```
+Sources/MacrecCore/Transcription/
+├── Providers/
+│   ├── AppleSpeechTranscriptionProvider.swift          (existing — plan-005)
+│   ├── GeminiRESTTranscriptionProvider.swift           (existing — plan-004)
+│   ├── WhisperKitTranscriptionProvider.swift           (existing — plan-004 ext.)
+│   ├── TranscriptionProviderFactory.swift              (existing — extended; +2 cases)
+│   │
+│   ├── Azure/                                          (NEW — Phase A)
+│   │   ├── AzureOpenAIConfig.swift
+│   │   ├── AzureOpenAIWireTypes.swift                  (Codable req/response/error envelope)
+│   │   ├── AzureOpenAISTTError.swift
+│   │   └── AzureOpenAITranscriptionProvider.swift
+│   │
+│   └── ElevenLabs/                                     (NEW — Phase B)
+│       ├── ElevenLabsConfig.swift
+│       ├── ElevenLabsWireTypes.swift                   (Codable req/response/error envelope)
+│       ├── ElevenLabsSTTError.swift
+│       └── ElevenLabsTranscriptionProvider.swift
+│
+├── Net/                                                (NEW — Phase 0)
+│   └── MultipartFormDataBuilder.swift                  (shared multipart body builder)
+│
+├── NoOpTranscriptionProvider.swift                     (existing, unchanged)
+├── FakeTranscriptionProvider.swift                     (existing, unchanged)
+├── TranscriptionProvider.swift                         (existing, UNCHANGED — protocol untouched)
+├── StreamingTranscriptionSession.swift                 (existing, unchanged)
+├── TranscriptionOptions.swift                          (existing, UNCHANGED)
+├── TranscriptionManager.swift                          (existing, unchanged)
+├── AudioWAVEncoder.swift                               (existing, unchanged — non-throwing)
+└── …
+```
+
+#### §07D-1.2 Component diagram
+
+```mermaid
+flowchart TD
+  CLI[Sources/macrec/Commands/StartCommand.swift\n--transcribe {none,apple,gemini,whisperkit,azure,elevenlabs}]
+  UI[Sources/macrec-ui/Views/Transcription/TranscriptionPicker.swift\nflat picker; +Azure +ElevenLabs entries]
+  Resolver[ConfigResolver.resolve\n4-tier env chain\nAZURE_OPENAI_* / ELEVENLABS_*]
+  Options[RecordingOptions\n+azureOpenAI{Endpoint,Deployment,ApiVersion,ApiKeyExpiresAt}\n+elevenLabs{...}]
+  Factory[TranscriptionProviderFactory.build\nswitch normalized id\n+ case azure / case elevenlabs]
+  Proto((TranscriptionProvider protocol\nSendable; transcribe + openStreamingSession))
+
+  subgraph Providers
+    NoOp[NoOpTranscriptionProvider\nsupportedModes = none/both]
+    Fake[FakeTranscriptionProvider\nsupportedModes = both]
+    Gem[GeminiRESTTranscriptionProvider\nsupportedModes = batch]
+    Apple[AppleSpeechTranscriptionProvider\nsupportedModes = streaming]
+    WK[WhisperKitTranscriptionProvider\nsupportedModes = batch]
+    AZ[AzureOpenAITranscriptionProvider\nsupportedModes = batch  -- NEW]
+    EL[ElevenLabsTranscriptionProvider\nsupportedModes = batch  -- NEW]
+  end
+
+  Net[Transcription/Net/MultipartFormDataBuilder\nshared value-type body builder]
+  WAV[AudioWAVEncoder\n16 kHz mono Int16 WAV]
+
+  Sidecar[TranscriptSidecarWriter\nSidecarPolicy.batch\njsonl/srt/vtt/txt]
+
+  CLI --> Resolver
+  UI --> Resolver
+  Resolver --> Options
+  Options --> Factory
+  Factory --> Proto
+  Proto -.-> NoOp
+  Proto -.-> Fake
+  Proto -.-> Gem
+  Proto -.-> Apple
+  Proto -.-> WK
+  Proto -.-> AZ
+  Proto -.-> EL
+  AZ --> WAV
+  EL --> WAV
+  AZ --> Net
+  EL --> Net
+  AZ --> Sidecar
+  EL --> Sidecar
+  Gem --> Sidecar
+```
+
+`MultipartFormDataBuilder` is the **only** shared concern between the two
+new providers; everything else (URL templating, auth header, request body
+field set, response decoding, error envelope shape, retry policy) is
+deliberately isolated per-provider.
+
+### §07D-2 Module / file map
+
+| File path (under `Sources/MacrecCore/`) | Public types exported | One-sentence purpose |
+|---|---|---|
+| `Transcription/Net/MultipartFormDataBuilder.swift` | `public struct MultipartFormDataBuilder: Sendable` | Pure-Foundation `multipart/form-data` body builder shared by Azure + ElevenLabs (and any future REST provider). Value type; in-memory body only — large-file streaming variant is a future extension. |
+| `Transcription/Providers/Azure/AzureOpenAIConfig.swift` | `public struct AzureOpenAIConfig: Sendable, Equatable` | Resolved Azure-OpenAI configuration captured at provider construction (endpoint URL, deployment name, api-version, api-key, optional expiry). Construction throws `MacrecError.transcriptionConfigConflict` on validation failure. |
+| `Transcription/Providers/Azure/AzureOpenAIWireTypes.swift` | `public enum AzureOpenAIWire { struct TranscriptionResponse; struct ErrorEnvelope; struct APIMErrorEnvelope }` | All Codable wire types for the Azure-OpenAI `audio/transcriptions` endpoint (response body + the two error envelope shapes the gateway can return). |
+| `Transcription/Providers/Azure/AzureOpenAISTTError.swift` | `public enum AzureOpenAISTTError: Error, Sendable, LocalizedError` | Internal typed error enum for the Azure provider. Mapped to `MacrecError` at the provider's call boundary so `MacrecError` does not need new cases. |
+| `Transcription/Providers/Azure/AzureOpenAITranscriptionProvider.swift` | `public struct AzureOpenAITranscriptionProvider: TranscriptionProvider` | The Azure-OpenAI batch provider. Conforms to existing `TranscriptionProvider` unchanged. |
+| `Transcription/Providers/ElevenLabs/ElevenLabsConfig.swift` | `public struct ElevenLabsConfig: Sendable, Equatable; public enum ElevenLabsFileFormat: String` | Resolved ElevenLabs configuration captured at provider construction (api-key, model id, optional language code, diarize, etc.). |
+| `Transcription/Providers/ElevenLabs/ElevenLabsWireTypes.swift` | `public enum ElevenLabsWire { struct TranscriptionResponse; struct Word; struct DetailEnvelope }` | All Codable wire types for ElevenLabs `/v1/speech-to-text` (response body + FastAPI-style `{detail: {status, message}}` error envelope). |
+| `Transcription/Providers/ElevenLabs/ElevenLabsSTTError.swift` | `public enum ElevenLabsSTTError: Error, Sendable, LocalizedError` | Internal typed error enum for the ElevenLabs provider. |
+| `Transcription/Providers/ElevenLabs/ElevenLabsTranscriptionProvider.swift` | `public struct ElevenLabsTranscriptionProvider: TranscriptionProvider` | The ElevenLabs batch provider. Conforms to existing `TranscriptionProvider` unchanged. |
+
+**Factory-registration changes**:
+
+| File | Symbol | Change |
+|---|---|---|
+| `Transcription/Providers/TranscriptionProviderFactory.swift` | `TranscriptionProviderFactoryInput` | Add three optional fields: `azureOpenAIEndpoint: String?`, `azureOpenAIDeployment: String?`, `azureOpenAIApiVersion: String?`. All `nil`-defaulted; existing call sites compile unchanged. |
+| `Transcription/Providers/TranscriptionProviderFactory.swift` | `TranscriptionProviderFactory.build(_:)` | Add two `case` branches before `default`: `case "azure":` and `case "elevenlabs":`. Update `default` error message to enumerate the six allowed values. |
+| `Config/RecordingOptions.swift` | `enum TranscriptionProviderId` | Add three cases: `case whisperkit` (drift fix), `case azure`, `case elevenlabs`. |
+| `Config/RecordingOptions.swift` | `struct RecordingOptions` | Add five new optional stored properties (`azureOpenAIEndpoint`, `azureOpenAIDeployment`, `azureOpenAIApiVersion`, `azureOpenAIApiKeyExpiresAt`, `elevenLabsApiKeyExpiresAt`); update `init(...)` defaults; extend `withOutput(_:)` to forward each. |
+| `Config/ConfigResolver.swift` | `enum Keys` | Add `azureOpenAIApiKey`, `azureOpenAIEndpoint`, `azureOpenAIDeployment`, `azureOpenAIApiVersion`, `azureOpenAIApiKeyExpiresAt`, `elevenLabsApiKey`, `elevenLabsApiKeyExpiresAt` (+ optional ElevenLabs tuning keys per plan-007 §5.1). |
+| `Config/ConfigResolver.swift` | `resolve(cliOverrides:)` (lines 345-354 switch) | Extend the `transcriptionApiKey` switch to handle `.azure`, `.elevenlabs`, `.whisperkit`. |
+
+### §07D-3 Type contracts (Swift signatures)
+
+All signatures below are **verified** against the actual code in this
+worktree. Where plan-007 disagrees with the actual code, the actual code
+wins and the discrepancy is called out in §07D-9 / the closing report.
+
+#### §07D-3.1 `MultipartFormDataBuilder`
+
+```swift
+// Sources/MacrecCore/Transcription/Net/MultipartFormDataBuilder.swift
+import Foundation
+
+/// In-memory builder for `multipart/form-data` request bodies.
+///
+/// Value-type semantics: callers mutate a local copy, then call
+/// `build()` to obtain the final `(contentType, body)` pair.
+/// Allocation cost per request is dominated by the audio payload itself,
+/// so a value type is the right shape; an actor would force needless
+/// suspension points around what is otherwise a straight `Data`
+/// accumulator.
+///
+/// **In-memory only** — entire body is materialised in `Data`. Adequate
+/// for the Azure 25 MB ceiling and for the typical macrec 2.5 s WAV
+/// chunk (~80 KB). For larger ElevenLabs uploads (> ~50 MB), see
+/// §07D-7 for the documented streaming-upload threshold and the
+/// future `URLRequest.httpBodyStream` extension path.
+public struct MultipartFormDataBuilder: Sendable {
+
+    /// The randomly-generated boundary that separates parts.
+    public let boundary: String
+
+    /// Computed `Content-Type` header value (`multipart/form-data; boundary=<boundary>`).
+    public var contentType: String { "multipart/form-data; boundary=\(boundary)" }
+
+    private var body: Data = Data()
+    private var finalised: Bool = false
+
+    public init(boundary: String = "MacrecBoundary-\(UUID().uuidString)") {
+        self.boundary = boundary
+    }
+
+    /// Append a text form field.
+    public mutating func appendField(name: String, value: String)
+
+    /// Append a file form field. `data` is the raw bytes; `filename` and
+    /// `contentType` are used only for the part headers — the server
+    /// uses the raw bytes regardless.
+    public mutating func appendFile(
+        name: String,
+        filename: String,
+        data: Data,
+        contentType: String
+    )
+
+    /// Returns the final body bytes and the matching `Content-Type`
+    /// header value. Idempotent — safe to call multiple times; the first
+    /// call appends the closing boundary `--<boundary>--\r\n`.
+    public mutating func build() -> (body: Data, contentType: String)
+}
+```
+
+The builder uses CRLF (`\r\n`) line terminators per RFC 7578, encodes
+headers in ASCII, and writes the file payload verbatim (no transfer
+encoding, no base64).
+
+#### §07D-3.2 `AzureOpenAIConfig`
+
+```swift
+// Sources/MacrecCore/Transcription/Providers/Azure/AzureOpenAIConfig.swift
+import Foundation
+
+public struct AzureOpenAIConfig: Sendable, Equatable {
+
+    /// Base endpoint URL, e.g. `https://my-resource.openai.azure.com`.
+    /// Trailing slash is tolerated and stripped during URL composition.
+    public let endpoint: URL
+
+    /// User-chosen deployment name (NOT the model name). The server
+    /// also requires this value as the `model` multipart field —
+    /// Azure's OpenAI-compatibility quirk.
+    public let deployment: String
+
+    /// `api-version` query-string value, e.g. `"2025-03-01-preview"`.
+    public let apiVersion: String
+
+    /// Resolved API key (sent via the `api-key` request header — NOT a
+    /// `Bearer` prefix; raw key only).
+    public let apiKey: String
+
+    /// Optional ISO-8601 expiry timestamp captured from
+    /// `AZURE_OPENAI_API_KEY_EXPIRES_AT`. Drives the "key expires in N
+    /// days" startup warning when within ~7 days.
+    public let apiKeyExpiresAt: Date?
+
+    /// Construct and validate. Throws `MacrecError.transcriptionConfigConflict`
+    /// when fields fail validation (empty deployment, non-https endpoint,
+    /// malformed apiVersion). Empty-key validation belongs to the
+    /// factory (which already throws `transcriptionApiKeyMissing`).
+    ///
+    /// **No fallbacks**: this initializer treats every field as a
+    /// required input. The factory is the sole caller that resolves
+    /// optional defaults (e.g. the documented `apiVersion` starter).
+    public init(
+        endpoint: URL,
+        deployment: String,
+        apiVersion: String,
+        apiKey: String,
+        apiKeyExpiresAt: Date? = nil
+    ) throws
+
+    /// Companion factory consumed only by tests; production code routes
+    /// through `TranscriptionProviderFactory` which calls
+    /// `init(endpoint:deployment:apiVersion:apiKey:apiKeyExpiresAt:)` above.
+    public static func fromEnvironment(
+        env: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> AzureOpenAIConfig
+}
+```
+
+`fromEnvironment(env:)` is a convenience for tests and for the
+documentation guide examples; it throws `MacrecError.transcriptionApiKeyMissing(provider: "azure")`
+or `MacrecError.transcriptionConfigConflict(reason:)` for missing
+required env vars (`AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`,
+`AZURE_OPENAI_DEPLOYMENT`). The production path resolves these in
+`ConfigResolver` and constructs the config in the factory; this
+initializer is *not* the production entry point.
+
+#### §07D-3.3 `ElevenLabsConfig`
+
+```swift
+// Sources/MacrecCore/Transcription/Providers/ElevenLabs/ElevenLabsConfig.swift
+import Foundation
+
+public enum ElevenLabsFileFormat: String, Sendable, Equatable, CaseIterable {
+    /// Low-latency fast-path: matches the bytes that `AudioWAVEncoder`
+    /// always produces (16 kHz mono Int16 WAV).
+    case pcmS16le16 = "pcm_s16le_16"
+
+    /// Any other supported format (m4a, mp3, ogg, etc.). Use when the
+    /// upstream encoder is not `AudioWAVEncoder`.
+    case other = "other"
+}
+
+public struct ElevenLabsConfig: Sendable, Equatable {
+
+    /// Resolved API key (sent via the `xi-api-key` request header).
+    public let apiKey: String
+
+    /// Vendor model id. Default `"scribe_v2"`. Older accounts may use
+    /// `"scribe_v1"` — both are accepted; values outside the known
+    /// list log a warning but pass through.
+    public let modelId: String
+
+    /// Optional ISO-639-1 (`"en"`, `"el"`) or ISO-639-3 (`"eng"`,
+    /// `"ell"`) hint. `nil` lets the model auto-detect.
+    public let languageCode: String?
+
+    /// When `true`, request `diarize=true` so the response carries
+    /// `speaker_id` per word.
+    public let diarize: Bool
+
+    /// When `true`, request `tag_audio_events=true` so the response
+    /// includes `(laughter)`, `(music)`, etc.
+    public let tagAudioEvents: Bool
+
+    /// Optional speaker-count hint in `1..32`. `nil` lets the model
+    /// pick.
+    public let numSpeakers: Int?
+
+    /// File-format hint. Defaults to `.pcmS16le16` because
+    /// `AudioWAVEncoder` is the only producer of the bytes we send
+    /// (see §13 EL-3 in plan-007).
+    public let fileFormat: ElevenLabsFileFormat
+
+    /// Optional entity-detection mode (`"all"`, `"pii"`, `"phi"`,
+    /// `"pci"`). Carries a +30 % surcharge per the wire-schema
+    /// research §3.6. `nil` means OFF (v1 default per §13 EL-2).
+    public let entityDetection: String?
+
+    /// Optional timestamps granularity (`"word"` | `"character"`).
+    /// `nil` means use the server default (currently word-level).
+    public let timestampsGranularity: String?
+
+    /// Optional ISO-8601 expiry timestamp captured from
+    /// `ELEVENLABS_API_KEY_EXPIRES_AT`.
+    public let apiKeyExpiresAt: Date?
+
+    /// Construct and validate. Throws
+    /// `MacrecError.transcriptionConfigConflict` when `numSpeakers`
+    /// is out of `1..32` range or `entityDetection` is not in the
+    /// vendor enum (§3.6 of the wire-schema research). Empty-key
+    /// validation belongs to the factory.
+    public init(
+        apiKey: String,
+        modelId: String = "scribe_v2",
+        languageCode: String? = nil,
+        diarize: Bool = false,
+        tagAudioEvents: Bool = true,
+        numSpeakers: Int? = nil,
+        fileFormat: ElevenLabsFileFormat = .pcmS16le16,
+        entityDetection: String? = nil,
+        timestampsGranularity: String? = nil,
+        apiKeyExpiresAt: Date? = nil
+    ) throws
+
+    public static func fromEnvironment(
+        env: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> ElevenLabsConfig
+}
+```
+
+#### §07D-3.4 `AzureOpenAIWireTypes`
+
+```swift
+// Sources/MacrecCore/Transcription/Providers/Azure/AzureOpenAIWireTypes.swift
+import Foundation
+
+public enum AzureOpenAIWire {
+
+    /// Successful `response_format=json` body. The model also supports
+    /// `verbose_json`, `srt`, `vtt`, `text` — but `gpt-4o-mini-transcribe`
+    /// only accepts `json` / `text` (research §4.3-§4.4). v1 requests
+    /// `json`, so this minimal struct is sufficient.
+    public struct TranscriptionResponse: Decodable, Sendable, Equatable {
+        public let text: String
+    }
+
+    /// Standard OpenAI / Azure OpenAI error envelope. Produced when the
+    /// model's own gateway rejects the request (auth, validation, rate
+    /// limit, model error).
+    public struct ErrorEnvelope: Decodable, Sendable, Equatable {
+        public let error: ErrorBody
+
+        public struct ErrorBody: Decodable, Sendable, Equatable {
+            public let message: String?
+            public let type: String?
+            public let code: String?
+            public let param: String?
+        }
+    }
+
+    /// APIM (Azure API Management) error envelope. Produced when the
+    /// front-door rejects the request before reaching the model
+    /// (deployment-not-found 404, throttle 429 from APIM, regional
+    /// outage 503). Distinct from `ErrorEnvelope`.
+    public struct APIMErrorEnvelope: Decodable, Sendable, Equatable {
+        public let statusCode: Int?
+        public let message: String?
+    }
+}
+```
+
+#### §07D-3.5 `ElevenLabsWireTypes`
+
+```swift
+// Sources/MacrecCore/Transcription/Providers/ElevenLabs/ElevenLabsWireTypes.swift
+import Foundation
+
+public enum ElevenLabsWire {
+
+    /// Successful single-channel response (`use_multi_channel=false`).
+    /// `language_code` and `language_probability` are optional in the
+    /// observed wire shape so the decoder tolerates servers that omit
+    /// them. The multi-channel response shape is intentionally NOT
+    /// modelled — v1 never sets `use_multi_channel`.
+    public struct TranscriptionResponse: Decodable, Sendable, Equatable {
+        public let text: String
+        public let words: [Word]?
+        public let languageCode: String?
+        public let languageProbability: Double?
+
+        enum CodingKeys: String, CodingKey {
+            case text, words
+            case languageCode = "language_code"
+            case languageProbability = "language_probability"
+        }
+    }
+
+    public struct Word: Decodable, Sendable, Equatable {
+        public let text: String
+        public let start: Double
+        public let end: Double
+        public let type: String          // "word" | "spacing" | "audio_event"
+        public let speakerId: String?    // present when diarize=true
+
+        enum CodingKeys: String, CodingKey {
+            case text, start, end, type
+            case speakerId = "speaker_id"
+        }
+    }
+
+    /// FastAPI-style error envelope: `{"detail": {"status": "...", "message": "..."}}`.
+    /// Sometimes `detail` is a bare string for transport-level failures
+    /// outside FastAPI's validator — the decoder tolerates both shapes
+    /// through a manual `init(from:)`.
+    public struct DetailEnvelope: Decodable, Sendable, Equatable {
+        public let status: String?
+        public let message: String?
+
+        public init(status: String?, message: String?) { … }
+        public init(from decoder: Decoder) throws { … }   // tolerates bare-string `detail`
+    }
+}
+```
+
+#### §07D-3.6 `AzureOpenAISTTError`
+
+```swift
+// Sources/MacrecCore/Transcription/Providers/Azure/AzureOpenAISTTError.swift
+import Foundation
+
+/// Internal typed error for the Azure-OpenAI provider. Mapped to
+/// `MacrecError` at the provider's call boundary by
+/// `AzureOpenAITranscriptionProvider.mapToMacrecError(_:)` so the
+/// top-level `MacrecError` enum does not gain provider-specific cases.
+public enum AzureOpenAISTTError: Error, Sendable, LocalizedError, Equatable {
+    case invalidApiKey                              // HTTP 401
+    case permissionDenied                           // HTTP 403
+    case deploymentNotFound(deployment: String)     // HTTP 404 / DeploymentNotFound
+    case fileTooLarge(byteCount: Int)               // HTTP 413 / file_too_large
+    case unsupportedAudioFormat(detail: String)     // HTTP 415 / invalid_audio
+    case invalidRequest(message: String)            // other HTTP 400
+    case rateLimited(retryAfterSec: Double?)        // HTTP 429
+    case networkTimeout                             // HTTP 408 or URLError.timedOut
+    case serverError(statusCode: Int)               // HTTP 500/503
+    case networkError(underlying: Error)            // any other URLError
+    case unexpectedResponse(statusCode: Int, bodyPrefix: String)
+    case decodeFailure(underlying: Error)
+
+    public var errorDescription: String? { … }
+}
+```
+
+#### §07D-3.7 `ElevenLabsSTTError`
+
+```swift
+// Sources/MacrecCore/Transcription/Providers/ElevenLabs/ElevenLabsSTTError.swift
+import Foundation
+
+public enum ElevenLabsSTTError: Error, Sendable, LocalizedError, Equatable {
+    case invalidApiKey                              // HTTP 401
+    case insufficientCredits                        // HTTP 402
+    case planFeatureGate(feature: String)           // HTTP 403
+    case fileTooLarge(byteCount: Int)               // HTTP 413 (> 3 GB)
+    case audioTooLong(durationSec: Double)          // HTTP 422 / audio_too_long
+    case audioTooShort                              // pre-flight; never raised
+    case unsupportedFormat(detail: String)          // HTTP 400/422
+    case invalidParameter(field: String, message: String)  // HTTP 422
+    case rateLimited(retryAfterSec: Double?)        // HTTP 429 / rate_limit_exceeded
+    case concurrentLimitExceeded                    // HTTP 429 / concurrent_limit_exceeded
+    case serverError(statusCode: Int)               // HTTP 500/503
+    case networkFailure(underlying: Error)
+    case decodingFailure(underlying: Error)
+
+    public var errorDescription: String? { … }
+}
+```
+
+#### §07D-3.8 `AzureOpenAITranscriptionProvider`
+
+```swift
+// Sources/MacrecCore/Transcription/Providers/Azure/AzureOpenAITranscriptionProvider.swift
+import Foundation
+import Logging
+
+/// Azure-OpenAI batch transcription provider. Stateless across calls;
+/// one `URLSession.data(for:)` per `transcribe` invocation.
+public struct AzureOpenAITranscriptionProvider: TranscriptionProvider, Sendable {
+
+    public let id = "azure"
+    public let displayName = "Azure OpenAI"
+    public let supportedModes: Set<TranscriptionMode> = [.batch]
+
+    private let config: AzureOpenAIConfig
+    private let urlSession: URLSession
+    private let logger: Logger
+    private let clock: any TranscriptionClock          // injectable for tests; default = system clock
+
+    public init(
+        config: AzureOpenAIConfig,
+        urlSession: URLSession = .shared,
+        logger: Logger = LoggerFactory.make("macrec.transcription.azure"),
+        clock: any TranscriptionClock = SystemTranscriptionClock()
+    )
+
+    // MARK: TranscriptionProvider conformance
+
+    public func transcribe(
+        samples: [Float],
+        source: SourceTag,
+        options: TranscriptionOptions
+    ) async throws -> String
+
+    public func openStreamingSession(
+        source: SourceTag,
+        options: TranscriptionOptions
+    ) async throws -> any StreamingTranscriptionSession
+    // throws MacrecError.transcriptionConfigConflict — batch-only provider
+
+    // MARK: Internal helpers (private)
+
+    private func buildURL() throws -> URL
+    // Composes:
+    //   <endpoint>/openai/deployments/<deployment>/audio/transcriptions?api-version=<apiVersion>
+
+    private func buildMultipartBody(
+        wav: Data,
+        options: TranscriptionOptions
+    ) -> (body: Data, contentType: String)
+    // Fields: file (audio.wav), model (=deployment), response_format (json),
+    //         language (BCP-47 first hint, region-stripped, optional),
+    //         prompt (options.customSystemInstruction, optional)
+
+    private func performRequestWithRetries(
+        request: URLRequest,
+        body: Data
+    ) async throws -> (Data, HTTPURLResponse)
+    // Retry loop: max 3 attempts; honour Retry-After on 429;
+    // exponential backoff with ±20 % jitter on 408/429/500/503 +
+    // URLError.timedOut / URLError.networkConnectionLost.
+
+    private func mapHTTPError(
+        statusCode: Int,
+        body: Data,
+        retryAfter: Double?
+    ) -> AzureOpenAISTTError
+    // Decodes both ErrorEnvelope and APIMErrorEnvelope shapes to pick
+    // the right typed case.
+
+    private func decodeResponse(_ data: Data) throws -> AzureOpenAIWire.TranscriptionResponse
+
+    private func mapToMacrecError(_ azureErr: AzureOpenAISTTError) -> MacrecError
+    // The single boundary where AzureOpenAISTTError -> MacrecError
+    // happens, per the §07D-6 mapping table.
+
+    /// Optional cost reporter; called by the manager via §07D-8 hooks.
+    public func costFor(durationSeconds: Double) -> Double {
+        durationSeconds * AzureOpenAIPricing.usdPerSecond
+    }
+}
+```
+
+#### §07D-3.9 `ElevenLabsTranscriptionProvider`
+
+```swift
+// Sources/MacrecCore/Transcription/Providers/ElevenLabs/ElevenLabsTranscriptionProvider.swift
+import Foundation
+import Logging
+
+public struct ElevenLabsTranscriptionProvider: TranscriptionProvider, Sendable {
+
+    public let id = "elevenlabs"
+    public let displayName = "ElevenLabs Scribe v2"
+    public let supportedModes: Set<TranscriptionMode> = [.batch]
+
+    /// Hardcoded — the `/v1/speech-to-text` endpoint is the only batch
+    /// surface ElevenLabs ships and the host is account-agnostic.
+    private static let endpoint = URL(string: "https://api.elevenlabs.io/v1/speech-to-text")!
+
+    /// Streaming-upload threshold — bodies above this size use
+    /// `URLRequest.httpBodyStream` instead of in-memory `httpBody`.
+    /// See §07D-7 for the rationale and the v1 value.
+    public static let streamingUploadThresholdBytes: Int = 50 * 1024 * 1024
+
+    private let config: ElevenLabsConfig
+    private let urlSession: URLSession
+    private let logger: Logger
+    private let clock: any TranscriptionClock
+
+    public init(
+        config: ElevenLabsConfig,
+        urlSession: URLSession = .shared,
+        logger: Logger = LoggerFactory.make("macrec.transcription.elevenlabs"),
+        clock: any TranscriptionClock = SystemTranscriptionClock()
+    )
+
+    public func transcribe(
+        samples: [Float],
+        source: SourceTag,
+        options: TranscriptionOptions
+    ) async throws -> String
+
+    public func openStreamingSession(
+        source: SourceTag,
+        options: TranscriptionOptions
+    ) async throws -> any StreamingTranscriptionSession
+    // throws MacrecError.transcriptionConfigConflict — batch-only in v1
+
+    private func buildMultipartBody(
+        wav: Data,
+        options: TranscriptionOptions
+    ) -> (body: Data, contentType: String)
+    // Fields per wire-schema research §3:
+    //   model_id, file_format, file (audio.wav),
+    //   language_code (config or options.languageHints.first, optional),
+    //   diarize (only when true), num_speakers (when set),
+    //   tag_audio_events, timestamps_granularity (when set),
+    //   entity_detection (when set)
+
+    private func performRequestWithRetries(
+        request: URLRequest,
+        body: Data
+    ) async throws -> (Data, HTTPURLResponse)
+    // Retry loop: max 3 attempts; backoff 1s/2s/4s with ±20 % jitter
+    // (ElevenLabs does NOT return Retry-After per research §8). Retry
+    // on 429 rate_limit_exceeded / system_busy, 500, 503. NEVER retry
+    // on 429 concurrent_limit_exceeded — surface immediately.
+
+    private func mapHTTPError(
+        statusCode: Int,
+        body: Data
+    ) -> ElevenLabsSTTError
+
+    private func decodeResponse(_ data: Data) throws -> ElevenLabsWire.TranscriptionResponse
+
+    private func mapToMacrecError(_ err: ElevenLabsSTTError) -> MacrecError
+
+    public func costFor(durationSeconds: Double) -> Double {
+        var usd = (durationSeconds / 3600.0) * ElevenLabsPricing.usdPerHourBase
+        if config.entityDetection != nil { usd *= 1.30 }
+        return usd
+    }
+}
+```
+
+#### §07D-3.10 Pricing constants (shared per-engine modules)
+
+```swift
+// Embedded inside each provider module to keep magic numbers out of the
+// transcribe(...) body. Public so tests and the cost-summary surface
+// can reference them without re-deriving.
+
+public enum AzureOpenAIPricing {
+    /// $0.003 per minute (research §A.6); divided to per-second for arithmetic.
+    public static let usdPerMinute: Double = 0.003
+    public static let usdPerSecond: Double = usdPerMinute / 60.0
+}
+
+public enum ElevenLabsPricing {
+    /// $0.22 per audio hour for both `scribe_v1` and `scribe_v2` batch tiers.
+    public static let usdPerHourBase: Double = 0.22
+    /// Multiplier applied when `entity_detection` is set.
+    public static let entityDetectionSurchargeMultiplier: Double = 1.30
+}
+```
+
+#### §07D-3.11 `TranscriptionClock` injectable
+
+```swift
+// Sources/MacrecCore/Transcription/Net/TranscriptionClock.swift
+// (Optional — included only if not already present elsewhere.)
+
+public protocol TranscriptionClock: Sendable {
+    func now() -> Date
+    func sleep(seconds: Double) async throws
+}
+
+public struct SystemTranscriptionClock: TranscriptionClock, Sendable {
+    public init() {}
+    public func now() -> Date { Date() }
+    public func sleep(seconds: Double) async throws {
+        try await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+    }
+}
+```
+
+The injectable clock is needed because retry tests cannot wait real
+seconds. Existing providers can keep using `Task.sleep(...)` directly;
+this abstraction is opt-in per new provider.
+
+### §07D-4 Configuration model
+
+#### §07D-4.1 Azure OpenAI
+
+| Env var | Required? | Type | Default | How obtained | Expiration tracking | Config-guide section |
+|---|---|---|---|---|---|---|
+| `AZURE_OPENAI_API_KEY` | YES — throws `MacrecError.transcriptionApiKeyMissing(provider: "azure")` (exit 78) when active provider is `"azure"` and value is missing/empty. | `String` | none — no fallback. | Azure portal → Resource → Keys & Endpoint. | `AZURE_OPENAI_API_KEY_EXPIRES_AT`. | `configuration-guide.md` §LT-Az.1 |
+| `AZURE_OPENAI_ENDPOINT` | YES — throws `MacrecError.transcriptionConfigConflict(reason:)` (exit 64) when missing. | `URL` (`https://…`) | none. | Azure portal → Resource → Keys & Endpoint (the "Endpoint" field; format `https://<resource-name>.openai.azure.com`). | n/a | §LT-Az.2 |
+| `AZURE_OPENAI_DEPLOYMENT` | YES — throws `MacrecError.transcriptionConfigConflict(reason:)` (exit 64) when missing. | `String` | none. | Azure Foundry → Models + endpoints → user's deployment name. | n/a | §LT-Az.3 |
+| `AZURE_OPENAI_API_VERSION` | NO (documented-default-in-config-guide-only — see §07D-13 Open Question OQ-D-2). | `String` (e.g. `"2025-03-01-preview"`) | `"2025-03-01-preview"` (resolved by the factory; documented as a starter pin in `configuration-guide.md` §LT-Az.4). | Microsoft "What's New for Azure OpenAI" page. | n/a | §LT-Az.4 |
+| `AZURE_OPENAI_API_KEY_EXPIRES_AT` | NO. | ISO-8601 `Date` | none. | User-supplied; surfaces a "key expires in N days" warning at startup. | (this *is* the expiration tracker) | §LT-Az.5 |
+
+#### §07D-4.2 ElevenLabs
+
+| Env var | Required? | Type | Default | How obtained | Expiration tracking | Config-guide section |
+|---|---|---|---|---|---|---|
+| `ELEVENLABS_API_KEY` | YES — throws `MacrecError.transcriptionApiKeyMissing(provider: "elevenlabs")` (exit 78). | `String` | none. | `https://elevenlabs.io/app/settings/api-keys`. | `ELEVENLABS_API_KEY_EXPIRES_AT`. | §LT-EL.1 |
+| `ELEVENLABS_MODEL_ID` | NO. | `String` | `"scribe_v2"` (provider-side default; `scribe_v1` accepted). | Vendor catalogue. | n/a | §LT-EL.2 |
+| `ELEVENLABS_LANGUAGE_CODE` | NO. | `String` (ISO-639-1 / ISO-639-3) | unset (auto-detect). | User-supplied. | n/a | §LT-EL.3 |
+| `ELEVENLABS_DIARIZE` | NO. | `Bool` | `false`. | User-supplied. | n/a | §LT-EL.4 |
+| `ELEVENLABS_TAG_AUDIO_EVENTS` | NO. | `Bool` | `true`. | User-supplied. | n/a | §LT-EL.5 |
+| `ELEVENLABS_NUM_SPEAKERS` | NO. | `Int` (1..32) | unset. | User-supplied. | n/a | §LT-EL.6 |
+| `ELEVENLABS_FILE_FORMAT` | NO. | `pcm_s16le_16` \| `other` | `pcm_s16le_16` (matches `AudioWAVEncoder` output). | n/a | n/a | §LT-EL.7 |
+| `ELEVENLABS_ENTITY_DETECTION` | NO. | `String` (`all` \| `pii` \| `phi` \| `pci` \| `none`) | unset (off). | User-supplied. **+30 % surcharge when set.** | n/a | §LT-EL.8 |
+| `ELEVENLABS_API_KEY_EXPIRES_AT` | NO. | ISO-8601 `Date` | none. | User-supplied. | (this *is* the expiration tracker) | §LT-EL.9 |
+
+**No fallback discipline** — the only "default" applied at the
+*resolver* layer is `AZURE_OPENAI_API_VERSION` (Open Question OQ-D-2;
+treated as a documented starter, not a silent default). Every other
+required field that is absent throws at factory-build time. The optional
+fields with defaults all use **provider-side** defaults (the field is
+`nil` at the resolver layer; the provider's `init` substitutes a
+documented, hardcoded vendor-default value), which is the project's
+existing pattern (mirrors how `GeminiRESTTranscriptionProvider` defaults
+`modelId` to `defaultModelId` when `MACREC_TRANSCRIBE_MODEL` is unset).
+
+### §07D-5 Sequence diagrams
+
+#### §07D-5.1 Happy path: 30 s audio with `--transcribe azure`
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CLI as macrec start CLI
+    participant Resolver as ConfigResolver
+    participant Factory as TranscriptionProviderFactory
+    participant Mgr as TranscriptionManager (batch pipeline)
+    participant Buf as SourceBuffer (per source)
+    participant Provider as AzureOpenAITranscriptionProvider
+    participant WAV as AudioWAVEncoder
+    participant MP as MultipartFormDataBuilder
+    participant URLSession
+    participant Sidecar as TranscriptSidecarWriter (.batch)
+
+    CLI->>Resolver: resolve(cliOverrides)
+    Resolver->>Resolver: 4-tier env chain reads AZURE_OPENAI_*
+    Resolver-->>CLI: RecordingOptions
+    CLI->>Factory: build(TranscriptionProviderFactoryInput)
+    Factory->>Factory: switch normalized id "azure"
+    Factory->>Provider: init(config: AzureOpenAIConfig, urlSession: .shared)
+    Factory-->>CLI: provider
+
+    Note over CLI,Mgr: Recording starts; aligned 100 ms frames flow in.
+    loop every 2.5 s (flush cadence) for 30 s
+        Buf->>Mgr: drain([Float] 16 kHz mono)
+        Mgr->>Provider: transcribe(samples:source:options:)
+        Provider->>WAV: encode(samples:)
+        WAV-->>Provider: Data (~80 KB WAV)
+        Provider->>MP: appendFile(file=audio.wav) + appendField(model, response_format, language, prompt)
+        MP-->>Provider: (body, contentType)
+        Provider->>URLSession: data(for: URLRequest)\nendpoint/openai/deployments/<dep>/audio/transcriptions?api-version=…
+        URLSession-->>Provider: (Data, HTTPURLResponse 200)
+        Provider->>Provider: decode AzureOpenAIWire.TranscriptionResponse
+        Provider-->>Mgr: text: String
+        Mgr->>Sidecar: write segmentAppended / segmentUpdated
+    end
+
+    CLI->>Mgr: stop()
+    Mgr->>Sidecar: flush + close
+    Sidecar-->>CLI: jsonl/srt/vtt/txt files
+```
+
+#### §07D-5.2 Happy path: same with `--transcribe elevenlabs`
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CLI as macrec start CLI
+    participant Mgr as TranscriptionManager (batch)
+    participant Provider as ElevenLabsTranscriptionProvider
+    participant WAV as AudioWAVEncoder
+    participant MP as MultipartFormDataBuilder
+    participant URLSession
+    participant Sidecar as TranscriptSidecarWriter (.batch)
+
+    Note over CLI,Mgr: Same setup as Azure case; provider id "elevenlabs".
+
+    loop every 2.5 s for 30 s
+        Mgr->>Provider: transcribe(samples:source:options:)
+
+        alt samples.count < 1600 (i.e. < 100 ms)
+            Provider-->>Mgr: ""
+        else normal chunk
+            Provider->>WAV: encode(samples:)
+            WAV-->>Provider: Data
+            Provider->>Provider: pre-flight: bytes <= 3 GB; duration <= 4.5 hr
+            Provider->>MP: appendField(model_id, file_format) + appendFile(file) + optional fields
+            MP-->>Provider: (body, contentType)
+            Provider->>URLSession: data(for:) POST https://api.elevenlabs.io/v1/speech-to-text\nxi-api-key header
+            URLSession-->>Provider: (Data, HTTPURLResponse 200)
+            Provider->>Provider: decode ElevenLabsWire.TranscriptionResponse
+            Provider-->>Mgr: text: String
+            Mgr->>Sidecar: write segmentAppended / segmentUpdated
+        end
+    end
+```
+
+#### §07D-5.3 Error path: ElevenLabs HTTP 429 → backoff → success
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Mgr as TranscriptionManager
+    participant Provider as ElevenLabsTranscriptionProvider
+    participant Retry as performRequestWithRetries
+    participant URLSession
+    participant Clock as TranscriptionClock
+
+    Mgr->>Provider: transcribe(samples:source:options:)
+    Provider->>Retry: try POST (attempt 1)
+    Retry->>URLSession: data(for:)
+    URLSession-->>Retry: HTTPURLResponse 429 (rate_limit_exceeded)
+    Retry->>Retry: detail.status == "rate_limit_exceeded" → retry
+    Retry->>Clock: sleep(1.0 ± 20 % jitter)
+
+    Retry->>URLSession: data(for:) (attempt 2)
+    URLSession-->>Retry: HTTPURLResponse 429 (rate_limit_exceeded)
+    Retry->>Clock: sleep(2.0 ± 20 % jitter)
+
+    Retry->>URLSession: data(for:) (attempt 3)
+    URLSession-->>Retry: HTTPURLResponse 200
+    Retry->>Provider: decode response
+    Provider-->>Mgr: text: String
+
+    Note over Provider: If all 3 attempts return 429:\n  throw ElevenLabsSTTError.rateLimited(nil)\n  → MacrecError.transcriptionProviderUnavailable(reason: "ElevenLabs rate-limited; backoff exhausted")\n  → exit 70.
+    Note over Provider: 429 with detail.status == "concurrent_limit_exceeded" is NOT retried —\n  surfaced immediately as ElevenLabsSTTError.concurrentLimitExceeded.
+```
+
+### §07D-6 Error-handling strategy
+
+#### §07D-6.1 Azure OpenAI
+
+| HTTP / underlying | Typed `AzureOpenAISTTError` | Retry? | `MacrecError` (exit) | User-visible message format |
+|---|---|---|---|---|
+| 400 (`invalid_request_error`, `invalid_value`) | `.invalidRequest(message)` | NO | `.transcriptionProviderUnavailable` (70) | `transcription provider unavailable: Azure rejected request: <message>` |
+| 400/413 (`file_too_large`) | `.fileTooLarge(byteCount)` | NO | `.transcriptionProviderUnavailable` (70) | `transcription provider unavailable: Audio chunk exceeds Azure's 25 MB limit (chunk longer than ~25 min)` |
+| 400/415 (`unsupported_format`) | `.unsupportedAudioFormat(detail)` | NO | `.transcriptionProviderUnavailable` (70) | `transcription provider unavailable: Audio format not accepted by Azure (CAF must be converted to WAV/M4A first)` |
+| 401 | `.invalidApiKey` | NO | `.transcriptionApiKeyMissing(provider: "azure")` (78) | `transcription API key missing for provider 'azure'` (existing locked string from `MacrecError.description`) |
+| 403 | `.permissionDenied` | NO | `.transcriptionPermissionDenied(provider: "azure")` (77) | `transcription permission denied for provider 'azure'. Enable in System Settings → Privacy & Security → Speech Recognition, then re-run.` (existing locked string) |
+| 404 (`DeploymentNotFound`) | `.deploymentNotFound(deployment)` | NO | `.transcriptionConfigConflict(reason)` (64) | `transcription configuration conflict: Azure deployment '<name>' not found in resource '<host>'` |
+| 408 (timeout) | `.networkTimeout` | YES (max 3) | `.transcriptionProviderUnavailable` (70) | `transcription provider unavailable: Azure read timeout; transient` |
+| 429 | `.rateLimited(retryAfter)` | YES (max 3, honour `Retry-After`) | `.transcriptionProviderUnavailable` (70) | `transcription provider unavailable: Azure rate-limited (retry after <s>s); reduce concurrency or upgrade tier` |
+| 500/503 | `.serverError(statusCode)` | YES (max 2; backoff) | `.transcriptionProviderUnavailable` (70) | `transcription provider unavailable: Azure server error <code>; transient` |
+| URLError (offline / DNS) | `.networkError(underlying)` | YES (max 1) | `.transcriptionProviderUnavailable` (70) | `transcription provider unavailable: Azure unreachable: <localizedDescription>` |
+| Decoder | `.decodeFailure(underlying)` | NO | `.transcriptionProviderUnavailable` (70) | `transcription provider unavailable: Unexpected Azure response: <message>` |
+
+#### §07D-6.2 ElevenLabs
+
+| HTTP / underlying | Typed `ElevenLabsSTTError` | Retry? | `MacrecError` (exit) | User-visible message format |
+|---|---|---|---|---|
+| 400 (`audio_too_short`) | n/a — pre-flight short-circuits to `""` | n/a | n/a | (silent) |
+| 400/422 (`invalid_audio_format` / `invalid_file_type`) | `.unsupportedFormat(detail)` | NO | `.transcriptionProviderUnavailable` (70) | `transcription provider unavailable: Audio format not accepted by ElevenLabs (CAF must be converted)` |
+| 401 | `.invalidApiKey` | NO | `.transcriptionApiKeyMissing(provider: "elevenlabs")` (78) | `transcription API key missing for provider 'elevenlabs'` |
+| 402 (`insufficient_credits`) | `.insufficientCredits` | NO | `.transcriptionProviderUnavailable` (70) | `transcription provider unavailable: ElevenLabs account out of credits; top up at https://elevenlabs.io/app/billing` |
+| 403 (`feature_not_available`) | `.planFeatureGate(feature)` | NO | `.transcriptionProviderUnavailable` (70) | `transcription provider unavailable: ElevenLabs '<feature>' requires plan upgrade` |
+| 413 (`request_too_large`) | `.fileTooLarge(byteCount)` | NO | `.transcriptionProviderUnavailable` (70) | `transcription provider unavailable: Audio chunk exceeds ElevenLabs 3 GB limit` |
+| 422 (`audio_too_long`) | `.audioTooLong(durationSec)` | NO | `.transcriptionProviderUnavailable` (70) | `transcription provider unavailable: Audio exceeds ElevenLabs 4.5 hr per-request limit` |
+| 422 (`invalid_parameters`) | `.invalidParameter(field, message)` | NO | `.transcriptionConfigConflict(reason)` (64) | `transcription configuration conflict: ElevenLabs rejected '<field>': <message>` |
+| 429 (`rate_limit_exceeded` / `system_busy`) | `.rateLimited(nil)` | YES (max 3; backoff 1/2/4 s ± 20 %) | `.transcriptionProviderUnavailable` (70) | `transcription provider unavailable: ElevenLabs rate-limited; backoff exhausted` |
+| 429 (`concurrent_limit_exceeded`) | `.concurrentLimitExceeded` | NO | `.transcriptionProviderUnavailable` (70) | `transcription provider unavailable: ElevenLabs concurrent-request limit reached on your plan; reduce concurrency or upgrade` |
+| 500/503 | `.serverError(statusCode)` | YES (max 2) | `.transcriptionProviderUnavailable` (70) | `transcription provider unavailable: ElevenLabs server error <code>; transient` |
+| URLError | `.networkFailure(underlying)` | YES (max 1) | `.transcriptionProviderUnavailable` (70) | `transcription provider unavailable: ElevenLabs unreachable: <localizedDescription>` |
+| Decoder | `.decodingFailure(underlying)` | NO | `.transcriptionProviderUnavailable` (70) | `transcription provider unavailable: ElevenLabs response malformed: <localizedDescription>` |
+
+Both providers reuse the project's existing `MacrecError`
+**description / remediation** strings verbatim — no new
+`MacrecError` cases are introduced. Per the codebase scan §IP-13 the
+`description` and `remediation` strings are LOCKED by design §2.1, so
+new providers compose their richer "reason" text inside the
+`(reason: String)` payload of the existing
+`.transcriptionProviderUnavailable` / `.transcriptionConfigConflict`
+cases. The output to stderr remains the locked two-line format from
+`MacrecError.printToStderr()`:
+
+```
+macrec: error: transcription provider unavailable: <reason>
+  Verify the provider configuration (model id, endpoint) and try again, or pass '--transcribe none' to disable live transcription.
+```
+
+This mirrors the existing `GeminiRESTTranscriptionProvider` error path
+exactly (see `GeminiRESTTranscriptionProvider.swift:99-121` for the
+reference pattern).
+
+#### §07D-6.3 Retry policy summary
+
+| Behavior | Retry? | Max attempts | Backoff |
+|---|---|---|---|
+| HTTP 429 with `Retry-After` (Azure) | YES | 3 | Honour `Retry-After`; otherwise exponential 1/2/4 s ± 20 %. |
+| HTTP 429 without `Retry-After` (ElevenLabs `rate_limit_exceeded` / `system_busy`) | YES | 3 | Exponential 1/2/4 s ± 20 %. |
+| HTTP 429 with `concurrent_limit_exceeded` (ElevenLabs) | NO | 1 | n/a — surface immediately so user knows the cap. |
+| HTTP 401 / 403 | NO | 1 | Surface immediately. |
+| HTTP 404 | NO | 1 | Surface immediately. |
+| HTTP 413 / 415 / 422 (validation) | NO | 1 | Surface immediately. |
+| HTTP 408 (timeout) | YES | 3 | Exponential 1/2/4 s ± 20 %. |
+| HTTP 500 / 503 | YES | 2 | Exponential 1/2 s ± 20 %. |
+| `URLError.timedOut`, `URLError.networkConnectionLost` | YES | 1 | Immediate. |
+
+### §07D-7 Concurrency model
+
+Both providers' `transcribe(samples:source:options:)` is `async throws`,
+matching the existing `TranscriptionProvider` protocol verbatim. Per the
+protocol's contract comment (`TranscriptionProvider.swift:23-24`)
+implementations MUST be safe for concurrent calls — the
+`TranscriptionManager` may run up to two parallel calls per source under
+load.
+
+The proposed `struct` declaration is sufficient for that contract:
+
+- `AzureOpenAITranscriptionProvider` and `ElevenLabsTranscriptionProvider`
+  hold immutable stored properties (`config`, `urlSession`, `logger`,
+  `clock`). Per-call mutable state lives in the call's own stack frame
+  (request, body bytes, decoded response). No shared mutable state →
+  `Sendable` is satisfied without an actor.
+- `URLSession.shared` is `Sendable` and supports concurrent requests.
+- The retry loop awaits `clock.sleep(...)`, which is a single suspension
+  point — no other concurrency primitives needed.
+
+#### §07D-7.1 In-memory vs streaming upload
+
+| Provider | Per-request body size (typical macrec 2.5 s chunk) | Per-request body size (per-vendor cap) | Upload mode (v1) |
+|---|---|---|---|
+| Azure OpenAI | ~80 KB (16 kHz mono Int16 WAV) | 25 MB hard limit (research §5) | **In-memory always.** Azure's 25 MB cap is well below any practical streaming threshold. |
+| ElevenLabs | ~80 KB | 3 GB / 4.5 hr (research §9.3) | **In-memory below 50 MB; `URLRequest.httpBodyStream` above.** Threshold = `ElevenLabsTranscriptionProvider.streamingUploadThresholdBytes` (50 MB). |
+
+The 50 MB threshold (`streamingUploadThresholdBytes`) is captured as a
+public static `Int` on the provider type rather than a config var — see
+§07D-13 OQ-D-3 for the rationale and the recommendation to keep it as a
+hardcoded constant in v1.
+
+The streaming-upload code path uses
+`URLRequest.httpBodyStream = InputStream(data: body)` — a one-line swap,
+since the multipart body is already a single `Data` blob. A future
+extension that produces the body lazily as an `InputStream` (writing
+parts directly to a `Pipe`) is feasible but explicitly NOT in v1 scope.
+
+### §07D-8 Cost-summary integration
+
+The actual `TranscriptionMetrics` struct in
+`Sources/MacrecCore/Transcription/TranscriptEvent.swift:29-37` is:
+
+```swift
+public struct TranscriptionMetrics: Sendable, Codable, Equatable {
+    public var chunksSent: Int = 0
+    public var billableSeconds: Double = 0
+    public var lastRttMs: Int = 0
+    public var errorCount: Int = 0
+    public var bufferOverflowCount: Int = 0
+
+    public init() {}
+}
+```
+
+There is **no** `CostSummary` struct in the codebase today, and
+`TranscriptionMetrics` does NOT expose a USD cost field — it tracks
+`billableSeconds` only. Plan-007's references to a
+`TranscriptionManagerStats.azureCost(...)` extension point describe an
+*intended* shape that does not yet exist. This design pass therefore
+specifies the cost-summary surface as follows:
+
+#### §07D-8.1 Per-engine cost computation lives on the provider
+
+Each new provider exposes:
+
+```swift
+public func costFor(durationSeconds: Double) -> Double
+```
+
+…which uses the per-engine pricing constants in §07D-3.10. The function
+is pure — no side effects, easily unit-testable, and avoids leaking
+pricing constants into the manager.
+
+#### §07D-8.2 Aggregation surface
+
+Two non-disruptive options:
+
+**Option 1 (recommended; minimal surface change):** Extend
+`TranscriptionMetrics` with one additional field:
+
+```swift
+public struct TranscriptionMetrics: Sendable, Codable, Equatable {
+    public var chunksSent: Int = 0
+    public var billableSeconds: Double = 0
+    public var lastRttMs: Int = 0
+    public var errorCount: Int = 0
+    public var bufferOverflowCount: Int = 0
+    public var estimatedCostUSD: Double? = nil    // NEW — nil for on-device providers
+    public init() {}
+}
+```
+
+`Codable` / `Equatable` synthesis still works because the new field has
+a default value (back-compat for anyone deserialising prior metrics
+JSONL — old shape with no `estimatedCostUSD` key still decodes fine).
+The `TranscriptionManager` accumulates `estimatedCostUSD` after each
+successful provider call by adding `provider.costFor(durationSeconds:)`,
+so the existing `TranscriptionMetricsView` can render the cost line
+without per-provider switching.
+
+**Option 2 (no surface change):** Compute cost lazily in the UI by
+multiplying `billableSeconds` against a per-provider rate looked up by
+provider id. Pushes the magic numbers into the UI layer — rejected.
+
+**Decision:** Option 1. The single new optional field is the smallest
+possible delta and keeps cost arithmetic next to the provider that
+defines its pricing constants.
+
+### §07D-9 Back-compat impact statement
+
+#### §07D-9.1 Protocol changes — NONE
+
+The `TranscriptionProvider` protocol (`TranscriptionProvider.swift:29-44`,
+quoted in the codebase scan §IP-1 and verified by reading the actual
+file in this design pass) has four members:
+
+```swift
+public protocol TranscriptionProvider: Sendable {
+    var id: String { get }
+    var displayName: String { get }
+    var supportedModes: Set<TranscriptionMode> { get }
+    func transcribe(samples: [Float], source: SourceTag, options: TranscriptionOptions) async throws -> String
+    func openStreamingSession(source: SourceTag, options: TranscriptionOptions) async throws -> any StreamingTranscriptionSession
+}
+```
+
+Both new providers conform without protocol modification:
+
+| Member | Azure provider | ElevenLabs provider |
+|---|---|---|
+| `id` | `"azure"` | `"elevenlabs"` |
+| `displayName` | `"Azure OpenAI"` | `"ElevenLabs Scribe v2"` |
+| `supportedModes` | `[.batch]` | `[.batch]` |
+| `transcribe(...)` | implements (see §07D-3.8) | implements (see §07D-3.9) |
+| `openStreamingSession(...)` | throws `MacrecError.transcriptionConfigConflict(reason: "Azure provider does not support streaming in v1 (gpt-4o-mini-transcribe is REST-only). Use --transcribe apple for streaming.")` | throws `MacrecError.transcriptionConfigConflict(reason: "ElevenLabs provider does not support streaming in v1 (deferred to plan-007 — scribe_v2_realtime). Use --transcribe apple for streaming.")` |
+
+The four existing conformers (`NoOp`, `Fake`, `GeminiREST`,
+`AppleSpeech`) — plus the in-tree `WhisperKit` — continue to compile
+unchanged because the protocol is untouched.
+
+#### §07D-9.2 Enum extensions
+
+`TranscriptionProviderId` (`Sources/MacrecCore/Config/RecordingOptions.swift:74-79`)
+gains three cases (one drift-fix, two new):
+
+```swift
+public enum TranscriptionProviderId: String, CaseIterable, Sendable, Codable, Equatable {
+    case none
+    case apple = "apple"
+    case gemini
+    case geminiLive = "gemini-live"
+    case whisperkit                  // NEW (drift fix — see codebase scan §5)
+    case azure                       // NEW
+    case elevenlabs                  // NEW
+}
+```
+
+The enum is `String`-backed and only consumed via the resolver's
+`parseEnum(...)` helper; no exhaustive `switch` over `TranscriptionProviderId`
+exists in the codebase today (verified via `grep -rn 'switch.*TranscriptionProviderId'`),
+so adding cases is purely additive. The single `switch transcribeProviderEnum`
+(`ConfigResolver.swift:347-354`) IS extended to handle the three new
+cases (`.azure`, `.elevenlabs`, `.whisperkit`) — see §07D-2.
+
+#### §07D-9.3 `TranscriptionOptions` — UNCHANGED
+
+`TranscriptionOptions` (`Sources/MacrecCore/Transcription/TranscriptionOptions.swift:21-75`)
+is left untouched. Azure's three extra config values (endpoint,
+deployment, apiVersion) are captured by the provider at construction
+time via `AzureOpenAIConfig`, NOT threaded through per-call
+`TranscriptionOptions`. ElevenLabs' tuning knobs (model, language,
+diarize, etc.) are likewise captured in `ElevenLabsConfig`. This
+mirrors the existing `GeminiRESTTranscriptionProvider` pattern, where
+`modelId` is captured in `init(...)` and stored privately rather than
+being read from `TranscriptionOptions` per call.
+
+#### §07D-9.4 `TranscriptionProviderFactoryInput` — three additive fields
+
+```swift
+public struct TranscriptionProviderFactoryInput: Sendable {
+    public let providerId: String
+    public let apiKey: String?
+    public let modelId: String?
+    public let languageHints: [String]
+    public let logger: Logger
+    public let keyExpiresAt: Date?
+    public let azureOpenAIEndpoint: String?       // NEW
+    public let azureOpenAIDeployment: String?     // NEW
+    public let azureOpenAIApiVersion: String?     // NEW
+
+    public init(
+        providerId: String,
+        apiKey: String?,
+        modelId: String?,
+        languageHints: [String] = [],
+        logger: Logger,
+        keyExpiresAt: Date?,
+        azureOpenAIEndpoint: String? = nil,
+        azureOpenAIDeployment: String? = nil,
+        azureOpenAIApiVersion: String? = nil
+    )
+}
+```
+
+All three Azure-specific fields default to `nil`, so existing call sites
+(Gemini / Apple / WhisperKit construction) compile unchanged.
+
+#### §07D-9.5 `RecordingOptions` — five additive optional fields
+
+Per the codebase scan §IP-7 list:
+
+- `azureOpenAIEndpoint: String?`
+- `azureOpenAIDeployment: String?`
+- `azureOpenAIApiVersion: String?`
+- `azureOpenAIApiKeyExpiresAt: Date?`
+- `elevenLabsApiKeyExpiresAt: Date?`
+
+All default to `nil` in `init(...)`. `withOutput(_:)` (line 306) MUST
+forward each, and the existing `testWithOutputPreservesTranscriptionFields`
+regression test gains one assertion per new field. ElevenLabs tuning
+knobs (model, language, diarize, etc.) optionally land here too if the
+user wants per-recording overrides; otherwise they remain env-var-only
+and are consumed by the factory directly from `ProcessInfo` —
+recommendation: keep them env-var-only in v1 to avoid
+RecordingOptions-field churn and to match the
+no-CLI-flag-for-Azure-deployment decision in plan-007 §A.8.
+
+#### §07D-9.6 Switch statements that gain a new case
+
+| File | Symbol | Why |
+|---|---|---|
+| `Sources/MacrecCore/Config/ConfigResolver.swift:347-354` | `let transcriptionApiKey: String? = { switch transcribeProviderEnum { … } }()` | Add `.azure → AZURE_OPENAI_API_KEY`, `.elevenlabs → ELEVENLABS_API_KEY`, `.whisperkit → nil`. |
+| `Sources/MacrecCore/Transcription/Providers/TranscriptionProviderFactory.swift:46-93` | `switch normalized { … }` | Add `case "azure":` and `case "elevenlabs":`; update `default` error message. |
+| `Sources/macrec-ui/Views/ControlBar.swift:253-258` | API-key resolution closure | Replace hardcoded `GOOGLE_API_KEY` lookup with a `switch normalizedProvider` (Phase 0.2). |
+| `Sources/macrec-ui/RootView.swift:316-323` | `private static func isCloudProvider(_:)` | Add `"azure"`, `"elevenlabs"`. |
+
+#### §07D-9.7 SwiftUI views that gain a new case
+
+| File | Change |
+|---|---|
+| `Sources/macrec-ui/Views/Transcription/TranscriptionPicker.swift:72-77` | Two new `Text(...).tag(...)` rows for Azure + ElevenLabs (Phase C.1). |
+| `Sources/macrec-ui/Views/Transcription/PrivacyDisclosureSheet.swift:80-84` | `bodyText` becomes a parameterised `bodyText(for providerId:)` returning Azure-, ElevenLabs-, and Gemini-specific copy (Phase 0.3). The `userDefaultsKey` becomes `…privacy.<providerId>.acknowledged` per provider. |
+| `Sources/macrec-ui/Views/Transcription/GeminiKeyField.swift` (or replacement `ProviderKeyField.swift`) | Generalised `ProviderKeyField(providerId:envVarName:displayLabel:helpURL:)` — used for Gemini (existing), Azure, and ElevenLabs (Phase 0.4). |
+| `Sources/macrec-ui/RootView.swift` | Two new conditional blocks rendering `ProviderKeyField` plus Azure-specific endpoint/deployment status text (Phase C.2). |
+
+#### §07D-9.8 Config-guide changes summary
+
+`docs/design/configuration-guide.md` gains two new sub-sections:
+
+- **§LT-Az** — five Azure rows (per §07D-4.1).
+- **§LT-EL** — nine ElevenLabs rows (per §07D-4.2).
+
+Both follow the existing §LT format (purpose, how to obtain, recommended
+storage, options/values, default, expiration tracking).
+
+### §07D-10 Parallel implementation units
+
+| Unit | Phase | Files owned (no overlap) | Depends on |
+|---|---|---|---|
+| **U-0** Shared scaffolding | Phase 0 | `Transcription/Net/MultipartFormDataBuilder.swift`; `RecordingOptions.swift` (`.whisperkit` enum case); `ControlBar.swift` (Phase 0.2 generalised key lookup); `PrivacyDisclosureSheet.swift` (Phase 0.3 parameterised body); new `ProviderKeyField.swift`; tests for each. | nothing — first |
+| **U-A** Azure provider | Phase A | `Transcription/Providers/Azure/AzureOpenAIConfig.swift`; `…/AzureOpenAIWireTypes.swift`; `…/AzureOpenAISTTError.swift`; `…/AzureOpenAITranscriptionProvider.swift`; `Tests/MacrecCoreTests/Transcription/Providers/Azure/*` (4 test files per plan-007 §E.2). | U-0 |
+| **U-B** ElevenLabs provider | Phase B | `Transcription/Providers/ElevenLabs/ElevenLabsConfig.swift`; `…/ElevenLabsWireTypes.swift`; `…/ElevenLabsSTTError.swift`; `…/ElevenLabsTranscriptionProvider.swift`; `Tests/MacrecCoreTests/Transcription/Providers/ElevenLabs/*` (4 test files). | U-0 |
+| **U-C** Cross-cutting wiring (factory + resolver + UI picker) | Phase C | `Transcription/Providers/TranscriptionProviderFactory.swift` (two new branches; one merge-conflict risk); `Config/ConfigResolver.swift` (Keys + switch); `Config/RecordingOptions.swift` (new fields + `withOutput(_:)`); `macrec-ui/Views/Transcription/TranscriptionPicker.swift`; `macrec-ui/RootView.swift`; `MacrecUIKit/RecordingController.swift` (line 129-131 missing-key derivation). | U-A AND U-B (needs both provider types to switch on) |
+| **U-D** Docs + config-guide | Phase D | `docs/design/configuration-guide.md` (§LT-Az + §LT-EL); `docs/tools/macrec.md`; `docs/tools/macrec-ui.md`; `docs/design/project-functions.md` (FR-AZ-* + FR-EL-* rows); `Issues - Pending Items.md`. | U-A, U-B, U-C |
+| **U-E** Tests + e2e scripts | Phase E | `Tests/MacrecUIKitTests/PrivacyDisclosureSheetCopyTests.swift`; `Tests/MacrecUIKitTests/ControlBarKeyResolutionTests.swift`; `Tests/MacrecUIKitTests/ProviderKeyFieldTests.swift`; `Tests/MacrecCoreTests/Config/ConfigResolverAzureElevenLabsTests.swift`; `Tests/MacrecCoreTests/Config/RecordingOptionsAzureElevenLabsTests.swift`; `Tests/MacrecCoreTests/Transcription/TranscriptionProviderFactoryAzureElevenLabsTests.swift`; `test_scripts/e2e-transcription-{azure,elevenlabs,…}.sh`. | U-D |
+
+**Critical parallelism observation:** U-A and U-B have **zero file
+overlap** — they own different folders, different test files, and
+different env-var names. They can be implemented by two independent
+agents in parallel as soon as U-0 completes. The single shared file
+they both touch later is `TranscriptionProviderFactory.swift` in U-C,
+which the wiring agent owns serially after both providers are in place.
+
+### §07D-11 Interface contracts between parallel units
+
+#### §07D-11.1 What U-A and U-B share
+
+**Only two contracts** are visible across the U-A / U-B boundary:
+
+1. **`MultipartFormDataBuilder` API** (§07D-3.1) — owned by U-0; both
+   U-A and U-B depend on its public signatures verbatim. No mutation of
+   the builder API is permitted by U-A or U-B; if either provider needs
+   a builder feature that doesn't exist (e.g. lazy file-stream
+   appending), the change is filed as a U-0 follow-up before either
+   provider proceeds.
+2. **`TranscriptionProvider` protocol** (`TranscriptionProvider.swift:29-44`,
+   UNCHANGED) — both providers conform to the same shape, but each
+   provides its own implementation. There is no shared base class.
+
+Internal types (`AzureOpenAIWire`, `AzureOpenAIConfig`,
+`AzureOpenAISTTError`, etc. and the `ElevenLabs*` analogues) are
+**isolated** within their respective subfolders; neither provider
+imports the other.
+
+#### §07D-11.2 What U-C needs from U-A and U-B
+
+The factory branch in U-C calls into each provider's public `init(...)`
+and `static defaultModelId` (where applicable):
+
+```swift
+// U-C reads these public symbols from U-A:
+AzureOpenAIConfig.init(endpoint:deployment:apiVersion:apiKey:apiKeyExpiresAt:)
+AzureOpenAITranscriptionProvider.init(config:urlSession:logger:clock:)
+
+// And these from U-B:
+ElevenLabsConfig.init(apiKey:modelId:…)
+ElevenLabsTranscriptionProvider.init(config:urlSession:logger:clock:)
+```
+
+Both signature blocks are frozen by §07D-3 of this design — U-A and U-B
+implement them exactly as specified so U-C's factory branch compiles
+without further coordination.
+
+### §07D-12 Justification of technology choices
+
+#### §07D-12.1 Why Foundation `URLSession` (no Alamofire / async-http-client)
+
+- The project's no-new-SwiftPM-dependencies constraint (refined-request
+  Constraints; plan-007 §2.4) is binding. `URLSession` ships with
+  Foundation and exposes the exact surface needed: `URLSession.data(for:)`
+  returns `(Data, URLResponse)` natively as `async throws`, has
+  first-class `Sendable` semantics under Swift 6, and supports both
+  `httpBody` (in-memory) and `httpBodyStream` (streaming uploads).
+- The existing `GeminiRESTTranscriptionProvider`
+  (`GeminiRESTTranscriptionProvider.swift:43-49`) already uses
+  `URLSession.shared` injected via `init`. Both new providers mirror
+  that pattern verbatim — design consistency over novelty.
+- Alamofire would buy nothing for this surface (no auth-flow plumbing,
+  no upload progress UI in v1, no caching). Adding a 5,000-line
+  dependency for what amounts to a `POST` with multipart and JSON is
+  unjustified.
+
+#### §07D-12.2 Why one shared `MultipartFormDataBuilder` rather than a `BatchHTTPTranscriptionProvider` superclass
+
+Plan-007 §3.2 already discusses this in detail; restating the design
+rationale here for completeness:
+
+- A `BatchHTTPTranscriptionProvider` superclass would force shared
+  state for things that are deliberately per-provider: the URL template
+  (Azure has deployment-routing + `api-version`; ElevenLabs has a fixed
+  URL), the auth header (`api-key` vs `xi-api-key`), the multipart
+  field set (Azure: 6 fields; ElevenLabs: 20+), the response schema
+  (Azure: `{"text": "..."}` vs ElevenLabs:
+  `{"text", "words[]", "language_code", …}`), the error envelope
+  (Azure: dual API/APIM format; ElevenLabs: FastAPI-style
+  `{detail: {status, message}}`), and the retry policy
+  (Azure honours `Retry-After`; ElevenLabs doesn't expose it).
+  A superclass would collapse to abstract methods on every interesting
+  method — providing zero code reuse.
+- A `MultipartFormDataBuilder` value type is the tightest possible
+  shared abstraction: it encodes purely the RFC 7578 boundary /
+  field-header / payload mechanics, reused verbatim by both providers
+  and by any future REST provider. Per the project's existing pattern
+  (`GeminiREST` and `AppleSpeech` are both self-contained, not
+  subclassed), adding two more self-contained types is consistent and
+  discoverable.
+
+#### §07D-12.3 Why batch-only in v1
+
+Per the investigation §Recommendation:
+
+- Azure has no realtime variant for `gpt-4o-mini-transcribe` (the
+  `/realtime` WebSocket only serves the conversational `gpt-realtime`
+  family). Streaming for the chosen model is not available — it is
+  not a v1 omission, it is a vendor non-feature.
+- ElevenLabs DOES expose `scribe_v2_realtime` via WebSocket (GA
+  2025-11-11) but its wire protocol is SDK-mediated and only partially
+  documented. Adding it would double the implementation surface for
+  ElevenLabs, introduce a token-fetch indirection different from the
+  batch `xi-api-key` header, and risk shipping against a moving wire
+  schema. plan-007 will revisit this after a release cycle of batch
+  usage.
+- Apple SpeechAnalyzer already covers the live-captioning niche
+  on-device for free — the new providers' value-add is multilingual
+  quality and enterprise data residency, both of which are batch-mode
+  use-cases.
+
+See investigation §Cost-summary and §Recommendation for the full
+rationale.
+
+#### §07D-12.4 Why no managed-identity / AAD bearer-token in v1
+
+Per plan-007 §2.4 and Assumption A-7 in the refined request:
+
+- The `api-key` header is the lowest-implementation-cost auth mode
+  (one header, no token-refresh logic).
+- Parity with `GOOGLE_API_KEY` in the existing Gemini provider keeps
+  the env-var resolution chain symmetric across providers.
+- Managed identity / Azure AD bearer would require the `azure-identity`
+  SDK (a new dependency, ~1.5 MB binary), the `MSAL` token cache, and
+  a new TCC-irrelevant but auth-state-relevant background refresh
+  task. Out of scope for v1.
+
+`gpt-4o-mini-transcribe`'s endpoint accepts the `api-key` header
+identically to all other Azure OpenAI services (research §2), so the
+decision is fully reversible — a future `auth-mode: aad` switch can be
+added without breaking the v1 surface.
+
+### §07D-13 Open questions / pending decisions for the user
+
+The five questions in plan-007 §13 each receive a planner-recommended
+answer there; they remain open for the user. This design pass surfaces
+**three additional** questions that emerged while drafting the type
+contracts:
+
+#### §07D-13 OQ-D-1 (NEW) — Where should the streaming-upload threshold live: config var or hardcoded constant?
+
+- **Question**: ElevenLabs accepts up to 3 GB per request, but
+  in-memory body assembly past ~50 MB is wasteful. The threshold above
+  which the provider switches from in-memory to
+  `URLRequest.httpBodyStream` could be:
+  (a) a hardcoded `public static let streamingUploadThresholdBytes` on
+  `ElevenLabsTranscriptionProvider`,
+  (b) a documented env var (e.g. `ELEVENLABS_STREAMING_THRESHOLD_BYTES`).
+- **Planner's recommendation**: **(a) hardcoded constant.** Rationale:
+  - The macrec recording cadence (2.5 s flush) produces ~80 KB chunks;
+    the threshold matters only for users who post-process long files
+    via a hypothetical `macrec transcribe-file` subcommand — which is
+    out of scope for v1.
+  - Exposing the threshold as an env var creates a tunable that 99 %
+    of users will never touch and that has no good "you're choosing
+    wrong" feedback path.
+  - The constant is `public static`, so anyone who really needs to
+    override it for a downstream binary can do so with a one-line patch.
+- **If the user wants (b)**: add `ELEVENLABS_STREAMING_THRESHOLD_BYTES`
+  to `ConfigResolver.Keys` and `ElevenLabsConfig`; resolve through the
+  factory; update §07D-4.2 to add a tenth row.
+
+#### §07D-13 OQ-D-2 (carried-forward; sharpens plan-007 Az-1) — `AZURE_OPENAI_API_VERSION` resolution layer
+
+- Plan-007 §13 Az-1 asks whether the api-version is required-config or
+  config-guide-documented starter. This design adopts the
+  config-guide-documented-starter approach (the value lives in code as
+  the factory's `?? "2025-03-01-preview"` fallback, and the
+  configuration guide documents the value as a "known-good pin" rather
+  than a silent default).
+- **Sharpening question**: should the factory log the resolved
+  api-version at `info` level on every provider build, so the user
+  always sees which value is in play? Recommendation: **yes** — single
+  log line `Azure provider built: api-version=<value> deployment=<name>`
+  removes any ambiguity about which version is wire-active.
+
+#### §07D-13 OQ-D-3 (NEW) — `TranscriptionMetrics.estimatedCostUSD` field — additive struct change OR separate `TranscriptionCostSummary` struct?
+
+- **Question**: §07D-8 proposes adding `estimatedCostUSD: Double?` to
+  `TranscriptionMetrics`. An alternative is to introduce a new
+  `TranscriptionCostSummary` struct emitted once at session end via a
+  new event variant on `TranscriptionEvent`.
+- **Planner's recommendation**: **add the optional field to
+  `TranscriptionMetrics`.** Rationale:
+  - Single field; back-compat preserved by default value.
+  - The existing `TranscriptionMetricsView` already polls
+    `TranscriptionMetrics` — surfacing cost is one extra `Text(...)`.
+  - A separate end-of-session `TranscriptionCostSummary` event would
+    require new sidecar handling for a value that's already
+    derivable from `billableSeconds × per-engine rate`.
+- **If the user prefers a dedicated struct**: introduce
+  `public struct TranscriptionCostSummary: Sendable, Codable, Equatable`
+  with `provider: String`, `billableSeconds: Double`, `usdCost: Double`,
+  `currency: String`; emit one per session via a new
+  `TranscriptionEvent.costSummary(...)` case. Higher surface, lower
+  ambiguity.
+
+#### Carried forward (plan-007 §13)
+
+- **Az-1** — see OQ-D-2 above.
+- **EL-1** — SRT/VTT generation: API `additional_formats` vs
+  post-process from `words[]` (planner: post-process).
+- **EL-2** — `entity_detection` default ON or OFF (planner: OFF).
+- **EL-3** — `pcm_s16le_16` always-on or runtime-checked (planner:
+  always-on with a static contract comment).
+- **UI-1** — picker layout flat vs "Cloud" submenu (planner: flat).
+
+### §07D-14 References
+
+- Plan that this design complements: `docs/design/plan-007-additional-stt-engines.md`
+- Refined request: `docs/design/refined-request-additional-stt-engines.md`
+- Codebase scan: `docs/reference/codebase-scan-additional-stt-engines.md`
+- Investigation: `docs/reference/investigation-additional-stt-engines.md`
+- Wire-schema research:
+  `docs/research/azure-openai-gpt-4o-mini-transcribe-wire-schema.md`,
+  `docs/research/elevenlabs-stt-wire-schema.md`
+- Existing baseline plans (contracts referenced verbatim):
+  `docs/design/plan-004-rest-batch-transcription.md`,
+  `docs/design/plan-005-apple-speech-streaming.md`
+- Existing project rules: `CLAUDE.md` (Approved Exceptions 001 + 002)
+- Source files inspected for verification:
+  `Sources/MacrecCore/Transcription/TranscriptionProvider.swift`,
+  `…/StreamingTranscriptionSession.swift`,
+  `…/TranscriptionOptions.swift`,
+  `…/AudioWAVEncoder.swift`,
+  `…/Providers/GeminiRESTTranscriptionProvider.swift`,
+  `…/Providers/TranscriptionProviderFactory.swift`,
+  `…/TranscriptEvent.swift` (TranscriptionMetrics),
+  `Sources/MacrecCore/Errors/MacrecError.swift`,
+  `Sources/MacrecCore/Config/RecordingOptions.swift`,
+  `Sources/MacrecCore/Config/ConfigResolver.swift`,
+  `Sources/macrec-ui/Views/ControlBar.swift`,
+  `Sources/macrec-ui/RootView.swift`.
+
+---
+
+## Plan-007 Design — Phase A2 Addendum: Azure OpenAI Realtime Streaming
+
+> **Added 2026-04-29.** This addendum extends §07D (Plan-007 Design)
+> with the technical design for **Phase A2 — Azure OpenAI Realtime
+> Streaming Transcription** (`intent=transcription` over WebSocket).
+> §07D-1..§07D-14 cover Phase A1 (batch REST) and Phase B (ElevenLabs
+> batch); the realtime path lives here (§A2D-1..§A2D-12) so the design
+> is self-contained per phase.
+>
+> **Mandatory inputs read for this addendum**:
+> - `docs/research/azure-openai-realtime-transcription-wire-schema.md`
+>   (primary; supersedes the §14 stub in the batch wire-schema file)
+> - `docs/design/plan-007-additional-stt-engines.md` §A2.1..§A2.11
+> - `docs/design/plan-005-apple-speech-streaming.md` (the in-tree
+>   streaming-provider pattern this phase mirrors)
+> - `Sources/MacrecCore/Transcription/StreamingTranscriptionSession.swift`
+>   (the protocol contract and event shape — verified)
+> - `Sources/MacrecCore/Transcription/TranscriptionProvider.swift`
+>   (the parent protocol — verified unchanged from plan-005)
+>
+> **Approved exceptions honoured**: Exception 001 (Swift), Exception 002
+> (macOS 26 — Phase A2 uses Foundation `URLSessionWebSocketTask` and
+> `AVAudioConverter`, both available on macOS 13+ but actually used
+> with macOS 26 Swift 6 concurrency idioms).
+>
+> **Project rules honoured**: no fallback values for required
+> configuration; no new SwiftPM dependencies (Foundation +
+> `AVFoundation` only); vendor-canonical env-var names; expiration
+> companion env vars per CLAUDE.md `<configuration-guide>`.
+
+### §A2D-1 Architecture overview
+
+#### §A2D-1.1 The realtime provider as a peer of the batch provider
+
+The new realtime provider lives at the same level as the existing
+batch provider, sharing the same Azure config envelope (endpoint,
+deployment, api-key, api-version) but using a completely separate
+session-managed lifecycle on a `URLSessionWebSocketTask` instead of a
+one-shot `URLSession.data(for:)` POST. The two providers register two
+distinct ids in `TranscriptionProviderFactory`:
+
+```
+                          ┌──────────────────────────────────┐
+                          │ TranscriptionProviderFactory     │
+                          │  switch normalized {             │
+                          │    case "azure":                 │  Phase A1
+                          │       AzureOpenAITranscriptionProvider
+                          │    case "azure-openai-realtime": │  Phase A2  (NEW)
+                          │       AzureOpenAIRealtimeTranscriptionProvider
+                          │  }                               │
+                          └────────────────┬─────────────────┘
+                                           │
+                                           ▼
+                  ┌────────────────────────────────────────────┐
+                  │ TranscriptionProvider (unchanged)          │
+                  │   .id "azure"                / "azure-openai-realtime"│
+                  │   .supportedModes = [.batch] / [.streaming]│
+                  └─────────┬──────────────────────────────────┘
+                            │
+       ┌────────────────────┼─────────────────────────────────┐
+       ▼                                                      ▼
+┌─────────────────────────┐                ┌─────────────────────────────────────┐
+│ AzureOpenAITranscription│                │ AzureOpenAIRealtimeTranscription    │
+│ Provider (A1)           │                │ Provider (A2 — final class, Sendable)│
+│ ────────────────────── │                │ ────────────────────────────────── │
+│ AzureOpenAIConfig       │                │ AzureOpenAIRealtimeConfig           │
+│   endpoint, deployment, │                │   (same shared 5 fields)            │
+│   apiVersion, apiKey,   │                │   + vadThreshold, vadPrefixMS,      │
+│   apiKeyExpiresAt       │                │     vadSilenceMS, noiseReduction,   │
+│                         │                │     includeLogprobs,                │
+│                         │                │     deploymentInUrl                 │
+│ MultipartFormDataBuilder│                │                                     │
+│ AudioWAVEncoder         │                │ AudioResampler16to24                │
+│ URLSession.data(for:)   │                │ AudioRingBuffer<Int16> (5 s ring)   │
+│ AzureOpenAIWireTypes    │                │ RealtimeWireTypes (Codable enum)    │
+│ JSONDecoder ──▶ String  │                │ AzureOpenAIRealtimeSession (actor)  │
+│                         │                │   URLSessionWebSocketTask           │
+│                         │                │   AsyncStream<StreamingTranscription│
+│                         │                │     Event> events                   │
+│ supportedModes: [.batch]│                │ supportedModes: [.streaming]        │
+└─────────────────────────┘                └─────────────────────────────────────┘
+       │                                                    │
+       │  String                                            │  AsyncStream
+       ▼                                                    ▼
+       (TranscriptionManager batch path)         (TranscriptionManager streaming path)
+```
+
+The `AudioResampler16to24` and `AudioRingBuffer` collaborate with the
+existing `[Float]` audio source. The flow per audio chunk:
+
+```
+SCKitSystemAudioSource / AVMicrophoneSource
+  │  16 kHz Float32 chunk (2.5 s == 40,000 samples)
+  ▼
+SourceBuffer  (existing — bounded queue)
+  │
+  ▼
+AzureOpenAIRealtimeSession.ingest(_:)        ──┐
+  │                                            │ actor-isolated
+  │  AudioResampler16to24.resample(_:)         │
+  │    Int16 LE @ 24 kHz (1.5× sample count)   │
+  │                                            │
+  │  AudioRingBuffer<Int16>.append(_:)         │   ◄── for replay
+  │                                            │
+  │  Base64-encode → JSON envelope             │
+  │  task.send(.string(json))                  │
+  ▼                                          ──┘
+URLSessionWebSocketTask
+  │
+  ▼  (network)
+Azure /openai/realtime?intent=transcription
+  │
+  ▼  (network)
+URLSessionWebSocketTask.receive() loop  ─────┐
+  │                                          │ actor-isolated
+  │  RealtimeWireTypes.ServerEvent decode    │
+  │  switch on event.type                    │
+  │    .delta ──▶ continuation.yield(.partial)│
+  │    .completed ──▶ continuation.yield(.final)│
+  │    .failed ──▶ continuation.yield(.error)│
+  │  on close 1006 ──▶ attemptReconnect()    │
+  ▼                                          ──┘
+events: AsyncStream<StreamingTranscriptionEvent>
+  │
+  ▼
+TranscriptionManager (existing — streaming path)
+  │
+  ▼
+TranscriptSidecarWriter (.live)  +  LiveTranscriptPanel (UI)
+```
+
+### §A2D-2 Module / file map
+
+All new files under `Sources/MacrecCore/Transcription/Providers/Azure/Realtime/`
+(sibling of `Sources/MacrecCore/Transcription/Providers/Azure/` from
+Phase A1 / §07D-2). Same paths as plan-007 §A2.3:
+
+| File | Public types exported | One-sentence purpose |
+|---|---|---|
+| `Transcription/Providers/Azure/Realtime/AzureOpenAIRealtimeTranscriptionProvider.swift` | `public final class AzureOpenAIRealtimeTranscriptionProvider: TranscriptionProvider, Sendable` | The `TranscriptionProvider` conformer for the realtime path; opens sessions via `openStreamingSession(...)` and throws on `transcribe(...)`. |
+| `Transcription/Providers/Azure/Realtime/AzureOpenAIRealtimeSession.swift` | `public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession` | Owns the `URLSessionWebSocketTask`, the receive loop `Task`, the resampler, the ring buffer, the reconnect timer, and the events `AsyncStream` continuation. |
+| `Transcription/Providers/Azure/Realtime/AzureOpenAIRealtimeConfig.swift` | `public struct AzureOpenAIRealtimeConfig: Sendable, Equatable` | Resolved configuration captured at provider construction; validates URL shape and VAD ranges; throws `MacrecError.transcriptionConfigConflict` on validation failure. |
+| `Transcription/Providers/Azure/Realtime/AzureOpenAIRealtimeError.swift` | `public enum AzureOpenAIRealtimeError: Error, LocalizedError, Sendable` | Realtime-specific typed errors; supplements `AzureOpenAISTTError` from Phase A1 with WS-lifecycle and protocol cases. |
+| `Transcription/Providers/Azure/Realtime/RealtimeWireTypes.swift` | `public enum RealtimeWireTypes` (namespace) — `TranscriptionSessionUpdate`, `SessionConfig`, `InputAudioBufferAppend`, `RealtimeServerEvent`, plus payload structs | All Codable client + server event models. **Crucially, `InputAudioTranscriptionConfig` has NO `model` property** to prevent the RT-1 Azure bug. |
+| `Transcription/Providers/Azure/Realtime/AudioResampler16to24.swift` | `internal struct AudioResampler16to24: Sendable` | `AVAudioConverter`-backed 16 kHz Float → 24 kHz Int16 LE; high-quality mode pinned. |
+| `Transcription/Providers/Azure/Realtime/AudioRingBuffer.swift` | `internal struct AudioRingBuffer<Sample: Sendable>: Sendable` | Generic fixed-capacity FIFO; used as `AudioRingBuffer<Int16>` (capacity 120,000 = 5 s @ 24 kHz) in the session. |
+
+**Factory-registration changes** (extend §07D-2's table):
+
+| File | Symbol | Change |
+|---|---|---|
+| `Transcription/Providers/TranscriptionProviderFactory.swift` | `TranscriptionProviderFactoryInput` | Add 6 new optional fields for the realtime VAD config (`azureOpenAIRealtimeVADThreshold: Double?`, `…VADPrefixPaddingMS: Int?`, `…VADSilenceMS: Int?`, `…NoiseReduction: String?`, `…IncludeLogprobs: Bool?`, `…DeploymentInUrl: Bool?`). |
+| `Transcription/Providers/TranscriptionProviderFactory.swift` | `TranscriptionProviderFactory.build(_:)` | Add `case "azure-openai-realtime":` branch before `default`. |
+| `Config/RecordingOptions.swift` | `enum TranscriptionProviderId` | Add `case azureOpenAIRealtime = "azure-openai-realtime"`. |
+| `Config/RecordingOptions.swift` | `struct RecordingOptions` | Add 6 new optional stored properties (mirror the factory input fields). |
+| `Config/ConfigResolver.swift` | `enum Keys` | Add `azureOpenAIRealtimeVADThreshold`, `…VADPrefixPaddingMS`, `…VADSilenceMS`, `…NoiseReduction`, `…IncludeLogprobs`, `…DeploymentInUrl`. |
+| `Config/ConfigResolver.swift` | `resolve(cliOverrides:)` switch | Extend the existing Azure branch to also resolve the realtime keys when `provider == .azureOpenAIRealtime`. |
+
+### §A2D-3 Type contracts (Swift signatures)
+
+All signatures below are **verified** against
+`Sources/MacrecCore/Transcription/StreamingTranscriptionSession.swift`
+and `Sources/MacrecCore/Transcription/TranscriptionProvider.swift`
+(both unchanged from plan-005).
+
+#### §A2D-3.1 `AzureOpenAIRealtimeTranscriptionProvider`
+
+```swift
+import Foundation
+
+public final class AzureOpenAIRealtimeTranscriptionProvider: TranscriptionProvider, @unchecked Sendable {
+    public let id: String = "azure-openai-realtime"
+    public let displayName: String = "Azure OpenAI Realtime"
+    public let supportedModes: Set<TranscriptionMode> = [.streaming]
+
+    private let config: AzureOpenAIRealtimeConfig
+    private let urlSession: URLSession
+    private let logger = LoggerFactory.make("macrec.transcription.azure-realtime")
+
+    public init(config: AzureOpenAIRealtimeConfig, urlSession: URLSession = .shared) {
+        self.config = config
+        self.urlSession = urlSession
+    }
+
+    /// Realtime provider does not support batch — explicit throw.
+    public func transcribe(
+        samples: [Float],
+        source: SourceTag,
+        options: TranscriptionOptions
+    ) async throws -> String {
+        throw MacrecError.transcriptionConfigConflict(
+            reason: "Azure realtime provider does not support batch mode; use --transcribe azure for batch."
+        )
+    }
+
+    public func openStreamingSession(
+        source: SourceTag,
+        options: TranscriptionOptions
+    ) async throws -> any StreamingTranscriptionSession {
+        return AzureOpenAIRealtimeSession(
+            config: config,
+            source: source,
+            options: options,
+            urlSession: urlSession
+        )
+    }
+}
+```
+
+#### §A2D-3.2 `AzureOpenAIRealtimeSession`
+
+```swift
+import AVFoundation
+import Foundation
+
+public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
+    // MARK: - Public StreamingTranscriptionSession surface
+    public nonisolated let events: AsyncStream<StreamingTranscriptionEvent>
+
+    public func ingest(_ samples: [Float]) async {
+        // 1. Resample 16→24 kHz Int16
+        let pcm16 = await resampler.resample(samples)
+        // 2. Append to ring buffer for replay
+        ringBuffer.append(contentsOf: pcm16)
+        // 3. Send 100 ms chunks to WS
+        try? await sendAudioChunks(pcm16)
+    }
+
+    public func finish() async {
+        userInitiatedClose = true
+        await closeWebSocket(code: .normalClosure, reason: nil)
+        eventsContinuation.finish()
+    }
+
+    // MARK: - Internal state
+    private let config: AzureOpenAIRealtimeConfig
+    private let source: SourceTag
+    private let options: TranscriptionOptions
+    private let urlSession: URLSession
+
+    private var task: URLSessionWebSocketTask?
+    private var receiveLoop: Task<Void, Never>?
+    private var preemptiveReconnectTask: Task<Void, Never>?
+
+    private let resampler: AudioResampler16to24
+    private var ringBuffer: AudioRingBuffer<Int16>            // capacity 120_000 (5 s @ 24 kHz)
+    private let eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation
+
+    private var sessionStart: Date?
+    private var audioSamplesCommitted: Int = 0
+    private var lastFinalRange: ClosedRange<Date>?            // for RT-RISK-3 dedupe
+    private var userInitiatedClose: Bool = false
+    private var reconnectAttempts: Int = 0
+    private var metrics = StreamingProviderMetrics()
+
+    // MARK: - Init
+    public init(
+        config: AzureOpenAIRealtimeConfig,
+        source: SourceTag,
+        options: TranscriptionOptions,
+        urlSession: URLSession
+    ) {
+        self.config = config
+        self.source = source
+        self.options = options
+        self.urlSession = urlSession
+
+        var continuation: AsyncStream<StreamingTranscriptionEvent>.Continuation!
+        self.events = AsyncStream { continuation = $0 }
+        self.eventsContinuation = continuation
+
+        self.resampler = AudioResampler16to24()
+        self.ringBuffer = AudioRingBuffer<Int16>(capacity: 120_000)
+
+        Task { await self.openWebSocket() }
+    }
+
+    // MARK: - Lifecycle (private helpers)
+    private func openWebSocket() async { /* see §A2D-6 sequence */ }
+    private func handleClose(code: URLSessionWebSocketTask.CloseCode, reason: Data?) async { /* see §A2D-6 */ }
+    private func attemptReconnectWithReplay() async { /* see §A2D-6 */ }
+    private func sendAudioChunks(_ samples: [Int16]) async throws { /* 100 ms chunks */ }
+    private func emit(_ event: StreamingTranscriptionEvent) { eventsContinuation.yield(event) }
+    private func closeWebSocket(code: URLSessionWebSocketTask.CloseCode, reason: Data?) async { /* … */ }
+}
+```
+
+#### §A2D-3.3 `AzureOpenAIRealtimeConfig`
+
+```swift
+public struct AzureOpenAIRealtimeConfig: Sendable, Equatable {
+    public let endpoint: URL                  // https://{resource}.openai.azure.com (no trailing slash)
+    public let deployment: String             // user-chosen deployment name
+    public let apiVersion: String             // "2025-04-01-preview"
+    public let apiKey: String                 // resolved from AZURE_OPENAI_API_KEY
+    public let apiKeyExpiresAt: Date?
+
+    public let vadThreshold: Double           // 0.0..1.0, default 0.5
+    public let vadPrefixPaddingMS: Int        // ≥ 0, default 300
+    public let vadSilenceMS: Int              // ≥ 0, default 200
+    public let noiseReduction: NoiseReduction // .nearField | .farField | .none
+    public let includeLogprobs: Bool          // default false
+    public let deploymentInUrl: Bool          // default false (per OQ-A2-2)
+
+    public enum NoiseReduction: String, Sendable, Equatable {
+        case nearField = "near_field"
+        case farField  = "far_field"
+        case none      = "none"
+    }
+
+    public init(...) throws {
+        // Validates endpoint scheme == "https", deployment non-empty,
+        // vadThreshold in 0.0..1.0, vadPrefixPaddingMS ≥ 0,
+        // vadSilenceMS ≥ 0, noiseReduction enum.
+        // Throws MacrecError.transcriptionConfigConflict on any failure.
+    }
+
+    /// Build the wss:// URL for the WS upgrade.
+    public func buildWebSocketURL() -> URL {
+        var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)!
+        components.scheme = "wss"
+        components.path = "/openai/realtime"
+        var queryItems = [
+            URLQueryItem(name: "api-version", value: apiVersion),
+            URLQueryItem(name: "intent", value: "transcription"),
+        ]
+        if deploymentInUrl {
+            queryItems.append(URLQueryItem(name: "deployment", value: deployment))
+        }
+        components.queryItems = queryItems
+        return components.url!
+    }
+}
+```
+
+#### §A2D-3.4 `AzureOpenAIRealtimeError`
+
+```swift
+public enum AzureOpenAIRealtimeError: Error, LocalizedError, Sendable {
+    // WS lifecycle
+    case connectionFailed(underlying: Error)
+    case unauthorizedUpgrade
+    case policyViolation
+    case abnormalClose(code: Int)
+    case sessionExpired
+
+    // Session-level protocol (received as `error` events)
+    case sessionRejected(type: String, message: String)
+    case rateLimited(resetSeconds: Double?)
+    case internalServerError(message: String)
+    case modelFieldRejected             // RT-1: model field was sent (regression-only)
+
+    // Item-level (non-fatal)
+    case itemTranscriptionFailed(itemId: String, message: String)
+
+    // Audio / format
+    case audioFormatMismatch(reason: String)
+
+    // Reconnect
+    case reconnectExhausted(attempts: Int)
+
+    // Catch-all
+    case unexpectedEvent(name: String)
+
+    public var errorDescription: String? { /* localized strings per case */ }
+}
+```
+
+#### §A2D-3.5 `AudioResampler16to24`
+
+```swift
+import AVFoundation
+
+internal struct AudioResampler16to24: Sendable {
+    private let converter: AVAudioConverter
+
+    init() {
+        let inputFmt = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 16_000,
+            channels: 1,
+            interleaved: false
+        )!
+        let outputFmt = AVAudioFormat(
+            commonFormat: .pcmFormatInt16,
+            sampleRate: 24_000,
+            channels: 1,
+            interleaved: true
+        )!
+        self.converter = AVAudioConverter(from: inputFmt, to: outputFmt)!
+        // High-quality mode (RT-RISK-2):
+        self.converter.sampleRateConverterQuality = AVAudioQuality.max.rawValue
+        self.converter.primeMethod = .normal
+    }
+
+    /// Resample 16 kHz Float → 24 kHz Int16 LE. Output sample count is
+    /// `floor(inputCount * 1.5)` ± 1.
+    func resample(_ floats: [Float]) -> [Int16] {
+        // … AVAudioConverter pull-style call returning [Int16] …
+    }
+}
+```
+
+#### §A2D-3.6 `AudioRingBuffer`
+
+```swift
+internal struct AudioRingBuffer<Sample: Sendable>: Sendable {
+    private var buffer: [Sample]
+    private let capacity: Int
+    private var head: Int = 0
+    private var count: Int = 0
+
+    init(capacity: Int) {
+        self.capacity = capacity
+        self.buffer = Array(repeating: nil as Sample? as! Sample, count: capacity)  // pseudo
+    }
+
+    mutating func append(contentsOf samples: [Sample]) { /* circular write */ }
+
+    /// Returns the current contents in chronological order (oldest first).
+    func snapshot() -> [Sample] { /* copy out in chronological order */ }
+
+    var currentCount: Int { count }
+}
+```
+
+### §A2D-4 RealtimeWireTypes module
+
+The `RealtimeWireTypes` namespace contains a Codable model for every
+client and server event documented in the realtime research §3-§6. The
+critical rule: **`InputAudioTranscriptionConfig` has NO `model`
+property**, by design, to prevent the RT-1 Azure server bug.
+
+```swift
+public enum RealtimeWireTypes {
+
+    // ============================================================
+    // CLIENT → SERVER events
+    // ============================================================
+
+    public struct TranscriptionSessionUpdate: Encodable, Sendable {
+        public let type: String = "transcription_session.update"
+        public let session: SessionConfig
+        public init(session: SessionConfig) { self.session = session }
+    }
+
+    public struct SessionConfig: Encodable, Sendable {
+        public let inputAudioFormat: String                          // "pcm16"
+        public let inputAudioTranscription: InputAudioTranscriptionConfig
+        public let turnDetection: TurnDetectionConfig?
+        public let inputAudioNoiseReduction: NoiseReductionConfig?
+        public let include: [String]?
+        // NOTE: NO `model` field by design — RT-1 Azure bug prevention.
+
+        public init(
+            inputAudioFormat: String = "pcm16",
+            inputAudioTranscription: InputAudioTranscriptionConfig,
+            turnDetection: TurnDetectionConfig? = nil,
+            inputAudioNoiseReduction: NoiseReductionConfig? = nil,
+            include: [String]? = nil
+        ) {
+            self.inputAudioFormat = inputAudioFormat
+            self.inputAudioTranscription = inputAudioTranscription
+            self.turnDetection = turnDetection
+            self.inputAudioNoiseReduction = inputAudioNoiseReduction
+            self.include = include
+        }
+
+        public enum CodingKeys: String, CodingKey {
+            case inputAudioFormat = "input_audio_format"
+            case inputAudioTranscription = "input_audio_transcription"
+            case turnDetection = "turn_detection"
+            case inputAudioNoiseReduction = "input_audio_noise_reduction"
+            case include
+        }
+    }
+
+    public struct InputAudioTranscriptionConfig: Encodable, Sendable {
+        public let language: String?
+        public let prompt: String?
+        // CRITICAL: NO `model` field. Including it triggers RT-1 on Azure.
+    }
+
+    public struct TurnDetectionConfig: Encodable, Sendable {
+        public let type: String                       // "server_vad"
+        public let threshold: Double
+        public let prefixPaddingMS: Int
+        public let silenceDurationMS: Int
+        public let createResponse: Bool
+
+        public enum CodingKeys: String, CodingKey {
+            case type, threshold
+            case prefixPaddingMS    = "prefix_padding_ms"
+            case silenceDurationMS  = "silence_duration_ms"
+            case createResponse     = "create_response"
+        }
+    }
+
+    public struct NoiseReductionConfig: Encodable, Sendable {
+        public let type: String                       // "near_field" | "far_field"
+    }
+
+    public struct InputAudioBufferAppend: Encodable, Sendable {
+        public let type: String = "input_audio_buffer.append"
+        public let audio: String                      // base64-encoded PCM16 LE 24 kHz mono
+    }
+
+    public struct InputAudioBufferCommit: Encodable, Sendable {
+        public let type: String = "input_audio_buffer.commit"
+    }
+
+    public struct InputAudioBufferClear: Encodable, Sendable {
+        public let type: String = "input_audio_buffer.clear"
+    }
+
+    // ============================================================
+    // SERVER → CLIENT events (decoded from JSON text frames)
+    // ============================================================
+
+    public enum RealtimeServerEvent: Decodable, Sendable {
+        case sessionCreated(eventId: String, sessionId: String)
+        case sessionUpdated(eventId: String, sessionId: String)
+        case transcriptionSessionCreated(eventId: String, sessionId: String)   // alias seen on some envs
+        case transcriptionSessionUpdated(eventId: String, sessionId: String)
+        case inputAudioBufferSpeechStarted(audioStartMs: Int, itemId: String)
+        case inputAudioBufferSpeechStopped(audioEndMs: Int, itemId: String)
+        case inputAudioBufferCommitted(previousItemId: String?, itemId: String)
+        case inputAudioBufferCleared
+        case conversationItemCreated(itemId: String)
+        case conversationItemInputAudioTranscriptionDelta(
+            eventId: String,
+            itemId: String,
+            contentIndex: Int,
+            delta: String
+        )
+        case conversationItemInputAudioTranscriptionCompleted(
+            eventId: String,
+            itemId: String,
+            contentIndex: Int,
+            transcript: String,
+            usage: UsageInfo?
+        )
+        case conversationItemInputAudioTranscriptionFailed(
+            eventId: String,
+            itemId: String,
+            error: AzureErrorPayload
+        )
+        case error(eventId: String, error: AzureErrorPayload)
+        case rateLimitsUpdated(eventId: String, rateLimits: [RateLimitInfo])
+        case unknown(type: String)
+
+        private enum CodingKeys: String, CodingKey { case type }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            let type_ = try container.decode(String.self, forKey: .type)
+            switch type_ {
+            case "session.created":
+                let p = try SessionPayload(from: decoder)
+                self = .sessionCreated(eventId: p.eventId, sessionId: p.session.id)
+            case "session.updated":
+                let p = try SessionPayload(from: decoder)
+                self = .sessionUpdated(eventId: p.eventId, sessionId: p.session.id)
+            case "transcription_session.created":
+                let p = try SessionPayload(from: decoder)
+                self = .transcriptionSessionCreated(eventId: p.eventId, sessionId: p.session.id)
+            case "transcription_session.updated":
+                let p = try SessionPayload(from: decoder)
+                self = .transcriptionSessionUpdated(eventId: p.eventId, sessionId: p.session.id)
+            case "input_audio_buffer.speech_started":
+                let p = try SpeechStartedPayload(from: decoder)
+                self = .inputAudioBufferSpeechStarted(audioStartMs: p.audioStartMs, itemId: p.itemId)
+            case "input_audio_buffer.speech_stopped":
+                let p = try SpeechStoppedPayload(from: decoder)
+                self = .inputAudioBufferSpeechStopped(audioEndMs: p.audioEndMs, itemId: p.itemId)
+            case "input_audio_buffer.committed":
+                let p = try CommittedPayload(from: decoder)
+                self = .inputAudioBufferCommitted(previousItemId: p.previousItemId, itemId: p.itemId)
+            case "input_audio_buffer.cleared":
+                self = .inputAudioBufferCleared
+            case "conversation.item.created":
+                let p = try ItemCreatedPayload(from: decoder)
+                self = .conversationItemCreated(itemId: p.item.id)
+            case "conversation.item.input_audio_transcription.delta":
+                let p = try DeltaPayload(from: decoder)
+                self = .conversationItemInputAudioTranscriptionDelta(
+                    eventId: p.eventId, itemId: p.itemId,
+                    contentIndex: p.contentIndex, delta: p.delta
+                )
+            case "conversation.item.input_audio_transcription.completed":
+                let p = try CompletedPayload(from: decoder)
+                self = .conversationItemInputAudioTranscriptionCompleted(
+                    eventId: p.eventId, itemId: p.itemId,
+                    contentIndex: p.contentIndex,
+                    transcript: p.transcript, usage: p.usage
+                )
+            case "conversation.item.input_audio_transcription.failed":
+                let p = try FailedPayload(from: decoder)
+                self = .conversationItemInputAudioTranscriptionFailed(
+                    eventId: p.eventId, itemId: p.itemId, error: p.error
+                )
+            case "error":
+                let p = try ErrorEventPayload(from: decoder)
+                self = .error(eventId: p.eventId, error: p.error)
+            case "rate_limits.updated":
+                let p = try RateLimitsPayload(from: decoder)
+                self = .rateLimitsUpdated(eventId: p.eventId, rateLimits: p.rateLimits)
+            default:
+                self = .unknown(type: type_)
+            }
+        }
+    }
+
+    // Payload structs (each matching the JSON shape of one event):
+    public struct AzureErrorPayload: Decodable, Sendable {
+        public let type: String?
+        public let code: String?
+        public let message: String
+        public let param: String?
+    }
+
+    public struct UsageInfo: Decodable, Sendable {
+        public let totalTokens: Int?
+        public let inputTokens: Int?
+        public let outputTokens: Int?
+        public enum CodingKeys: String, CodingKey {
+            case totalTokens  = "total_tokens"
+            case inputTokens  = "input_tokens"
+            case outputTokens = "output_tokens"
+        }
+    }
+
+    public struct RateLimitInfo: Decodable, Sendable {
+        public let name: String
+        public let limit: Int
+        public let remaining: Int
+        public let resetSeconds: Double
+        public enum CodingKeys: String, CodingKey {
+            case name, limit, remaining
+            case resetSeconds = "reset_seconds"
+        }
+    }
+
+    // (SessionPayload / SpeechStartedPayload / SpeechStoppedPayload /
+    //  CommittedPayload / ItemCreatedPayload / DeltaPayload /
+    //  CompletedPayload / FailedPayload / ErrorEventPayload /
+    //  RateLimitsPayload omitted for brevity — each is a flat
+    //  Decodable struct mirroring the §5 server-event JSON shapes.)
+}
+```
+
+### §A2D-5 State machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> idle
+    idle --> connecting: openWebSocket()
+    connecting --> ready: 101 Upgrade + session.created
+    connecting --> closed: connection failed
+    ready --> buffering: transcription_session.update sent + session.updated received
+    buffering --> buffering: ingest(samples) → input_audio_buffer.append
+    buffering --> buffering: server delta → emit(.partial)
+    buffering --> committed: input_audio_buffer.speech_stopped
+    committed --> completed: conversation.item.input_audio_transcription.completed → emit(.final)
+    completed --> buffering: next utterance
+    buffering --> reconnecting: WS close 1006 / 1001 / 1011
+    committed --> reconnecting: WS close 1006 / 1001 / 1011
+    completed --> reconnecting: WS close 1006 / 1001 / 1011
+    reconnecting --> ready: reconnect successful (≤ 3 attempts)
+    reconnecting --> closed: reconnect attempts exhausted (.reconnectExhausted)
+    buffering --> reconnecting: 58-min pre-emptive timer fires (after next .committed)
+    buffering --> closed: WS close 1008 (.policyViolation)
+    buffering --> closed: finish() (close 1000)
+    closed --> [*]
+```
+
+### §A2D-6 Reconnect-with-replay flow
+
+```mermaid
+sequenceDiagram
+    participant App as macrec / UI
+    participant Sess as AzureOpenAIRealtimeSession (actor)
+    participant Ring as AudioRingBuffer<Int16>
+    participant Resamp as AudioResampler16to24
+    participant WS as URLSessionWebSocketTask
+    participant Azure as Azure /openai/realtime
+
+    App->>Sess: ingest([Float] @ 16 kHz)
+    Sess->>Resamp: resample(samples)
+    Resamp-->>Sess: [Int16] @ 24 kHz
+    Sess->>Ring: append(contentsOf:)
+    Sess->>WS: send(.string(JSON envelope))
+    WS->>Azure: input_audio_buffer.append (text frame)
+
+    Note over Azure,WS: ⚡ Network glitch / APIM timeout
+
+    Azure-->>WS: WS close 1006 (no close frame)
+    WS-->>Sess: handleClose(.abnormalClosure, nil)
+    Sess->>Sess: emit(.error("reconnecting attempt 1/3…"))
+    Sess->>Sess: attemptReconnectWithReplay()
+
+    Sess->>WS: cancel old task
+    Sess->>WS: new URLSessionWebSocketTask(with: request + api-key header)
+    WS->>Azure: HTTP/1.1 101 Upgrade
+    Azure-->>WS: 101 Switching Protocols
+    Azure->>WS: session.created
+    WS-->>Sess: RealtimeServerEvent.sessionCreated
+    Sess->>WS: send(.string(transcription_session.update))
+    Azure->>WS: session.updated
+    WS-->>Sess: RealtimeServerEvent.sessionUpdated
+
+    Sess->>Ring: snapshot()  (last 5 s = 120 000 Int16 samples)
+    Ring-->>Sess: [Int16]
+    loop 50 × 100 ms chunks of 4 800 Int16 each
+        Sess->>WS: send(input_audio_buffer.append base64)
+        WS->>Azure: text frame
+    end
+    Note over Sess: Replay complete; resume normal ingest()
+
+    App->>Sess: ingest(more samples)
+    Sess->>WS: send(...)
+    Azure->>WS: speech_started → delta → committed → completed
+    WS-->>Sess: RealtimeServerEvent.delta + .completed
+    Sess->>Sess: dedupe by lastFinalRange (RT-RISK-3)
+    Sess->>App: emit(.partial), emit(.final)
+```
+
+### §A2D-7 Pre-emptive 58-min reconnect flow
+
+```mermaid
+sequenceDiagram
+    participant App as macrec
+    participant Sess as AzureOpenAIRealtimeSession (actor)
+    participant Timer as preemptiveReconnectTask
+    participant Azure as Azure /openai/realtime
+
+    Note over Sess: openWebSocket() at T=0
+    Sess->>Sess: sessionStart = Date()
+    Sess->>Timer: spawn Task { sleep 58 min; trigger reconnect }
+
+    loop During minute 0..57
+        App->>Sess: ingest(samples)
+        Sess->>Azure: input_audio_buffer.append
+        Azure->>Sess: delta / completed
+    end
+
+    Timer-->>Sess: 58:00 — wake up
+    Note over Sess: Wait for next safe boundary
+    alt currently mid-utterance (no speech_stopped yet)
+        loop wait up to 90 s
+            Azure->>Sess: speech_stopped + committed
+        end
+    end
+
+    Sess->>Sess: emit(.metrics(reconnecting=true))
+    Sess->>Sess: attemptReconnectWithReplay() (same as §A2D-6 but pre-emptive)
+
+    Note over Sess: New session at T=58:01; sessionStart reset
+    Sess->>Timer: spawn fresh 58-min Task
+```
+
+### §A2D-8 Concurrency model
+
+#### §A2D-8.1 Events `AsyncStream`
+
+The `AzureOpenAIRealtimeSession` exposes its events as
+`nonisolated let events: AsyncStream<StreamingTranscriptionEvent>`.
+This matches the existing `StreamingTranscriptionSession` protocol
+contract — callers can iterate `for await event in session.events`
+from any isolation context without crossing actor boundaries on each
+yield. The actor's internal `eventsContinuation` is yielded to from
+inside the actor, so there is no race on the continuation.
+
+#### §A2D-8.2 WS receive loop
+
+The session owns a long-lived `Task<Void, Never>` (`receiveLoop`) that
+runs:
+
+```swift
+private func startReceiveLoop() {
+    receiveLoop = Task { [weak self] in
+        guard let self = self else { return }
+        while !Task.isCancelled {
+            do {
+                let message = try await self.task!.receive()
+                await self.handleIncomingMessage(message)
+            } catch {
+                await self.handleReceiveError(error)
+                return
+            }
+        }
+    }
+}
+```
+
+`handleIncomingMessage` is `async` (actor-isolated), so the receive
+loop hops onto the actor for every decoded event — no shared
+mutable state outside the actor boundary.
+
+#### §A2D-8.3 Pre-emptive reconnect timer
+
+The 58-min timer is also a long-lived `Task<Void, Never>`
+(`preemptiveReconnectTask`). It uses `Task.sleep(for:)` for the bulk
+of the wait, then awaits the next `.committed` event before
+triggering the reconnect.
+
+#### §A2D-8.4 Graceful close vs aborted close
+
+- **`finish()`** is the user-initiated close path. It sets
+  `userInitiatedClose = true`, sends WS close 1000 (normal closure),
+  cancels `receiveLoop` and `preemptiveReconnectTask`, finishes the
+  events continuation, and returns. The events stream closes cleanly
+  — caller's `for await` loop terminates.
+- **WS close 1006 (abnormal)** never sets `userInitiatedClose`, so
+  the close handler routes to `attemptReconnectWithReplay()` instead
+  of finishing the events stream. The events stream stays open
+  through the reconnect; only after reconnect attempts are exhausted
+  does the session emit `.error(.reconnectExhausted)` and finish the
+  stream.
+
+### §A2D-9 Cost calculation
+
+Per realtime research §10, billing is `$0.003 / minute` of audio
+*committed* (not WS connection time). The session tracks this as
+`audioSamplesCommitted` (incremented on `input_audio_buffer.committed`
+events).
+
+```swift
+extension AzureOpenAIRealtimeSession {
+    /// USD cost so far for this session's committed audio.
+    public func currentEstimatedCostUSD() -> Double {
+        let audioMinutes = Double(audioSamplesCommitted) / (24_000.0 * 60.0)
+        return audioMinutes * 0.003
+    }
+}
+```
+
+The pricing constant lives at:
+`Sources/MacrecCore/Transcription/Providers/Azure/Realtime/AzureOpenAIRealtimeSession.swift`
+as a private static `let azureRealtimePerMinuteUSD: Double = 0.003`.
+
+The cost rides on the existing `TranscriptionMetrics` channel via the
+optional `estimatedCostUSD: Double?` field added in §07D-8 (shared
+with Phase A1 batch and Phase B). Per metrics tick (typically once
+per minute), the session computes the current cost and emits
+`.metrics(StreamingProviderMetrics(... lastFinalLatencyMs ...))` plus
+a separate `TranscriptionEvent.metrics(TranscriptionMetrics(... estimatedCostUSD: cost))`
+on the manager channel.
+
+### §A2D-10 Back-compat impact
+
+#### §A2D-10.1 `TranscriptionProviderId` enum
+
+Add one case (in addition to the three from §07D-9.1):
+
+```swift
+public enum TranscriptionProviderId: String, CaseIterable, Sendable, Codable, Equatable {
+    case none
+    case apple
+    case gemini
+    case geminiLive          = "gemini-live"
+    case whisperkit                                    // §07D-9.1 drift fix
+    case azure                                         // §07D-9.1 (Phase A1)
+    case azureOpenAIRealtime = "azure-openai-realtime" // NEW — Phase A2
+    case elevenlabs                                    // §07D-9.1 (Phase B)
+}
+```
+
+#### §A2D-10.2 Switch-statement extension list (extend §07D-9.6)
+
+Every existing exhaustive `switch` over `TranscriptionProviderId` must
+gain one new branch for `.azureOpenAIRealtime`:
+
+| Site | File | New branch |
+|---|---|---|
+| `ConfigResolver.resolve(...)` API-key resolution switch | `Sources/MacrecCore/Config/ConfigResolver.swift:345-354` | `case .azureOpenAIRealtime: return value(Keys.azureOpenAIApiKey)` (same as `.azure`) |
+| `ConfigResolver` expiry warning | `…:357-360` | Read `AZURE_OPENAI_API_KEY_EXPIRES_AT` (same as `.azure`) |
+| `TranscriptionProviderFactory.build(_:)` | `Sources/MacrecCore/Transcription/Providers/TranscriptionProviderFactory.swift:46-93` | New `case "azure-openai-realtime":` branch building `AzureOpenAIRealtimeTranscriptionProvider` |
+| `ControlBar.startTapped()` API-key resolution switch | `Sources/macrec-ui/Views/ControlBar.swift` (post-§07D-9.6) | `case "azure-openai-realtime": envKey = "AZURE_OPENAI_API_KEY"` |
+| `RootView.isCloudProvider(_:)` | `Sources/macrec-ui/RootView.swift:316-323` | Add `"azure-openai-realtime"` to the cloud set |
+| `TranscriptionPicker` provider rows | `Sources/macrec-ui/Views/Transcription/TranscriptionPicker.swift:72-77` | Insert new entry "Azure OpenAI Realtime (cloud, streaming)" with tag `"azure-openai-realtime"` |
+| `PrivacyDisclosureSheet.bodyText(for:)` | `Sources/macrec-ui/Views/Transcription/PrivacyDisclosureSheet.swift` | New `case "azure-openai-realtime":` returning the realtime-specific copy from plan-007 §A2.9 |
+| `TranscriptionProviderFactoryInput` initialiser | `…/TranscriptionProviderFactory.swift` | Six new optional realtime VAD config fields, all defaulted to nil |
+
+#### §A2D-10.3 Privacy-disclosure copy variant
+
+The realtime copy is materially different from the batch copy because
+the data-flow is materially different (streaming vs file-upload). The
+Phase 0.3 per-provider acknowledgement persistence key uses the
+provider id, so the realtime variant gets its own:
+
+```
+com.local.macrec-ui.transcription.privacy.azure-openai-realtime.acknowledged
+```
+
+Selecting the realtime entry after the batch entry was already
+acknowledged WILL re-show the disclosure (intentionally — see §A2.9).
+
+#### §A2D-10.4 Picker entry
+
+Verbatim from plan-007 §A2.9:
+
+```swift
+Text("Azure OpenAI Realtime (cloud, streaming)").tag("azure-openai-realtime")
+```
+
+The label ends in "(cloud, streaming)" to disambiguate from the batch
+"Azure OpenAI (cloud, batch)" entry (which is also relabeled in the
+same Phase C edit).
+
+### §A2D-11 Open questions
+
+The five Phase A2 open questions (`OQ-A2-1` … `OQ-A2-5`) from
+plan-007 §13. The design's recommendation for each:
+
+- **OQ-A2-1 (Resample location)**: Resample inside the provider
+  (`AudioResampler16to24` in the Realtime/ folder). Cleanest
+  encapsulation; ~5-10 ms latency penalty acceptable.
+- **OQ-A2-2 (`&deployment=` in URL)**: Default off, behind a config
+  flag (`AZURE_OPENAI_REALTIME_DEPLOYMENT_IN_URL=false`). Matches the
+  TechCommunity reference; user can flip if Azure starts rejecting
+  the URL without it.
+- **OQ-A2-3 (Deltas on or completed-only)**: Deltas on. Research
+  confirms the path supports them; matches Apple/Gemini Live UX.
+  Fall-back gate `AZURE_OPENAI_REALTIME_PARTIALS_ENABLED` available
+  if needed.
+- **OQ-A2-4 (VAD config exposure)**: Env vars with documented starter
+  defaults (0.5 / 300 / 200). Lets users tune for noisy environments
+  without recompiling. UI exposure deferred to plan-007.
+- **OQ-A2-5 (Single PR or split)**: Default to single PR per the user's
+  original request, but call out the size increase in `Issues - Pending Items.md`
+  so the user can split if review burden is a concern. Natural seam
+  is "A1 + B + Phase 0/C/D/E for A1+B" in PR 1, "A2 + Phase C/D/E
+  delta for A2" in PR 2.
+
+### §A2D-12 References
+
+- Primary wire schema (Phase A2 design source-of-truth):
+  `docs/research/azure-openai-realtime-transcription-wire-schema.md`
+- Patched batch §14 (now points at the realtime file):
+  `docs/research/azure-openai-gpt-4o-mini-transcribe-wire-schema.md` §14
+- Plan implementing this design: `docs/design/plan-007-additional-stt-engines.md`
+  §A2.1..§A2.11 (and the supporting changes in §A2.4 to §5.x, §C, §D, §E)
+- In-tree streaming-provider pattern referenced for the actor +
+  events shape: `docs/design/plan-005-apple-speech-streaming.md`
+- Streaming protocol contract verified against:
+  `Sources/MacrecCore/Transcription/StreamingTranscriptionSession.swift`,
+  `Sources/MacrecCore/Transcription/TranscriptionProvider.swift`
+- Investigation erratum: top of
+  `docs/reference/investigation-additional-stt-engines.md`
+  (corrects the original "no Azure realtime" finding)
+- Open decisions (OQ-A2-1..5): plan-007 §13 + this design §A2D-11
+- Risk register additions: plan-007 §10 RT-RISK-1..7

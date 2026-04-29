@@ -13,6 +13,121 @@ register, and `docs/design/plan-003-live-transcription.md` §6 risk
 register). They are tracked here so subsequent phases can flag
 residual exposure.
 
+### PLAN-007-DRIFT — `plan-007` drifts from actual code (NEW 2026-04-29)
+Discovered during the Phase-5 Designer pass for plan-007 (additional
+STT engines: Azure OpenAI + ElevenLabs). The plan must be patched
+before any implementation work begins. Drifts:
+
+1. `AudioWAVEncoder.encode(samples:)` is **non-throwing** (see
+   `Sources/MacrecCore/Transcription/AudioWAVEncoder.swift:5`). plan-007
+   §A.3 line 639 and §B.3 line 922 wrap the call in `try`. Drop the
+   `try` keyword in both places.
+2. `CostSummary` and `TranscriptionManagerStats` **do not exist**.
+   The actual struct is `TranscriptionMetrics` in
+   `Sources/MacrecCore/Transcription/TranscriptEvent.swift:29-37`.
+   plan-007 §A.9 (line 824) and §B.9 (line 1129) build extensions on
+   non-existent types. The design (§07D-8) corrects this by putting
+   `costFor(durationSeconds:)` on each provider and proposing one
+   optional new field on `TranscriptionMetrics`.
+3. `ElevenLabsResponse.languageCode` is typed as non-optional in
+   plan-007 §B.5 (line 1041). The wire shape may omit it — the design
+   models it as `String?`.
+4. plan-007 §B.5 only models the single-channel response. That is
+   correct for v1 but should be made explicit (the multi-channel
+   `MultichannelSpeechToTextResponseModel` is intentionally skipped
+   because v1 never sets `use_multi_channel`). Design §07D-3.5 makes
+   this explicit.
+5. `ConfigResolver.resolve` switch at lines 347-354 is currently
+   non-exhaustive after enum extension. plan-007 mentions the
+   `.whisperkit` enum-case fix (§4.5) but does not call out that the
+   compiler will demand new branches for `.whisperkit`, `.azureOpenAI`,
+   and `.elevenLabs`. The design table in §07D-9.6 lists the exact
+   extension.
+
+### PLAN-007-A2 — Phase A2 (Azure Realtime) added to plan-007 (NEW 2026-04-29)
+Phase A2 (Azure OpenAI Realtime over WebSocket) was originally
+deferred to a hypothetical plan-007 because of an incorrect reading
+of the batch wire-schema research's §14. After dedicated deep
+research (`docs/research/azure-openai-realtime-transcription-wire-schema.md`)
+confirmed the path is real, well-documented, and within reach of
+Foundation `URLSessionWebSocketTask`, the user decided to bring the
+work into plan-007. Status of the integration:
+
+- **Plan**: `docs/design/plan-007-additional-stt-engines.md`
+  re-titled to mention realtime; new "Phase A2 — Azure OpenAI Realtime
+  Streaming (WebSocket)" section inserted between Phase A1 (renamed
+  from Phase A) and Phase B; new VAD env vars in §A2.4; new error
+  matrix in §8.1.RT; new risk register entries RT-RISK-1..7 in §10;
+  new sequencing DAG with A1, A2, B as siblings in §11; new open
+  decisions OQ-A2-1..5 appended in §13.
+- **Design**: `docs/design/project-design.md` extended with new
+  section "Plan-007 Design — Phase A2 Addendum: Azure OpenAI Realtime
+  Streaming" (§A2D-1..§A2D-12). This addendum is the **authoritative
+  spec** for the realtime path — Swift type signatures, Codable wire
+  models with the model-field omission baked in by design, state
+  machine, reconnect flow, 58-min pre-emptive reconnect flow,
+  concurrency model, cost calculation, and back-compat impact.
+- **Functions**: `docs/design/project-functions.md` extended with
+  FR-AZ-13..FR-AZ-25 covering the realtime provider type, WebSocket
+  transport, 24 kHz PCM16 framing, 16→24 kHz resample, model-field
+  omission, VAD config, delta-event surface, 1006 reconnect-with-
+  replay, 58-min pre-emptive reconnect, cost calculation, CLI mode,
+  picker entry, and privacy-disclosure variant.
+- **Research files**: §14 of the batch wire-schema patched to strip
+  the `model` field from the example JSON, add the AZURE-SPECIFIC
+  BUG callout, and point at the new realtime research file.
+  Investigation file gained an erratum at the top correcting the
+  original "Azure has no realtime variant" finding.
+
+**Five new open decisions the user must answer before Phase A2
+implementation can start (added to plan-007 §13):**
+
+- **OQ-A2-1** — Resample location: inside `AzureOpenAIRealtimeSession`
+  (planner: yes — isolated change) vs. add a 24 kHz capture path to
+  `SCKitSystemAudioSource` and `AVMicrophoneSource` (cleaner but
+  touches more files).
+- **OQ-A2-2** — Should the WS URL include `&deployment={name}`?
+  (planner: default false, behind a config flag
+  `AZURE_OPENAI_REALTIME_DEPLOYMENT_IN_URL`).
+- **OQ-A2-3** — Ship A2 with delta events on (planner: yes — research
+  confirms they work for `intent=transcription`) or `.completed`-only
+  first?
+- **OQ-A2-4** — Expose `turn_detection.threshold` / `prefix_padding_ms`
+  / `silence_duration_ms` as env vars (planner: yes, with documented
+  starter defaults 0.5 / 300 / 200) or hardcode?
+- **OQ-A2-5** — Single PR for A1 + A2, or split (A1 in PR 1, A2 in
+  PR 2)? Planner: default single PR per the user's original request,
+  but the size increase is non-trivial — splitting would reduce
+  review burden if the user prefers.
+
+**Carried-forward dependency on PLAN-007-DRIFT**: the five drifts
+listed in `PLAN-007-DRIFT` above are unchanged by Phase A2 — they
+must still be fixed in plan-007 §A.3, §A.9, §B.5 (twice), and the
+ConfigResolver switch before any code lands, regardless of whether
+A2 ships in the same PR or a follow-up.
+
+**Authoritative spec**: the new design subsection §A2D-1..§A2D-12
+in `docs/design/project-design.md` is the source of truth for the
+realtime path. The plan-007 §A2 section is the WHAT/WHEN; §A2D is
+the HOW.
+
+### PLAN-007-OQ — Open questions for plan-007 (NEW 2026-04-29)
+Decisions the user must confirm before implementation starts. The
+five plan-007 §13 questions are listed there; three additional
+questions surfaced during design:
+
+- **OQ-D-1**: Where should the ElevenLabs streaming-upload threshold
+  (50 MB switchover from in-memory body to `httpBodyStream`) live —
+  hardcoded `public static let` on the provider, or a config var
+  `ELEVENLABS_STREAMING_THRESHOLD_BYTES`? Design recommends hardcoded.
+- **OQ-D-2**: Should the factory log the resolved
+  `AZURE_OPENAI_API_VERSION` at `info` level on every provider build?
+  Design recommends yes.
+- **OQ-D-3**: Cost surface as one extra `Double?` field on the
+  existing `TranscriptionMetrics`, or a new `TranscriptionCostSummary`
+  struct emitted via a new `TranscriptionEvent.costSummary(...)` case?
+  Design recommends extending `TranscriptionMetrics` (minimal churn).
+
 ### UI-PEND-1 — Start/Stop buttons disappear after pressing Stop (FIXED 2026-04-28)
 Reported by the user: after pressing Stop in the menu-bar popover, the
 ControlBar empties out — neither Start nor Stop is visible — leaving

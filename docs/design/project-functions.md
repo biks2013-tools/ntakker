@@ -688,6 +688,86 @@ observable for the REST architecture.
 | FR-AS-11 | Pause/resume produces a clean utterance boundary. | PLANNED (Phase E — plan-005) |
 | FR-AS-12 | `split(nextOutput:)` rotates the sidecar atomically; sessions keep running across the split. | PLANNED (Phase E + Phase G — plan-005) |
 
+#### Additional Cloud STT Engines (plan-007)
+
+The following functional requirements add Azure OpenAI
+`gpt-4o-mini-transcribe` (batch REST) and ElevenLabs `scribe_v2`
+(batch REST) as additional `TranscriptionProvider` conformers
+alongside the existing `NoOp`, `Fake`, `GeminiREST`, `AppleSpeech`,
+and `WhisperKit` providers. Both are batch-only in v1; their
+streaming variants (Azure `/realtime`, ElevenLabs
+`scribe_v2_realtime`) are deferred to plan-007. Apple SpeechAnalyzer
+remains the default. See `docs/design/plan-007-additional-stt-engines.md`
+for the implementation plan and
+`docs/design/configuration-guide.md` §LT-Az / §LT-EL for the new
+env vars.
+
+##### Azure OpenAI `gpt-4o-mini-transcribe`
+
+| FR | Description | Status |
+|---|---|---|
+| FR-AZ-1  | New provider id `azure` for `--transcribe`; batch REST via `AzureOpenAITranscriptionProvider`. URL pattern: `POST {AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT}/audio/transcriptions?api-version={AZURE_OPENAI_API_VERSION}`. | PLANNED (Phase A — plan-007) |
+| FR-AZ-2  | Authentication via `api-key: {AZURE_OPENAI_API_KEY}` header (NO `Bearer` prefix). Microsoft Entra ID auth deferred to v2. | PLANNED (Phase A — plan-007) |
+| FR-AZ-3  | `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT` are required env vars when `--transcribe azure` is active; missing → `MacrecError.transcriptionApiKeyMissing(provider:"azure")` (exit 78) or `transcriptionConfigConflict` (exit 64). No fallback values. | PLANNED (Phase A — plan-007) |
+| FR-AZ-4  | `AZURE_OPENAI_API_VERSION` is an optional env var with documented starter `2025-03-01-preview` (per plan-007 §13 Az-1). | PLANNED (Phase A — plan-007) |
+| FR-AZ-5  | Multipart body: `file` (16 kHz mono Int16 WAV from `AudioWAVEncoder`, ≤ 25 MB), `model` (set to deployment name — required by Azure), `response_format=json`, optional `language` (ISO-639-1 stripped of BCP-47 region), optional `prompt`. | PLANNED (Phase A — plan-007) |
+| FR-AZ-6  | Pre-flight 25 MB chunk size check; oversized chunks throw `transcriptionProviderUnavailable` with the 25 MB explanation. | PLANNED (Phase A — plan-007) |
+| FR-AZ-7  | Response decoding: `json` format only (`{"text":"..."}`); `verbose_json`, `srt`, `vtt` are NOT supported by `gpt-4o-mini-transcribe` and are NOT requested. | PLANNED (Phase A — plan-007) |
+| FR-AZ-8  | Error mapping: HTTP 401 → `transcriptionApiKeyMissing`; 403 → `transcriptionPermissionDenied`; 404 (`DeploymentNotFound`) → `transcriptionConfigConflict` with deployment name; 413 → `transcriptionProviderUnavailable` (25 MB); 429 → retry up to 3× honouring `Retry-After`; 500/503 → retry up to 3× with exponential backoff + ±20% jitter. | PLANNED (Phase A — plan-007) |
+| FR-AZ-9  | `openStreamingSession(...)` throws `transcriptionConfigConflict` (batch-only in v1; streaming deferred to plan-007). `supportedModes = [.batch]`. | PLANNED (Phase A — plan-007) |
+| FR-AZ-10 | Cost calculation: `audioSecondsBilled / 60 × $0.003` USD; surfaced via existing `TranscriptionMetrics` channel (FR-58). | PLANNED (Phase A — plan-007) |
+| FR-AZ-11 | Diagnostic response headers logged at `info`: `apim-request-id`, `x-request-id`, `x-ms-region`, `x-ratelimit-remaining-requests`, `x-ratelimit-remaining-tokens`. | PLANNED (Phase A — plan-007) |
+| FR-AZ-12 | `AZURE_OPENAI_API_KEY_EXPIRES_AT` companion env var per CLAUDE.md `<configuration-guide>` rule; warning surfaced ~7 days before expiry. | PLANNED (Phase A — plan-007) |
+
+##### Azure OpenAI Realtime (`gpt-4o-mini-transcribe` over WebSocket — Phase A2, added 2026-04-29)
+
+| FR | Description | Status |
+|---|---|---|
+| FR-AZ-13 | New provider type `AzureOpenAIRealtimeTranscriptionProvider` (`final class`, `Sendable`, conforms to `TranscriptionProvider`), id `"azure-openai-realtime"`, displayName `"Azure OpenAI Realtime"`, `supportedModes = [.streaming]`. `transcribe(...)` throws `transcriptionConfigConflict`; `openStreamingSession(...)` returns an `AzureOpenAIRealtimeSession`. | PLANNED (Phase A2 — plan-007) |
+| FR-AZ-14 | WebSocket connection over `URLSessionWebSocketTask` to `wss://{resource}.openai.azure.com/openai/realtime?api-version=2025-04-01-preview&intent=transcription` (with optional `&deployment={name}` per `AZURE_OPENAI_REALTIME_DEPLOYMENT_IN_URL`). Auth via `api-key:` header on the upgrade request (no `Bearer` prefix). | PLANNED (Phase A2 — plan-007) |
+| FR-AZ-15 | Audio framed as PCM16 little-endian mono **24 kHz** (research §6); chunk = 100 ms = 4,800 bytes raw → 6,400 chars base64; wrapped inside `input_audio_buffer.append` JSON text frames (NOT binary frames). | PLANNED (Phase A2 — plan-007) |
+| FR-AZ-16 | 16→24 kHz `AVAudioConverter`-based resample inside the provider (`AudioResampler16to24`); high-quality mode pinned (`sampleRateConverterQuality = .max`); regression test asserts no aliasing > -60 dBFS above source Nyquist. | PLANNED (Phase A2 — plan-007) |
+| FR-AZ-17 | Session-update Codable (`RealtimeWireTypes.SessionConfig` and `InputAudioTranscriptionConfig`) **OMITS the `model` field by design** (RT-1 Azure server bug); regression test (`RealtimeWireTypesTests.modelFieldOmitted`) asserts the encoded JSON never contains the substring `"model"`. | PLANNED (Phase A2 — plan-007) |
+| FR-AZ-18 | VAD configuration via four optional env vars: `AZURE_OPENAI_REALTIME_VAD_THRESHOLD` (default 0.5), `…VAD_PREFIX_PADDING_MS` (default 300), `…VAD_SILENCE_MS` (default 200), `AZURE_OPENAI_REALTIME_NOISE_REDUCTION` (`near_field` \| `far_field` \| `none`, default `near_field`). Invalid values throw `transcriptionConfigConflict` at provider construction. | PLANNED (Phase A2 — plan-007) |
+| FR-AZ-19 | Delta events (`conversation.item.input_audio_transcription.delta`) are surfaced as `StreamingTranscriptionEvent.partial` on the session's `events: AsyncStream<StreamingTranscriptionEvent>`; final transcripts (`…completed`) as `.final`; per-item failures (`…failed`) as `.error`; rate-limit / session errors as `.error`. UI consumes the same channel as Apple SpeechAnalyzer / Gemini Live. | PLANNED (Phase A2 — plan-007) |
+| FR-AZ-20 | WebSocket close 1006 (and 1001 / 1011) triggers reconnect-with-replay: the provider holds the last 5 s of audio in `AudioRingBuffer<Int16>` (capacity 120,000 = 5 s × 24 kHz), reconnects with a new `URLSessionWebSocketTask`, re-sends `transcription_session.update`, and replays the buffered audio in 100 ms chunks. Capped at 3 attempts within 30 s; surfaces `AzureOpenAIRealtimeError.reconnectExhausted` if exceeded. Dedupe-by-overlap protects against double-final from the replay window (RT-RISK-3). | PLANNED (Phase A2 — plan-007) |
+| FR-AZ-21 | Pre-emptive reconnect at 58 minutes to avoid the Azure 60-minute hard session cap (RT-4). The provider waits for the next `input_audio_buffer.committed` (or `speech_stopped`) event before reconnecting (capped at 90 s wait) so an in-flight utterance is not interrupted (RT-RISK-4). | PLANNED (Phase A2 — plan-007) |
+| FR-AZ-22 | Realtime cost calculation: per-minute model `audioMinutes × $0.003` USD where `audioMinutes = audioSamplesCommitted / (24000 × 60)`. `audioSamplesCommitted` increments on `input_audio_buffer.committed` events (so cost reflects what Azure actually charges). Surfaced via the existing `TranscriptionMetrics.estimatedCostUSD` channel. | PLANNED (Phase A2 — plan-007) |
+| FR-AZ-23 | New CLI mode `--transcribe azure-openai-realtime`. New `TranscriptionProviderId.azureOpenAIRealtime = "azure-openai-realtime"` enum case. `TranscriptionProviderFactory.build(_:)` gains a new case branch; missing required env (`AZURE_OPENAI_API_KEY` / `_ENDPOINT` / `_DEPLOYMENT`) throws `transcriptionApiKeyMissing` (exit 78) or `transcriptionConfigConflict` (exit 64). | PLANNED (Phase A2 — plan-007) |
+| FR-AZ-24 | New picker entry "Azure OpenAI Realtime (cloud, streaming)" in `TranscriptionPicker.swift` (the existing batch entry is relabelled to "Azure OpenAI (cloud, batch)" for disambiguation). The inline key-entry section additionally shows the resolved VAD config (read-only) when the active provider is `azure-openai-realtime`. | PLANNED (Phase A2 — plan-007) |
+| FR-AZ-25 | Privacy disclosure variant for realtime streaming: a new `bodyText(for: "azure-openai-realtime")` string emphasising that audio is *streamed* live and is NOT retained per Azure data privacy, plus the 60-min session cap. Per-provider acknowledgement persistence key `com.local.macrec-ui.transcription.privacy.azure-openai-realtime.acknowledged` is independent of the batch Azure key. | PLANNED (Phase A2 — plan-007) |
+
+##### ElevenLabs `scribe_v2`
+
+| FR | Description | Status |
+|---|---|---|
+| FR-EL-1  | New provider id `elevenlabs` for `--transcribe`; batch REST via `ElevenLabsTranscriptionProvider`. URL: `POST https://api.elevenlabs.io/v1/speech-to-text`. | PLANNED (Phase B — plan-007) |
+| FR-EL-2  | Authentication via `xi-api-key: {ELEVENLABS_API_KEY}` header. | PLANNED (Phase B — plan-007) |
+| FR-EL-3  | `ELEVENLABS_API_KEY` is the only required env var; missing → `MacrecError.transcriptionApiKeyMissing(provider:"elevenlabs")` (exit 78). No fallback. | PLANNED (Phase B — plan-007) |
+| FR-EL-4  | Optional env vars resolved through the four-tier chain: `ELEVENLABS_MODEL_ID` (default `scribe_v2`), `ELEVENLABS_LANGUAGE_CODE` (auto-detect when unset), `ELEVENLABS_DIARIZE` (default `false`), `ELEVENLABS_TAG_AUDIO_EVENTS` (default `true`), `ELEVENLABS_NUM_SPEAKERS` (1..32, hint when known), `ELEVENLABS_FILE_FORMAT` (default `pcm_s16le_16` low-latency fast-path), `ELEVENLABS_ENTITY_DETECTION` (OFF by default per plan-007 §13 EL-2 — opt-in carries +30% cost surcharge). | PLANNED (Phase B — plan-007) |
+| FR-EL-5  | Multipart body: `model_id`, `file_format=pcm_s16le_16` (always-on with `AudioWAVEncoder` output per plan-007 §13 EL-3), `file` (16 kHz mono Int16 WAV), optional `language_code`, `diarize`, `num_speakers`, `tag_audio_events`, `timestamps_granularity`, `entity_detection`. | PLANNED (Phase B — plan-007) |
+| FR-EL-6  | Pre-flight checks: chunks > 3 GB throw `transcriptionProviderUnavailable`; chunks > 4.5 hr throw `transcriptionProviderUnavailable`; chunks < 100 ms short-circuit to empty string (no network call). | PLANNED (Phase B — plan-007) |
+| FR-EL-7  | Response decoding: `text`, `language_code`, `language_probability`, `words[]` (with `start`, `end`, `type`, optional `speaker_id` when diarize=true). Multi-channel and webhook variants are NOT requested in v1. | PLANNED (Phase B — plan-007) |
+| FR-EL-8  | Error mapping: HTTP 401 → `transcriptionApiKeyMissing`; 402 (`insufficient_credits`) → `transcriptionProviderUnavailable`; 403 → `transcriptionProviderUnavailable` (plan gate); 413 → 3 GB explanation; 422 (`audio_too_long`) → 4.5 hr explanation; 422 (`invalid_parameters`) → `transcriptionConfigConflict`; 429 (`rate_limit_exceeded` / `system_busy`) → exponential backoff (no `Retry-After` header) up to 3 attempts; 429 (`concurrent_limit_exceeded`) surfaces immediately (no retry); 500/503 → retry up to 3×. | PLANNED (Phase B — plan-007) |
+| FR-EL-9  | `openStreamingSession(...)` throws `transcriptionConfigConflict` pointing to plan-007 (`scribe_v2_realtime` deferred). `supportedModes = [.batch]`. | PLANNED (Phase B — plan-007) |
+| FR-EL-10 | Cost calculation: `audioSecondsBilled / 3600 × $0.22` USD base; +30% when `entity_detection` enabled. Surfaced via existing `TranscriptionMetrics` channel. | PLANNED (Phase B — plan-007) |
+| FR-EL-11 | Diagnostic response headers logged at `info`: `current-concurrent-requests`, `maximum-concurrent-requests`. | PLANNED (Phase B — plan-007) |
+| FR-EL-12 | SRT/VTT generated from `words[].start/end` via existing in-tree writers; ElevenLabs `additional_formats` API field NOT requested in v1 (per plan-007 §13 EL-1). | PLANNED (Phase B — plan-007) |
+| FR-EL-13 | `ELEVENLABS_API_KEY_EXPIRES_AT` companion env var per CLAUDE.md `<configuration-guide>` rule. | PLANNED (Phase B — plan-007) |
+
+##### Cross-cutting (Phase 0 + Phase C + Phase D — plan-007)
+
+| FR | Description | Status |
+|---|---|---|
+| FR-XS-1  | Pre-existing drift fix: `TranscriptionProviderId` enum gains `case whisperkit` so `MACREC_TRANSCRIBE=whisperkit` no longer throws `invalidConfigValue` at parse time. | PLANNED (Phase 0 — plan-007) |
+| FR-XS-2  | `ControlBar.startTapped()` API-key resolution generalised to dispatch on the active provider id (`gemini` → `GOOGLE_API_KEY`, `azure` → `AZURE_OPENAI_API_KEY`, `elevenlabs` → `ELEVENLABS_API_KEY`); fixes the latent hardcoded `GOOGLE_API_KEY` bug. | PLANNED (Phase 0 — plan-007) |
+| FR-XS-3  | `PrivacyDisclosureSheet` gains provider-specific body text and per-provider acknowledgement persistence keys (`com.local.macrec-ui.transcription.privacy.{providerId}.acknowledged`); migration propagates the legacy single-boolean to the Gemini-specific key. | PLANNED (Phase 0 — plan-007) |
+| FR-XS-4  | New reusable `ProviderKeyField` SwiftUI component replaces `GeminiKeyField`; consumed by Gemini, Azure, and ElevenLabs key-entry surfaces. | PLANNED (Phase 0 — plan-007) |
+| FR-XS-5  | New shared `MultipartFormDataBuilder` value type under `Sources/MacrecCore/Transcription/Net/` consumed by both new providers; pure Foundation, no SPM dep. | PLANNED (Phase 0 — plan-007) |
+| FR-XS-6  | `TranscriptionPicker` gains "Azure OpenAI (cloud)" and "ElevenLabs Scribe v2 (cloud)" entries in the existing flat list (per plan-007 §13 UI-1). | PLANNED (Phase C — plan-007) |
+| FR-XS-7  | Configuration guide gains §LT-Az (5 Azure env vars) and §LT-EL (8 ElevenLabs env vars) with purpose, how to obtain, options, defaults, expiration tracking. | PLANNED (Phase D — plan-007) |
+| FR-XS-8  | `docs/tools/macrec.md` and `docs/tools/macrec-ui.md` updated to list `azure` and `elevenlabs` as valid `--transcribe` modes / picker entries; new privacy-disclosure copy documented. | PLANNED (Phase D — plan-007) |
+
 #### AC-LT-1..AC-LT-25 — Acceptance criteria mapping (REST-batch verification)
 
 The full AC-LT-* statements are defined in
