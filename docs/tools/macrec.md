@@ -109,12 +109,19 @@
           --transcribe <provider>
                                   Live transcription provider. Default: apple
                                   (changed from `none` in v1.5 / plan-005).
-                                  Allowed: none | apple | gemini.
+                                  Allowed: none | apple | gemini | soniox |
+                                  whisperkit.
                                   (`gemini-live` is accepted as a deprecated
                                   alias for one release; the resolver lowers
                                   it to `gemini` and logs a deprecation
                                   notice.) Env: MACREC_TRANSCRIBE.
-                                  (FR-48 / plan-003 / plan-004 / plan-005)
+                                  (FR-48 / plan-003 / plan-004 / plan-005 /
+                                  plan-006)
+          --soniox-endpoint <url>
+                                  Soniox WebSocket endpoint override (for
+                                  EU/JP data residency). Default:
+                                  wss://stt-rt.soniox.com/transcribe-websocket.
+                                  Env: MACREC_SONIOX_ENDPOINT. (plan-006)
           --transcribe-source <source>
                                   Audio source for transcription. Default: mixed.
                                   Allowed: system | mic | mixed | both. Env:
@@ -153,11 +160,12 @@
         > **Security note — no `--transcribe-key` flag exists.** API keys are
         > never accepted on the command line (they would otherwise leak into
         > shell history, `ps`, and process-tree dumps). The provider-specific
-        > vendor-canonical env var (`GOOGLE_API_KEY` for `gemini`) is the
-        > only accepted source, resolved through the four-tier configuration
-        > chain. Recommended storage: `~/.tool-agents/macrec/.env` (mode
-        > `0600`). See [docs/design/configuration-guide.md](../design/configuration-guide.md)
-        > §2.21.
+        > vendor-canonical env var (`GOOGLE_API_KEY` for `gemini`,
+        > `SONIOX_API_KEY` for `soniox`) is the only accepted source,
+        > resolved through the four-tier configuration chain. Recommended
+        > storage: `~/.tool-agents/macrec/.env` (mode `0600`). See
+        > [docs/design/configuration-guide.md](../design/configuration-guide.md)
+        > §2.21 (Gemini) and §2.23 (Soniox).
 
         Examples:
 
@@ -215,6 +223,14 @@
             --transcribe gemini \
             --transcribe-format jsonl \
             --output ~/recordings/meeting.m4a --overwrite
+
+        # 10. Soniox cloud streaming with bilingual Greek + English hints
+        #     and a JSONL sidecar.  SONIOX_API_KEY must be exported (or in
+        #     ~/.tool-agents/macrec/.env). Produces ~/talk.m4a +
+        #     ~/talk.transcript.jsonl. Default model: stt-rt-v4.
+        export SONIOX_API_KEY=sk_...   # from https://console.soniox.com
+        macrec start --transcribe soniox --transcribe-language el,en \
+            --output ./talk.m4a --transcribe-format jsonl
         ```
 
         ### `stop`
@@ -460,8 +476,10 @@
         |----------------|---------------------------------------------------------------------------------------------------|--------------------|
         | `none`         | Transcription disabled — true no-op.                                                              | _(none)_           |
         | `apple`        | **Default (v1.5+).** On-device Apple SpeechAnalyzer (macOS 26+). No API key, no network. Supports dual-locale parallel recognition via comma-separated `--transcribe-language` (e.g. `en-US,el-GR`). | _(none)_         |
+        | `whisperkit`   | On-device WhisperKit (Apple silicon CoreML).  No API key, no network.                              | _(none)_           |
         | `gemini`       | Google Gemini REST batch API (HTTPS POST; 2.5 s WAV chunks at 16 kHz mono PCM16; plan-004).       | `GOOGLE_API_KEY`   |
         | `gemini-live`  | Deprecated alias for `gemini` (one-release transition; resolver lowers it to `gemini` and warns). | `GOOGLE_API_KEY`   |
+        | `soniox`       | **Soniox cloud streaming** (WebSocket; PCM16 16 kHz mono frames; plan-006). Default model `stt-rt-v4`. Supports language identification across multiple BCP-47 hints (e.g. `el,en`); endpoint detection is enabled; speaker diarization is OFF in v1. ~$0.12/hour at list price. | `SONIOX_API_KEY`   |
 
         Additional providers (OpenAI Realtime, Deepgram Streaming,
         AssemblyAI Streaming) are admitted by the `TranscriptionProvider`
@@ -477,11 +495,12 @@
            local `.env` → CLI flag). Default `none`.
         2. **The provider's required API key** must be resolvable by the
            same chain at recording start. For `gemini` (and its deprecated
-           alias `gemini-live`) this is `GOOGLE_API_KEY`. If the chosen
-           provider needs a key and none is found, `ConfigResolver` raises
-           `MacrecError.transcriptionApiKeyMissing` (exit `78`) **before**
-           any capture session is opened — no audio file is created
-           (AC-LT-4).
+           alias `gemini-live`) this is `GOOGLE_API_KEY`; for `soniox` it
+           is `SONIOX_API_KEY`. If the chosen provider needs a key and
+           none is found, `ConfigResolver` raises
+           `MacrecError.transcriptionApiKeyMissing(provider:)` (exit `78`)
+           **before** any capture session is opened — no audio file is
+           created (AC-LT-4 / AC-SX-4).
 
         ### Sidecar file naming
 
@@ -595,6 +614,111 @@
         stable network connection; transient request failures are
         non-fatal but inflate `TranscriptionMetrics.errorCount`.
 
+        ### Soniox (cloud streaming, plan-006)
+
+        Soniox is a cloud streaming STT provider added in plan-006. Unlike
+        Gemini's REST-batch architecture, Soniox uses a single
+        long-running WebSocket connection — the captured PCM audio is
+        downsampled to 16 kHz mono Int16 LE, packaged into ~120 ms
+        binary frames, and streamed to the Soniox endpoint. Token
+        batches return on the same socket and are aggregated into
+        partial / final transcript events by `SonioxTokenAggregator`.
+
+        #### Defaults
+
+        | Setting                | Default                                                  |
+        |------------------------|----------------------------------------------------------|
+        | Model                  | `stt-rt-v4` (overridable via `--transcribe-model`)       |
+        | Endpoint               | `wss://stt-rt.soniox.com/transcribe-websocket` (US)      |
+        | Language hints         | `["el", "en"]` (overridable via `--transcribe-language`) |
+        | Language identification| **ON** (per-token language tags exposed in JSONL sidecar) |
+        | Endpoint detection     | **ON** (server emits `<end>` markers between utterances) |
+        | Speaker diarization    | **OFF** in v1 (tracked as v2 follow-up)                   |
+
+        #### Endpoint regions
+
+        For data-residency requirements, override the endpoint via
+        `--soniox-endpoint <url>` or `MACREC_SONIOX_ENDPOINT`:
+
+        | Region | Endpoint URL                                          |
+        |--------|--------------------------------------------------------|
+        | US     | `wss://stt-rt.soniox.com/transcribe-websocket` (default) |
+        | EU     | `wss://stt-rt.eu.soniox.com/transcribe-websocket`     |
+        | JP     | `wss://stt-rt.jp.soniox.com/transcribe-websocket`     |
+
+        See <https://soniox.com/docs/stt/data-residency> for the
+        authoritative list. The resolver validates the URL is `ws://`
+        or `wss://` and raises `MacrecError.invalidConfigValue`
+        (exit 64) otherwise.
+
+        #### API key
+
+        `SONIOX_API_KEY` is the only accepted source for the credential
+        — there is no `--soniox-api-key` CLI flag (avoids leakage into
+        shell history). Obtain a key at <https://console.soniox.com>
+        (Account → API keys), then add it to
+        `~/.tool-agents/macrec/.env` (mode `0600`):
+
+        ```sh
+        chmod 0700 ~/.tool-agents/macrec
+        echo 'SONIOX_API_KEY=sk_...' >> ~/.tool-agents/macrec/.env
+        chmod 0600 ~/.tool-agents/macrec/.env
+        ```
+
+        Pair the key with `MACREC_SONIOX_KEY_EXPIRES_AT` (ISO-8601 date)
+        if your team rotates keys on a fixed cadence; the resolver emits
+        a soft renewal reminder in the 7 days before expiry. The
+        per-provider variable takes precedence over the shared
+        `MACREC_TRANSCRIBE_KEY_EXPIRES_AT`.
+
+        #### Cost
+
+        Soniox bills approximately **$0.12 per audio-hour** at list price
+        for `stt-rt-v4` (verify against <https://soniox.com/pricing> for
+        the current rate). The session-end log line records
+        `billableSeconds` so you can compute the cost per recording as
+        `billableSeconds / 3600 * 0.12`.
+
+        #### Latency targets (observability)
+
+        Plan-006 §F-3 defines two soft latency targets emitted as
+        `info`-level metrics on session end:
+
+        - **P95 first-partial** ≤ 500 ms (time from Start to the first
+          partial token from Soniox).
+        - **P95 utterance-end → final** ≤ 1.5 s (time from the
+          server-emitted `<end>` marker to the final settled segment).
+
+        These are observability thresholds only — exceeding them does
+        not stop the recording or produce a hard error.
+
+        #### Recording-integrity isolation invariant (NFR-SX-1)
+
+        > **Soniox failures cannot stop the recording.** Per
+        > project-design §LT-1 / NFR-SX-1, every Soniox WebSocket error
+        > (TLS handshake failure, control-frame error, server-emitted
+        > `error_code`, network drop) is surfaced as a non-fatal
+        > `TranscriptionEvent.error` and recorded in
+        > `TranscriptionMetrics.errorCount`. The on-disk audio file
+        > continues to capture without interruption. The Soniox subsystem
+        > runs on a separate Task tree from `Recorder` — cancellation,
+        > exceptions, and even Swift task-priority inversion in the
+        > Soniox path cannot back-pressure the recording pipeline. This
+        > invariant is enforced by `SonioxRecordingIsolationTests`.
+
+        #### Privacy reminder
+
+        > **Audio leaves the machine.** When `--transcribe soniox` is
+        > active, the captured PCM audio (mic, system, or both) is
+        > downsampled to 16 kHz mono PCM16 and streamed to
+        > `wss://stt-rt.soniox.com` (or the configured EU/JP endpoint).
+        > Soniox does not store audio by default, but org-level
+        > retention is configurable in the Soniox console
+        > (<https://soniox.com/console>) — review your organisation's
+        > data-handling policy and the Soniox privacy notice
+        > (<https://soniox.com/privacy>) before enabling on calls
+        > containing confidential content.
+
         ## Building from source
 
         Requires:
@@ -687,9 +811,14 @@
           implementation plan (Phases 0 through I).
         - `docs/design/refined-request-live-transcription.md` —
           live-transcription requirements brief (FR-45..FR-58, AC-LT-1..AC-LT-25).
+        - `docs/design/plan-006-soniox-streaming.md` — Soniox streaming
+          provider implementation plan (Phases A through I).
+        - `docs/design/refined-request-soniox-streaming.md` — Soniox
+          requirements brief (FR-SX-1..FR-SX-18, AC-SX-1..AC-SX-18).
         - `docs/design/configuration-guide.md` — per-variable configuration
-          reference (includes the `MACREC_TRANSCRIBE*` family and
-          `GOOGLE_API_KEY`).
+          reference (includes the `MACREC_TRANSCRIBE*` family,
+          `GOOGLE_API_KEY`, `SONIOX_API_KEY`, `MACREC_SONIOX_ENDPOINT`,
+          and `MACREC_SONIOX_KEY_EXPIRES_AT`).
         - `Issues - Pending Items.md` — open risks (R-1 .. R-19) and
           completed items.
     </info>

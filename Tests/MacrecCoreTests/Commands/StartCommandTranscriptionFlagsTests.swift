@@ -30,12 +30,15 @@ struct StartCommandTranscriptionFlagsTests {
 
     // MARK: - Each flag round-trips into RecordingOptions
 
-    @Test("--transcribe gemini-live ⇒ RecordingOptions.transcriptionProviderId == \"gemini-live\"")
+    // plan-004 Phase G.2: `gemini-live` is a deprecated wire alias that
+    // the resolver lowers to the canonical `"gemini"` (with a stderr
+    // `.notice`). The test pins that lowering so any drift is caught.
+    @Test("--transcribe gemini-live ⇒ RecordingOptions.transcriptionProviderId == \"gemini\" (deprecation alias normalised)")
     func transcribeFlagRoundTrip() throws {
         let opts = try resolverWithBaseShell().resolve(cliOverrides: [
             "MACREC_TRANSCRIBE": "gemini-live",
         ])
-        #expect(opts.transcriptionProviderId == "gemini-live")
+        #expect(opts.transcriptionProviderId == "gemini")
     }
 
     @Test("--transcribe-source both ⇒ transcriptionSource == .both")
@@ -124,6 +127,10 @@ struct StartCommandTranscriptionFlagsTests {
         }
     }
 
+    // plan-004 Phase G.2: the resolver normalises the deprecated
+    // `gemini-live` alias to the canonical wire id `"gemini"`. The
+    // assertion below pins that lowering — see also the
+    // `transcribeFlagRoundTrip` test header.
     @Test("Non-conflict — gemini-live + --transcribe-source mixed (or default) is fine")
     func nonConflictGeminiLiveMixed() throws {
         let r = resolverWithBaseShell()
@@ -131,7 +138,34 @@ struct StartCommandTranscriptionFlagsTests {
             "MACREC_TRANSCRIBE": "gemini-live",
             "MACREC_TRANSCRIBE_SOURCE": "mixed",
         ])
-        #expect(opts.transcriptionProviderId == "gemini-live")
+        #expect(opts.transcriptionProviderId == "gemini")
         #expect(opts.transcriptionSource == .mixed)
+    }
+
+    // MARK: - plan-006 Phase H — Soniox endpoint flag round-trip
+    //
+    // `--soniox-endpoint` writes to `ConfigResolver.Keys.sonioxEndpoint`
+    // (env var `MACREC_SONIOX_ENDPOINT`). We exercise the equivalent
+    // overrides round-trip here because `StartCommand.buildCLIOverrides()`
+    // is module-private (see header note above).
+
+    @Test("--soniox-endpoint <url> ⇒ RecordingOptions.sonioxEndpoint is set")
+    func sonioxEndpointFlagRoundTrip() throws {
+        let endpoint = "wss://stt-rt.eu.soniox.com/transcribe-websocket"
+        // SONIOX_API_KEY must be present alongside `--transcribe soniox`
+        // or the resolver will throw `transcriptionApiKeyMissing` per
+        // plan-006 SX-5.2 — irrelevant to this test, so we provide a
+        // synthetic key.
+        let opts = try resolverWithBaseShell().resolve(cliOverrides: [
+            "MACREC_TRANSCRIBE": "soniox",
+            "SONIOX_API_KEY": "test-key",
+            "MACREC_SONIOX_ENDPOINT": endpoint,
+        ])
+        #expect(opts.sonioxEndpoint?.absoluteString == endpoint)
+    }
+
+    @Test("ConfigResolver.Keys.sonioxEndpoint is the canonical env-var name")
+    func sonioxEndpointKeyIsCanonical() {
+        #expect(ConfigResolver.Keys.sonioxEndpoint == "MACREC_SONIOX_ENDPOINT")
     }
 }

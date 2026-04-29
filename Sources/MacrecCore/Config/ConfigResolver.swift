@@ -231,6 +231,9 @@ public struct ConfigResolver {
         // out-of-the-box experience now. Set `MACREC_TRANSCRIBE=none`
         // explicitly to disable transcription. Set `MACREC_TRANSCRIBE=gemini`
         // to opt into the cloud REST provider.
+        //
+        // **plan-006 Phase B (SX-9.1)**: `soniox` joins the enum as a new
+        // wire id; the resolver lowers it through unchanged.
         let transcribeRaw = value(Keys.transcribe)
         let transcribeProviderEnum: TranscriptionProviderId = try parseEnum(
             key: Keys.transcribe,
@@ -257,6 +260,9 @@ public struct ConfigResolver {
                     FileHandle.standardError.write(data)
                 }
                 return "gemini"
+            case .soniox:
+                // plan-006 SX-9.1: Soniox cloud-streaming provider id.
+                return "soniox"
             }
         }()
 
@@ -330,34 +336,100 @@ public struct ConfigResolver {
         }
 
         // Step 6: resolve provider-specific API key. Vendor-canonical name
-        //         per CLAUDE.md tool-conventions: `GOOGLE_API_KEY`.
+        //         per CLAUDE.md tool-conventions: `GOOGLE_API_KEY` for
+        //         Gemini, `SONIOX_API_KEY` for Soniox.
         //
         //         **Project rule (NO fallback)**: a missing key is a hard
-        //         error AT DRIVER START — not at config-load. The resolver
-        //         records the missing-key state (apiKey = nil) and lets
-        //         `RecordingSession`/the transcription driver raise
-        //         `MacrecError.transcriptionApiKeyMissing` at the appropriate
-        //         point. This exception to the no-fallback rule is documented
-        //         on `RecordingOptions.transcriptionApiKey` in
-        //         `RecordingOptions.swift`.
+        //         error.
+        //
+        //         For **Gemini**, the resolver historically records the
+        //         missing-key state (apiKey = nil) and lets
+        //         `TranscriptionProviderFactory.build`/the transcription
+        //         driver raise `MacrecError.transcriptionApiKeyMissing` at
+        //         the appropriate point. This documented exception to the
+        //         no-fallback rule is preserved on
+        //         `RecordingOptions.transcriptionApiKey`.
+        //
+        //         For **Soniox** (plan-006 SX-5.2 / SX-8.1), the resolver
+        //         raises `MacrecError.transcriptionApiKeyMissing(provider:
+        //         "soniox")` immediately when the key is unresolvable
+        //         across the four tiers — exit 78 (EX_CONFIG) BEFORE any
+        //         audio file is created (AC-SX-5). No fallback value, no
+        //         demo key, no anonymous mode (CLAUDE.md "no fallback for
+        //         missing config" + FR-SX-4).
         //
         //         Apple Speech is on-device — no API key is required.
-        let transcriptionApiKey: String? = {
+        let transcriptionApiKey: String? = try {
             guard transcribeIsActive else { return nil }
             switch transcribeProviderEnum {
             case .gemini, .geminiLive:
                 let raw = value(Keys.googleApiKey)
                 return (raw?.isEmpty == false) ? raw : nil
+            case .soniox:
+                let raw = value(Keys.sonioxApiKey)
+                guard let key = raw, !key.isEmpty else {
+                    // plan-006 SX-5.2 / SX-8.1: hard fail at config-load.
+                    throw MacrecError.transcriptionApiKeyMissing(
+                        provider: "soniox"
+                    )
+                }
+                return key
             case .apple, .none:
                 return nil
             }
         }()
 
-        // Step 7: resolve optional ISO-8601 expiry timestamp.
+        // Step 7: resolve optional ISO-8601 expiry timestamp (shared key).
         let transcriptionKeyExpiresAt = try parseOptionalISO8601Date(
             key: Keys.transcribeKeyExpiresAt,
             raw: value(Keys.transcribeKeyExpiresAt)
         )
+
+        // Step 7b (plan-006 SX-5.1 / SX-5.4): resolve optional Soniox WebSocket
+        //         endpoint override. The vendor's stable production URL
+        //         (`wss://stt-rt.soniox.com/transcribe-websocket`) is treated
+        //         as a constant in the **provider** code (Unit D) — not as a
+        //         fallback default in this resolver — so the project's
+        //         "no fallback for missing config" rule (CLAUDE.md) is
+        //         honoured. Sanctioned by design SX-5.3 (vendor endpoint is
+        //         a stable code constant, not a sensitive credential).
+        //
+        //         When set, the value MUST parse as a URL; otherwise the
+        //         resolver raises `invalidConfigValue` (exit 64).
+        let sonioxEndpoint: URL? = try {
+            guard let raw = value(Keys.sonioxEndpoint),
+                  !raw.trimmingCharacters(in: .whitespaces).isEmpty
+            else { return nil }
+            guard let url = URL(string: raw),
+                  let scheme = url.scheme?.lowercased(),
+                  scheme == "ws" || scheme == "wss"
+            else {
+                throw MacrecError.invalidConfigValue(
+                    key: Keys.sonioxEndpoint,
+                    value: raw,
+                    expected: "valid wss:// or ws:// URL (e.g. wss://stt-rt.soniox.com/transcribe-websocket)"
+                )
+            }
+            return url
+        }()
+
+        // Step 7c (plan-006 SX-5.4 / D-SX-3 / OQ-SX-12): resolve the Soniox
+        //         expiry timestamp with **provider-scoped > shared**
+        //         precedence. `MACREC_SONIOX_KEY_EXPIRES_AT` wins when set;
+        //         otherwise we fall back to the shared
+        //         `MACREC_TRANSCRIBE_KEY_EXPIRES_AT` (already parsed above
+        //         into `transcriptionKeyExpiresAt`). Both unset ⇒ nil
+        //         (no expiry warning is emitted at recording start —
+        //         AC-SX-16).
+        let sonioxKeyExpiresAt: Date? = try {
+            if let perProvider = try parseOptionalISO8601Date(
+                key: Keys.sonioxKeyExpiresAt,
+                raw: value(Keys.sonioxKeyExpiresAt)
+            ) {
+                return perProvider
+            }
+            return transcriptionKeyExpiresAt
+        }()
 
         // Step 8 (cross-check): `--transcribe gemini-live` with
         //         `--transcribe-source mic` AND `--mic <empty/none>` is a
@@ -394,7 +466,9 @@ public struct ConfigResolver {
             transcriptionApiKey: transcriptionApiKey,
             transcriptionKeyExpiresAt: transcriptionKeyExpiresAt,
             transcriptionModelId: transcriptionModelId,
-            transcriptionLanguageHints: transcriptionLanguageHints
+            transcriptionLanguageHints: transcriptionLanguageHints,
+            sonioxEndpoint: sonioxEndpoint,
+            sonioxKeyExpiresAt: sonioxKeyExpiresAt
         )
     }
 
@@ -433,6 +507,30 @@ public struct ConfigResolver {
         /// Gemini Live provider (no `MACREC_*` prefix because the value is
         /// shared with other Google SDK consumers in the user's shell).
         public static let googleApiKey              = "GOOGLE_API_KEY"
+
+        // -- Soniox provider (plan-006 Phase B; design SX-5.1) --
+        //
+        // Vendor-canonical key name (no `MACREC_*` prefix) follows the
+        // same convention as `GOOGLE_API_KEY` so the value can be shared
+        // with other Soniox SDK consumers in the user's shell.
+
+        /// Soniox API key (vendor-canonical). Resolved through the standard
+        /// 4-tier chain. Required when `MACREC_TRANSCRIBE=soniox`.
+        public static let sonioxApiKey              = "SONIOX_API_KEY"
+
+        /// Optional Soniox WebSocket endpoint override. Defaults to the
+        /// vendor production URL `wss://stt-rt.soniox.com/transcribe-websocket`
+        /// (constant lives in the provider, not here — design SX-5.3).
+        /// Regional variants:
+        ///   * `wss://stt-rt.eu.soniox.com/transcribe-websocket`
+        ///   * `wss://stt-rt.jp.soniox.com/transcribe-websocket`
+        public static let sonioxEndpoint            = "MACREC_SONIOX_ENDPOINT"
+
+        /// Optional per-provider expiry override. Provider-scoped value
+        /// takes precedence over the shared `MACREC_TRANSCRIBE_KEY_EXPIRES_AT`
+        /// (D-SX-3 / OQ-SX-12). Backwards-compatible with the existing
+        /// Gemini-only configuration.
+        public static let sonioxKeyExpiresAt        = "MACREC_SONIOX_KEY_EXPIRES_AT"
     }
 
     // MARK: - Helpers

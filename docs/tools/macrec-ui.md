@@ -211,7 +211,9 @@
         ### Live transcription picker (FR-49)
 
         Dropdown labelled **"Live transcription"** with one entry per
-        registered provider:
+        registered provider. The picker order (top to bottom) is:
+        **Apple / WhisperKit / Gemini / Soniox / None** — locked by
+        plan-006 D-SX-1.
 
         - **Apple Speech (on-device)** *(default on first launch as of
           v1.5 / plan-005)* — Apple SpeechAnalyzer running on-device.
@@ -219,8 +221,8 @@
           (see Permissions section below); no API key, no network. This
           replaces `None` as the default; users who prefer the
           true-no-op behaviour can still select **None**.
-        - **None** — no transcription work happens, no permissions are
-          requested, no network connections are opened (AC-LT-1).
+        - **WhisperKit (on-device)** — WhisperKit running on Apple
+          silicon CoreML.  No API key, no network.
         - **Gemini** — Google Gemini REST batch API (plan-004). Requires
           `GOOGLE_API_KEY` (see "Configuration" below). The picker label
           was `Gemini Live` in plan-003; it was renamed to **Gemini**
@@ -229,17 +231,28 @@
           values of `gemini-live` continue to work — the
           `ConfigResolver` accepts them as a deprecated alias and logs a
           one-time deprecation notice.
+        - **Soniox** *(plan-006)* — Soniox cloud streaming
+          (WebSocket; default model `stt-rt-v4`). Requires
+          `SONIOX_API_KEY` (obtain at
+          <https://console.soniox.com>). Default language hints are
+          `el,en` (Greek + English bilingual). Cloud-streamed audio
+          is documented in the privacy-disclosure sheet (see below).
+        - **None** — no transcription work happens, no permissions are
+          requested, no network connections are opened (AC-LT-1).
 
         Persisted across launches in `UserDefaults` under
         `com.macrec.ui.transcribeProvider` (FR-54). Disabled while
         recording (AC-LT-19). When set to a provider whose API key is
         missing from the resolved config chain, the dropdown displays a
-        red **"Key not configured"** badge; clicking the badge opens an
-        inline help popover that names the env var (`GOOGLE_API_KEY`)
-        and the recommended path (`~/.tool-agents/macrec-ui/.env`). The
-        Start button remains enabled — pressing Start in this state
-        surfaces `MacrecError.transcriptionApiKeyMissing` inline without
-        crashing the recording (AC-LT-8).
+        red **"Key not configured"** badge (red dot); clicking the badge
+        opens an inline help popover that names the env var
+        (`GOOGLE_API_KEY` for Gemini; `SONIOX_API_KEY` for Soniox) and
+        the recommended path (`~/.tool-agents/macrec-ui/.env`). For
+        Soniox specifically, the tooltip text is **"Set SONIOX_API_KEY
+        in ~/.tool-agents/macrec-ui/.env"**. The Start button remains
+        enabled — pressing Start in this state surfaces
+        `MacrecError.transcriptionApiKeyMissing(provider:)` inline
+        without crashing the recording (AC-LT-8 / AC-SX-8).
 
         Live transcription is also supported in the CLI's `--detach`
         background mode (parity with the foreground UI path). The
@@ -315,6 +328,40 @@
         suppresses the dialog for subsequent launches; the disclosure
         text remains discoverable as a tooltip on the Live-transcription
         picker. Cancelling reverts the picker to `None` (AC-LT-9).
+
+        #### Soniox-specific disclosure copy (plan-006)
+
+        Soniox carries an additional one-time disclosure on top of the
+        shared cloud-provider sheet, because it streams audio over a
+        long-lived WebSocket rather than per-chunk REST POSTs. Picking
+        **Soniox** for the first time on a fresh install presents:
+
+        > *"Live transcription via Soniox sends your captured audio
+        > over a continuous WebSocket connection to Soniox's cloud
+        > (`wss://stt-rt.soniox.com` by default; EU/JP endpoints
+        > configurable). Soniox does NOT store audio by default;
+        > org-level retention is configurable in the Soniox console
+        > (<https://soniox.com/console>). No per-recording opt-out is
+        > offered in v1. See <https://soniox.com/privacy> for the
+        > vendor's privacy notice."*
+
+        The **Continue** button persists the acknowledgement under
+        the AppStorage key
+        `com.local.macrec-ui.transcription.hasAcceptedSonioxDisclosure`
+        (Boolean; default `false`). The disclosure does NOT reappear on
+        subsequent launches once accepted. Reset for a fresh demo via:
+
+        ```sh
+        defaults delete com.local.macrec-ui com.local.macrec-ui.transcription.hasAcceptedSonioxDisclosure
+        ```
+
+        Cancelling reverts the picker to its previous selection
+        (typically `Apple` per the v1.5 default). Note that **a
+        SONIOX_API_KEY must be configured before this disclosure can be
+        accepted** — users who have not yet visited
+        <https://console.soniox.com> to obtain a key see the missing-key
+        red-dot badge first and only reach the disclosure after
+        populating `~/.tool-agents/macrec-ui/.env`.
 
         ### Cost / latency display
 
@@ -512,13 +559,16 @@
         | Variable                            | Purpose                                                                                                                                                                                                       | Allowed values                          | Default               |
         |-------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------|-----------------------|
         | `MACREC_UI_LOG_LEVEL`               | Diagnostic log verbosity (NFR-16). Controls only logging — not behaviour. Treating an unset value as `info` is a logging-only convenience and is **not** a runtime-config fallback in the no-fallback-rule sense. | `info`, `debug`, `trace`               | `info` (when unset)   |
-        | `MACREC_TRANSCRIBE`                 | Default live-transcription provider (FR-49). Read at launch to pre-select the picker; the picker still wins per-session. | `none`, `gemini` (canonical), `gemini-live` (deprecated alias; lowered to `gemini`) | `none`                |
+        | `MACREC_TRANSCRIBE`                 | Default live-transcription provider (FR-49). Read at launch to pre-select the picker; the picker still wins per-session. | `none`, `apple`, `whisperkit`, `gemini` (canonical), `gemini-live` (deprecated alias; lowered to `gemini`), `soniox` | `apple` (post plan-005) |
         | `MACREC_TRANSCRIBE_SOURCE`          | Default audio source for transcription (FR-47).                                                                  | `system`, `mic`, `mixed`, `both`        | `mixed`               |
         | `MACREC_TRANSCRIBE_FORMAT`          | Default sidecar transcript format (FR-51).                                                                       | `jsonl`, `txt`, `srt`, `vtt`            | `jsonl`               |
-        | `MACREC_TRANSCRIBE_MODEL`           | Provider-specific model id override (project-design §LT-5.2).                                                    | provider-specific (e.g. `gemini-3-flash-preview`) | provider's pinned default |
-        | `MACREC_TRANSCRIBE_LANGUAGE`        | BCP-47 spoken-language hint passed to the provider.                                                              | BCP-47 string (e.g. `en-US`)            | provider auto-detect  |
-        | `MACREC_TRANSCRIBE_KEY_EXPIRES_AT`  | Optional ISO-8601 date marking when `GOOGLE_API_KEY` (or other provider key) expires. If past, a warning is logged at start; recording is NOT blocked. | ISO-8601 date string                    | unset                 |
+        | `MACREC_TRANSCRIBE_MODEL`           | Provider-specific model id override (project-design §LT-5.2).                                                    | provider-specific (e.g. `gemini-3-flash-preview`, `stt-rt-v4`) | provider's pinned default |
+        | `MACREC_TRANSCRIBE_LANGUAGE`        | BCP-47 spoken-language hint passed to the provider. Comma-separated values activate dual-locale recognition (Apple / Soniox). | BCP-47 string (e.g. `en-US` or `el,en`) | provider auto-detect (Soniox: `el,en`) |
+        | `MACREC_TRANSCRIBE_KEY_EXPIRES_AT`  | Optional ISO-8601 date marking when `GOOGLE_API_KEY` (or other provider key) expires. If past, a warning is logged at start; recording is NOT blocked. Shared fallback when `MACREC_SONIOX_KEY_EXPIRES_AT` is unset. | ISO-8601 date string                    | unset                 |
         | `GOOGLE_API_KEY`                    | Vendor-canonical API key for Gemini. Required when `MACREC_TRANSCRIBE=gemini` (or its deprecated alias `gemini-live`, or the picker is set to Gemini). Resolved BEFORE the recording opens; missing key fails fast with `transcriptionApiKeyMissing`. Obtain at <https://aistudio.google.com/app/apikey>. | API key string | unset (recording uses `None` fallback) |
+        | `SONIOX_API_KEY`                    | Vendor-canonical API key for Soniox cloud streaming (plan-006). Required when `MACREC_TRANSCRIBE=soniox` or the picker is set to Soniox. Resolved BEFORE the recording opens; missing key fails fast with `transcriptionApiKeyMissing(provider:"soniox")`. Obtain at <https://console.soniox.com>. The user MUST sign up at console.soniox.com to get a key — the UI cannot proceed without one. | API key string | unset (recording falls back to picker default) |
+        | `MACREC_SONIOX_ENDPOINT`            | Soniox WebSocket endpoint override (for EU/JP data residency). Validated as `ws://` or `wss://` URL. | URL string (`wss://stt-rt.soniox.com/transcribe-websocket` (US, default), `wss://stt-rt.eu.soniox.com/transcribe-websocket` (EU), `wss://stt-rt.jp.soniox.com/transcribe-websocket` (JP)) | `wss://stt-rt.soniox.com/transcribe-websocket` |
+        | `MACREC_SONIOX_KEY_EXPIRES_AT`      | Per-provider expiry override for `SONIOX_API_KEY`. Takes precedence over `MACREC_TRANSCRIBE_KEY_EXPIRES_AT` (plan-006 D-SX-3). | ISO-8601 date string | unset (falls back to shared `MACREC_TRANSCRIBE_KEY_EXPIRES_AT`) |
 
         Notes:
 
@@ -534,9 +584,13 @@
           §2.16–§2.22; both tools share the four-tier resolution chain
           (with the user-`.env` tier scoped to
           `~/.tool-agents/macrec-ui/.env` for the UI).
-        - Recommended location for `GOOGLE_API_KEY` is
-          `~/.tool-agents/macrec-ui/.env` (mode `0600`). Do **not**
-          paste API keys into shell history or `.zshrc`.
+        - Recommended location for `GOOGLE_API_KEY` and
+          `SONIOX_API_KEY` is `~/.tool-agents/macrec-ui/.env` (mode
+          `0600`). Do **not** paste API keys into shell history or
+          `.zshrc`. Soniox keys are obtained from
+          <https://console.soniox.com> (Account → API keys); the user
+          MUST sign up there to get a key — there is no in-app key
+          provisioning flow.
 
         ### `@AppStorage` UserDefaults keys
 
@@ -553,10 +607,11 @@
         | `com.macrec.ui.format`       | Last-selected output format raw value (`m4a` / `wav` / `caf`).                                   |
         | `com.macrec.ui.layout`       | Last-selected track layout raw value (`mixed` / `split` / `stereo-split`).                       |
         | `com.macrec.ui.micUID`       | Stable UID of the last-selected microphone device. Empty (or sentinel `__default__`) → system default input. |
-        | `com.macrec.ui.transcribeProvider`           | Last-selected live-transcription provider raw value (`none` / `gemini`; legacy `gemini-live` values from plan-003 installs continue to work — the resolver lowers them to `gemini`). Default `none` (FR-54). |
+        | `com.macrec.ui.transcribeProvider`           | Last-selected live-transcription provider raw value (`none` / `apple` / `whisperkit` / `gemini` / `soniox`; legacy `gemini-live` values from plan-003 installs continue to work — the resolver lowers them to `gemini`). Default `apple` post plan-005 (FR-54). |
         | `com.macrec.ui.transcribeSource`             | Last-selected transcription source raw value (`system` / `mic` / `mixed` / `both`). Default `mixed` (FR-54). |
         | `com.macrec.ui.transcriptFormat`             | Last-selected sidecar transcript format raw value (`jsonl` / `txt` / `srt` / `vtt`). Default `jsonl` (FR-54). |
-        | `com.macrec.ui.transcribePrivacyAcknowledged` | One-time acknowledgement flag for the privacy disclosure dialog (FR-53). Boolean. Default `false`. |
+        | `com.macrec.ui.transcribePrivacyAcknowledged` | One-time acknowledgement flag for the shared cloud-provider privacy disclosure dialog (FR-53). Boolean. Default `false`. |
+        | `com.local.macrec-ui.transcription.hasAcceptedSonioxDisclosure` | One-time acknowledgement flag for the Soniox-specific privacy disclosure sheet (plan-006). Set to `true` after the user clicks **Continue** on the Soniox disclosure. Boolean. Default `false`. |
 
         These keys are managed via SwiftUI's `@AppStorage` property
         wrapper inside the popover views; they are written
@@ -790,6 +845,12 @@
           subsystem (Phases 0 / A / B / C / D / E / F / G / H / I).
         - [docs/design/refined-request-live-transcription.md](../design/refined-request-live-transcription.md)
           — live-transcription requirements (FR-45..FR-58, NFR-17..NFR-21).
+        - [docs/design/plan-006-soniox-streaming.md](../design/plan-006-soniox-streaming.md)
+          — phased implementation plan for the Soniox streaming provider
+          (Phases A through I).
+        - [docs/design/refined-request-soniox-streaming.md](../design/refined-request-soniox-streaming.md)
+          — Soniox requirements (FR-SX-1..FR-SX-18, NFR-SX-1..NFR-SX-7,
+          AC-SX-1..AC-SX-18).
         - [docs/design/project-design.md](../design/project-design.md)
           §15 — full UI architecture (state machine, popover
           layout, permission gating, level metering, settings

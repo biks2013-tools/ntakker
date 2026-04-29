@@ -40,9 +40,20 @@ Plan-003 introduced the first credential subject to expiration —
 configuration-guide rule for expiring credentials applies: a companion
 variable `MACREC_TRANSCRIBE_KEY_EXPIRES_AT` (§2.22) captures the ISO-8601
 expiry date so `macrec` can warn the user proactively. See §2.21 and
-§2.22 for the full pair. Future credentials (e.g. additional providers
-like `OPENAI_API_KEY`) should follow the same pattern: pair the secret
-with an `<X>_EXPIRES_AT` ISO-8601 companion.
+§2.22 for the full pair.
+
+Plan-006 added a second cloud provider (Soniox) with its own
+`SONIOX_API_KEY` (§2.23) and a per-provider expiry override
+`MACREC_SONIOX_KEY_EXPIRES_AT` (§2.25). Per plan-006 D-SX-3, the
+per-provider expiry takes precedence over the shared
+`MACREC_TRANSCRIBE_KEY_EXPIRES_AT`, which remains the fallback for
+multi-provider deployments.
+
+Future credentials (e.g. additional providers like `OPENAI_API_KEY`)
+should follow the same pattern: pair the secret with an
+`<X>_EXPIRES_AT` ISO-8601 companion, prefer a provider-scoped name,
+and fall back to the shared `MACREC_TRANSCRIBE_KEY_EXPIRES_AT` when
+the per-provider override is unset.
 
 ---
 
@@ -257,9 +268,9 @@ set `MACREC_TRANSCRIBE=none` explicitly.
 | Env-var name           | `MACREC_TRANSCRIBE`                                                |
 | Type                   | enum string                                                        |
 | Default                | `apple` (changed from `none` in plan-005)                          |
-| Allowed values         | `none`, `apple` (default — NEW, on-device via `SpeechAnalyzer`, plan-005), `gemini` (REST-batch via Google Gemini), `gemini-live` (deprecated alias for `gemini` — accepted for one release with a `.notice` log line). |
+| Allowed values         | `none`, `apple` (default — on-device via `SpeechAnalyzer`, plan-005), `whisperkit` (on-device via WhisperKit CoreML), `gemini` (REST-batch via Google Gemini), `gemini-live` (deprecated alias for `gemini` — accepted for one release with a `.notice` log line), `soniox` (cloud streaming via Soniox WebSocket, plan-006). |
 | Recommended storage    | user `.env` for a personal default; CLI flag for per-recording opt-in |
-| Notes                  | With `none`, no API keys are read, no network connections are opened, no sidecar files are written (AC-LT-1). Setting `gemini` (or its deprecated alias) with no API key configured raises `MacrecError.transcriptionApiKeyMissing` (exit 78) BEFORE any audio capture begins (AC-LT-4). The `apple` provider runs entirely on-device (no API key) but requires the user to grant Speech Recognition in System Settings → Privacy & Security on first run (FR-AS-8). Per plan-004 the detach + transcribe combination is now valid (the REST architecture has no terminal-output dependency); `MacrecError.transcriptionDetachUnsupported` is removed. |
+| Notes                  | With `none`, no API keys are read, no network connections are opened, no sidecar files are written (AC-LT-1). Setting `gemini` (or its deprecated alias) without `GOOGLE_API_KEY`, or `soniox` without `SONIOX_API_KEY`, raises `MacrecError.transcriptionApiKeyMissing(provider:)` (exit 78) BEFORE any audio capture begins (AC-LT-4 / AC-SX-4). The `apple` provider runs entirely on-device (no API key) but requires the user to grant Speech Recognition in System Settings → Privacy & Security on first run (FR-AS-8). Per plan-004 the detach + transcribe combination is now valid (the REST architecture has no terminal-output dependency); `MacrecError.transcriptionDetachUnsupported` is removed. |
 
 > **Default flipped to `apple` in plan-005 (2026-04-28).** To restore the
 > legacy "no transcription by default" behavior, set
@@ -333,7 +344,7 @@ prompt (no key, no network).
 | Default                | unset — provider auto-detect                                       |
 | Allowed values         | one or more BCP-47 strings the provider accepts (e.g. `en-US`, `el-GR`, `fr-FR`, `en-US,el-GR`) |
 | Recommended storage    | user `.env`                                                        |
-| Notes                  | For `apple`, multiple values activate parallel recognizers — one per locale, picking the higher-confidence final per utterance (FR-AS-5, FR-AS-7). For `gemini`, only the first value is used as a hint. v1 does not validate against the provider's supported list (apple raises `transcriptionConfigConflict` exit 64 at start time on unsupported locale per FR-AS-9; gemini silently auto-detects). Translation (target-language selection) is explicitly out of scope for v1 — refined-request §Out of scope. |
+| Notes                  | For `apple`, multiple values activate parallel recognizers — one per locale, picking the higher-confidence final per utterance (FR-AS-5, FR-AS-7). For `gemini`, only the first value is used as a hint. For `soniox`, multiple values are passed verbatim as `language_hints` to the Soniox config message and Soniox's language-identification feature picks per-token language tags (default `["el","en"]` per plan-006). v1 does not validate against the provider's supported list (apple raises `transcriptionConfigConflict` exit 64 at start time on unsupported locale per FR-AS-9; gemini silently auto-detects; soniox accepts the list verbatim and the server will warn on unsupported language codes). Translation (target-language selection) is explicitly out of scope for v1 — refined-request §Out of scope. |
 
 ### 2.21 `GOOGLE_API_KEY` — Gemini API key
 
@@ -395,9 +406,133 @@ configurable via `MACREC_TRANSCRIBE_KEY_EXPIRY_WARN_DAYS`.
 > rotation date when you paste the new key. The 7-day warning then
 > nudges you ahead of the actual expiry.
 
-### Resolution chain reminder for §2.16–§2.22
+### 2.23 `SONIOX_API_KEY` — Soniox API key (plan-006)
 
-Every key in §2.16 .. §2.22 follows the same four-tier resolution
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| CLI flag               | _(none — by design; see security note below)_                      |
+| Env-var name           | `SONIOX_API_KEY` (vendor-canonical name per CLAUDE.md tool-conventions) |
+| Type                   | API key string                                                     |
+| Default                | _none — required when `MACREC_TRANSCRIBE=soniox`_                  |
+| Allowed values         | any non-empty string returned by the Soniox console                |
+| Recommended storage    | `~/.tool-agents/macrec/.env` (mode `0600`) for the CLI and `~/.tool-agents/macrec-ui/.env` (mode `0600`) for the UI; **never commit; never pass on CLI** |
+| Notes                  | resolved only when `MACREC_TRANSCRIBE=soniox`. Per the CLAUDE.md no-fallback rule, **transcription with `--transcribe soniox` raises `MacrecError.transcriptionApiKeyMissing(provider: "soniox")` (exit 78) if the key is unset** — no audio file is created and no WebSocket handshake is attempted (AC-SX-4). No `--soniox-api-key` CLI flag exists; keys are never accepted on the command line (avoids leakage into shell history and `ps` output). Pair with `MACREC_SONIOX_KEY_EXPIRES_AT` (§2.25) for proactive expiry warnings. |
+
+How to obtain it:
+
+1. Visit <https://console.soniox.com>.
+2. Sign in or create an account.
+3. Navigate to **Account → API keys** and click **Create API key**.
+4. Copy the key.
+5. Append it to `~/.tool-agents/macrec/.env` (and / or
+   `~/.tool-agents/macrec-ui/.env`) as `SONIOX_API_KEY=…`. Verify the
+   file is mode `0600` (`chmod 0600 ~/.tool-agents/macrec/.env`).
+
+**Expiration handling.** Soniox keys do not auto-expire by default;
+users may rotate manually. If your team rotates on a schedule, pair
+the key with `MACREC_SONIOX_KEY_EXPIRES_AT` (§2.25) so `macrec` can
+emit a soft renewal reminder in the 7 days before the configured
+date.
+
+> **Privacy reminder.** Enabling Soniox transcription causes the
+> captured audio to be streamed to Soniox's servers over a
+> long-running WebSocket. See "Soniox data-retention disclosure"
+> below and `docs/tools/macrec.md` → "Soniox (cloud streaming)" for
+> the full picture.
+
+### 2.24 `MACREC_SONIOX_ENDPOINT` — Soniox WebSocket endpoint (plan-006)
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| CLI flag               | `--soniox-endpoint <url>`                                          |
+| Env-var name           | `MACREC_SONIOX_ENDPOINT`                                           |
+| Type                   | URL string (`ws://` or `wss://`)                                   |
+| Default                | `wss://stt-rt.soniox.com/transcribe-websocket` (US)                |
+| Allowed values         | `wss://stt-rt.soniox.com/transcribe-websocket` (US, default), `wss://stt-rt.eu.soniox.com/transcribe-websocket` (EU), `wss://stt-rt.jp.soniox.com/transcribe-websocket` (JP) — see <https://soniox.com/docs/stt/data-residency> |
+| Recommended storage    | `~/.tool-agents/macrec/.env` (or per-project `./.env` when a single project is bound to a region) |
+| Notes                  | only consulted when `MACREC_TRANSCRIBE=soniox`. The resolver validates that the value parses as a `ws://` or `wss://` URL and raises `MacrecError.invalidConfigValue` (exit 64) otherwise. The same hostname/path is reused for both production and EU/JP regional variants — only the FQDN differs. |
+
+How to obtain it: pick the regional URL aligned with your data
+residency requirement. EU residents subject to GDPR data-locality
+constraints should set the EU endpoint; teams in Japan with
+similar constraints should set the JP endpoint. The default US
+endpoint is appropriate when no residency requirement applies.
+
+### 2.25 `MACREC_SONIOX_KEY_EXPIRES_AT` — Soniox key expiry override (plan-006)
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| CLI flag               | _(none — env-var only)_                                            |
+| Env-var name           | `MACREC_SONIOX_KEY_EXPIRES_AT`                                     |
+| Type                   | ISO-8601 date string (e.g. `2026-12-31` or `2026-12-31T00:00:00Z`) |
+| Default                | unset — falls back to shared `MACREC_TRANSCRIBE_KEY_EXPIRES_AT`     |
+| Allowed values         | any parseable ISO-8601 date                                        |
+| Recommended storage    | next to `SONIOX_API_KEY` in `~/.tool-agents/macrec/.env` (so the pair is updated together) |
+| Notes                  | introduced per the CLAUDE.md configuration-guide rule for expiring credentials. Per plan-006 D-SX-3, **per-provider precedence** is the locked behaviour: `MACREC_SONIOX_KEY_EXPIRES_AT > MACREC_TRANSCRIBE_KEY_EXPIRES_AT > unset`. The 7-day soft-warn behaviour described in §2.22 applies identically. |
+
+Precedence detail:
+
+| `MACREC_SONIOX_KEY_EXPIRES_AT` | `MACREC_TRANSCRIBE_KEY_EXPIRES_AT` | Value used |
+|--------------------------------|-------------------------------------|------------|
+| set                            | (any)                               | the per-provider value |
+| unset                          | set                                 | the shared value |
+| unset                          | unset                               | no expiry warning emitted |
+
+> **Operational tip.** Teams running both Gemini and Soniox should
+> generally use the per-provider variables (`MACREC_SONIOX_KEY_EXPIRES_AT`
+> for Soniox; the shared `MACREC_TRANSCRIBE_KEY_EXPIRES_AT` continues
+> to gate Gemini's `GOOGLE_API_KEY` until a future per-provider
+> `MACREC_GEMINI_KEY_EXPIRES_AT` is added). Setting both the
+> per-provider and shared values is supported — the per-provider one
+> simply wins.
+
+### Soniox data-retention disclosure (plan-006)
+
+Beyond the per-key configuration above, Soniox carries a separate
+data-handling story that affects every recording made with
+`MACREC_TRANSCRIBE=soniox`:
+
+- **No audio storage by default.** Soniox does NOT persist the
+  captured audio after a streaming session ends. Per-frame data is
+  processed in memory on Soniox's servers and discarded once the
+  WebSocket closes.
+- **Org-level retention is configurable** in the Soniox console
+  (<https://soniox.com/console>). Operators with a Soniox account
+  can opt in to longer retention for debugging, audit, or model
+  fine-tuning. This is an organization-wide setting on the Soniox
+  side — `macrec` does not expose a per-recording opt-out in v1.
+- **One-time UI disclosure.** Before the first Soniox recording in
+  `macrec-ui`, a privacy-disclosure sheet surfaces the cloud
+  streaming, the default endpoint (or the configured EU/JP
+  override), and the org-level retention pointer. The user must
+  click **Continue** to proceed; **Cancel** reverts the picker to
+  its previous selection. The decision is persisted under the
+  AppStorage key
+  `com.local.macrec-ui.transcription.hasAcceptedSonioxDisclosure`
+  (Boolean, default `false`); the sheet does not reappear once
+  accepted.
+- **CLI users are NOT prompted** — the CLI assumes operators who
+  invoke `macrec start --transcribe soniox` have read this
+  configuration guide and have made the data-handling decision out
+  of band. The org-level retention disclosure is documented here
+  in the configuration guide (this section) and in
+  `docs/tools/macrec.md` → "Soniox" → "Privacy reminder".
+- **Reset for demos.** Clear the AppStorage key to re-trigger the
+  one-time disclosure sheet:
+  ```sh
+  defaults delete com.local.macrec-ui com.local.macrec-ui.transcription.hasAcceptedSonioxDisclosure
+  ```
+
+References:
+
+- <https://soniox.com/docs/stt/data-residency> — regional
+  endpoints and residency guarantees.
+- <https://soniox.com/privacy> — Soniox privacy notice.
+- <https://soniox.com/console> — org-level retention configuration.
+
+### Resolution chain reminder for §2.16–§2.25
+
+Every key in §2.16 .. §2.25 follows the same four-tier resolution
 documented in §1 (lowest → highest priority):
 
 ```
@@ -405,9 +540,10 @@ shell env → ~/.tool-agents/<tool>/.env → ./.env → CLI flag
 ```
 
 Higher tiers override lower ones on a per-key basis. `<tool>` is
-`macrec` for the CLI and `macrec-ui` for the UI. `GOOGLE_API_KEY` is
-NOT accepted via CLI flag — its highest-priority tier is the local
-`./.env`.
+`macrec` for the CLI and `macrec-ui` for the UI. `GOOGLE_API_KEY`
+and `SONIOX_API_KEY` are NOT accepted via CLI flag — their
+highest-priority tier is the local `./.env`. `MACREC_SONIOX_KEY_EXPIRES_AT`
+is also env-only (no CLI flag exists in v1).
 
 ---
 
@@ -437,6 +573,9 @@ NOT accepted via CLI flag — its highest-priority tier is the local
 | `MACREC_TRANSCRIBE_LANGUAGE` | user `.env`         | constant per user                                                  |
 | `GOOGLE_API_KEY`     | user `.env` (mode `0600`)   | secret — never CLI, never shell history                            |
 | `MACREC_TRANSCRIBE_KEY_EXPIRES_AT` | user `.env` (next to `GOOGLE_API_KEY`) | rotated together with the key                       |
+| `SONIOX_API_KEY`     | user `.env` (mode `0600`)   | secret — never CLI, never shell history; obtain at <https://console.soniox.com> |
+| `MACREC_SONIOX_ENDPOINT` | user `.env` (or local `.env` for region-bound projects) | rarely changed; only set when EU/JP residency is required          |
+| `MACREC_SONIOX_KEY_EXPIRES_AT` | user `.env` (next to `SONIOX_API_KEY`) | per-provider override; rotated together with the key             |
 
 ---
 
@@ -504,8 +643,11 @@ Common failure modes and their stderr cues:
 | `Stale PID file at … referenced PID … which is no longer running. The file has been removed.` | previous detached recording crashed without cleanup              | safe to start a new recording immediately.                                                       |
 | `macrec process … did not exit within …s of SIGTERM.`                                   | finalization is slow or hung                                     | wait, then `ps -p <pid>`; if hung, `kill -KILL <pid>` (loses the recording).                     |
 | `transcription api key missing for provider 'gemini-live': checked GOOGLE_API_KEY in …`  | `--transcribe gemini-live` (or `MACREC_TRANSCRIBE=gemini-live`) without `GOOGLE_API_KEY` set anywhere in the chain | obtain a key at <https://aistudio.google.com/app/apikey> and add `GOOGLE_API_KEY=…` to `~/.tool-agents/macrec/.env` (mode `0600`); see §2.21. |
+| `transcription api key missing for provider 'soniox': checked SONIOX_API_KEY in …`       | `--transcribe soniox` (or `MACREC_TRANSCRIBE=soniox`) without `SONIOX_API_KEY` set anywhere in the chain | obtain a key at <https://console.soniox.com> (Account → API keys) and add `SONIOX_API_KEY=…` to `~/.tool-agents/macrec/.env` (mode `0600`); see §2.23. |
+| `invalid value for MACREC_SONIOX_ENDPOINT: '…' (expected: ws:// or wss:// URL)`           | `MACREC_SONIOX_ENDPOINT` (or `--soniox-endpoint`) is not a valid `ws://` or `wss://` URL | use one of the documented regional endpoints (US/EU/JP) — see §2.24 and <https://soniox.com/docs/stt/data-residency>. |
 | `--detach is incompatible with --transcribe <provider != none>`                          | combined `--detach` + a non-`none` provider                       | run the recording in foreground (drop `--detach`) or set `--transcribe none`. Detach-mode transcription is excluded in v1 (OQ-LT-5). |
 | `Your GOOGLE_API_KEY expired on YYYY-MM-DD; recording will start but transcription may fail` | `MACREC_TRANSCRIBE_KEY_EXPIRES_AT` is in the past                | renew the key at <https://aistudio.google.com/app/apikey>, update `GOOGLE_API_KEY`, and bump `MACREC_TRANSCRIBE_KEY_EXPIRES_AT`. See §2.22. |
+| `Your SONIOX_API_KEY expired on YYYY-MM-DD; recording will start but transcription may fail` | `MACREC_SONIOX_KEY_EXPIRES_AT` (or fallback `MACREC_TRANSCRIBE_KEY_EXPIRES_AT`) is in the past | renew the key at <https://console.soniox.com>, update `SONIOX_API_KEY`, and bump `MACREC_SONIOX_KEY_EXPIRES_AT`. See §2.25. |
 
 For configuration-precedence puzzles specifically, the
 `ConfigResolverTests` suite (`Tests/MacrecCoreTests/ConfigResolverTests.swift`)

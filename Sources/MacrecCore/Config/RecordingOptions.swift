@@ -66,6 +66,16 @@ public enum RunMode: String, CaseIterable, Sendable {
 /// `.geminiLive` is the deprecated alias for `.gemini` retained for one
 /// release for back-compat with the plan-003 Gemini Live wire id; the
 /// resolver lowers it to `"gemini"` and logs a deprecation notice.
+/// `.soniox` selects the Soniox cloud-streaming provider (plan-006 Phase B —
+/// SX-9.1). The resolver keeps the wire form as `"soniox"`.
+///
+/// **Note on the `.whisperkit` anomaly (plan-006 D-SX-1, PEND-SX-2)**: the
+/// `TranscriptionProviderFactory` and the UI picker already dispatch
+/// `whisperkit` as a raw string today; this enum does NOT enumerate it.
+/// Plan-006 deliberately does not regularize this — adding a `.whisperkit`
+/// case is tracked by PEND-SX-2 in `Issues - Pending Items.md`. Soniox is
+/// added as a proper enum case because it is brand-new in plan-006 and has
+/// no pre-existing string-typed call sites.
 ///
 /// Design §LT-3.1 / D-LT-5. `RecordingOptions.transcriptionProviderId` stores
 /// the lowered `String` form (per D-LT-5) so future external providers don't
@@ -76,6 +86,8 @@ public enum TranscriptionProviderId: String, CaseIterable, Sendable, Codable, Eq
     case apple = "apple"
     case gemini
     case geminiLive = "gemini-live"
+    /// Plan-006 SX-9.1 — Soniox cloud streaming (WebSocket).
+    case soniox
 }
 
 // `TranscriptionSource` is defined in
@@ -204,6 +216,30 @@ public struct RecordingOptions: Sendable, Equatable {
     /// `MACREC_TRANSCRIBE_LANGUAGE=en-US,el-GR`.
     public let transcriptionLanguageHints: [String]
 
+    // MARK: - Soniox-specific overrides (plan-006 Phase B; design SX-5)
+
+    /// Optional Soniox WebSocket endpoint override (plan-006 SX-5.1). `nil`
+    /// means the provider should fall back to its hard-coded vendor default
+    /// (`wss://stt-rt.soniox.com/transcribe-websocket`). Regional variants
+    /// the user may set: `wss://stt-rt.eu.soniox.com/transcribe-websocket`,
+    /// `wss://stt-rt.jp.soniox.com/transcribe-websocket`. Resolved from
+    /// `MACREC_SONIOX_ENDPOINT` through the standard 4-tier chain.
+    ///
+    /// Storing the default at the **provider** layer (not here) keeps this
+    /// `RecordingOptions` value pure-data — the project's "no fallback for
+    /// missing config" rule (CLAUDE.md) treats vendor endpoints as a
+    /// stable code constant rather than a config default. Sanctioned by
+    /// design SX-5.3.
+    public let sonioxEndpoint: URL?
+
+    /// Optional ISO-8601 expiry date for the Soniox API key (plan-006
+    /// SX-5.1 / SX-5.4). Provider-scoped; takes precedence over the
+    /// shared `transcriptionKeyExpiresAt` per D-SX-3 / OQ-SX-12. The
+    /// resolver applies the precedence and stores the winning value here
+    /// (so consumers see a single field). When both are unset this is
+    /// `nil` — no expiry warning is emitted at recording start (AC-SX-16).
+    public let sonioxKeyExpiresAt: Date?
+
     public init(
         output: URL,
         format: OutputFormat = .m4a,
@@ -226,7 +262,9 @@ public struct RecordingOptions: Sendable, Equatable {
         transcriptionApiKey: String? = nil,
         transcriptionKeyExpiresAt: Date? = nil,
         transcriptionModelId: String? = nil,
-        transcriptionLanguageHints: [String] = []
+        transcriptionLanguageHints: [String] = [],
+        sonioxEndpoint: URL? = nil,
+        sonioxKeyExpiresAt: Date? = nil
     ) {
         self.output = output
         self.format = format
@@ -250,6 +288,8 @@ public struct RecordingOptions: Sendable, Equatable {
         self.transcriptionKeyExpiresAt = transcriptionKeyExpiresAt
         self.transcriptionModelId = transcriptionModelId
         self.transcriptionLanguageHints = transcriptionLanguageHints
+        self.sonioxEndpoint = sonioxEndpoint
+        self.sonioxKeyExpiresAt = sonioxKeyExpiresAt
     }
 
     // MARK: - Defaults
@@ -326,7 +366,9 @@ extension RecordingOptions {
             transcriptionApiKey: transcriptionApiKey,
             transcriptionKeyExpiresAt: transcriptionKeyExpiresAt,
             transcriptionModelId: transcriptionModelId,
-            transcriptionLanguageHints: transcriptionLanguageHints
+            transcriptionLanguageHints: transcriptionLanguageHints,
+            sonioxEndpoint: sonioxEndpoint,
+            sonioxKeyExpiresAt: sonioxKeyExpiresAt
         )
     }
 }

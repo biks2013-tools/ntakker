@@ -86,9 +86,24 @@ public enum TranscriptionProviderFactory {
                 modelName: model,
                 logger: input.logger
             )
+        case "soniox":
+            // plan-006 Phase D / Unit D2 — Soniox cloud streaming
+            // provider. Requires a non-empty API key (carried in the
+            // first JSON config frame, NEVER on the URL — see
+            // SonioxConfigMessage). Honours `MACREC_TRANSCRIBE_MODEL`
+            // for picking a non-default real-time model id; defaults
+            // to `SonioxConfigBuilder.defaultModel` (`stt-rt-v4`).
+            guard let key = input.apiKey, !key.isEmpty else {
+                throw MacrecError.transcriptionApiKeyMissing(provider: "soniox")
+            }
+            return SonioxStreamingTranscriptionProvider(
+                apiKey: key,
+                model: input.modelId ?? SonioxConfigBuilder.defaultModel,
+                logger: input.logger
+            )
         default:
             // TODO(plan-004 Phase G): use .transcriptionInvalidConfigValue(field:value:)
-            throw MacrecError.transcriptionConfigConflict(reason: "transcribe value '\(normalized)' invalid (allowed: 'none', 'apple', 'gemini', 'whisperkit')")
+            throw MacrecError.transcriptionConfigConflict(reason: "transcribe value '\(normalized)' invalid (allowed: 'none', 'apple', 'gemini', 'whisperkit', 'soniox')")
         }
     }
 }

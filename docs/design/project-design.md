@@ -5697,3 +5697,1270 @@ locale.
 
 See plan-005-apple-speech-streaming.md §3–§7 for full contracts.
 
+---
+
+## Soniox Streaming Provider (plan-006)
+
+> **Added 2026-04-29 (plan-006 Phase 5 — Designer).** This section anchors
+> the cloud, low-latency, multilingual live-transcription provider
+> introduced by `plan-006-soniox-streaming.md`. Soniox is a peer to the
+> on-device Apple Speech provider (§AS) and to the Gemini REST batch
+> provider (§LT). It runs on top of the `StreamingTranscriptionPipeline`
+> introduced by plan-005 — no new pipeline mode is added.
+>
+> **Source documents:**
+> - `docs/design/refined-request-soniox-streaming.md` — FR-SX-1..FR-SX-18, NFR-SX-1..NFR-SX-7, AC-SX-1..AC-SX-18.
+> - `docs/design/plan-006-soniox-streaming.md` — phases A–H + I, file manifest, AC coverage matrix.
+> - `docs/reference/investigation-soniox-streaming.md` — Option-1 (hand-rolled `URLSessionWebSocketTask`).
+> - `docs/research/soniox-wire-schema.md` — verbatim wire schemas (§§1–8), error catalog, marker semantics, regional endpoints.
+> - `docs/reference/codebase-scan-soniox-streaming.md` — 14 new artefacts, 15 touch points, exact line numbers.
+>
+> This section is **strictly additive**. With `--transcribe none` (default
+> for the CLI; `apple` for the UI) every existing acceptance criterion
+> from §1–§15, §LT, and §AS continues to pass; nothing in those sections
+> changes.
+
+### SX-0. Discrepancies Surfaced Against Plan-006
+
+| # | Discrepancy | Source | Resolution adopted by this design |
+|---|---|---|---|
+| **D-SX-1** | Plan-006 §3 / codebase scan §5 flag that `TranscriptionProviderId.allCases` does NOT contain `.whisperkit` today (factory dispatches on raw string). The new Soniox enum case re-opens the question of whether to regularize. | Codebase scan §5 (`TranscriptionProviderId` is closed); Plan-006 §3.2 | **Adopt: add `.soniox` only; leave the `.whisperkit` anomaly alone.** Rationale: the WhisperKit raw-string path is in production and the regularization is out of scope per refined request §Out of scope ("Modifications to the existing `TranscriptionManager`, `SourceBuffer`, `SegmentCoalescer`, `TranscriptSanitizer`, sidecar writers, UI panel, or any other transcription-pipeline component beyond the minimum needed to register and dispatch the new provider id"). A follow-up issue PEND-SX-2 is filed to track the regularization separately. The picker order remains `None / Apple / Gemini / WhisperKit / Soniox` — `WhisperKit` continues to be a string tag in the picker and a string lookup in the factory. |
+| **D-SX-2** | Plan-006 §0 OQ-SX-1 says "KEEP existing `TranscriptionProvider` / `StreamingTranscriptionSession` protocol unchanged." Refined request §FR-SX-2 says the protocol "MAY be extended with an optional streaming hook only if strictly needed". | Plan-006 §0 OQ-SX-1; Refined request FR-SX-2 | **Adopt: protocol unchanged.** Soniox conforms to the unmodified plan-005 surface (`supportedModes = [.streaming]`, `openStreamingSession(...)`, `transcribe(...)` as a thin streaming-bridge). No additions, no defaults. |
+| **D-SX-3** | Plan-006 §0 OQ-SX-12 proposes per-provider expiry env var (`MACREC_SONIOX_KEY_EXPIRES_AT`) with shared `MACREC_TRANSCRIBE_KEY_EXPIRES_AT` as fallback. Refined request §FR-SX-5 leaves it open. | Plan-006 §0 OQ-SX-12 | **Adopt: provider-scoped > shared.** `MACREC_SONIOX_KEY_EXPIRES_AT` takes precedence; `MACREC_TRANSCRIBE_KEY_EXPIRES_AT` is the fallback. Backward compatible with the current Gemini-only configuration. |
+| **D-SX-4** | Plan-006 §3 says wire-protocol code lives under `Sources/MacrecCore/Transcription/Live/Soniox/` (mirroring a hypothetical Gemini Live layout). Codebase scan §2 shows the project has NO `Live/Gemini/` directory today — Gemini Live was removed in plan-004 and only `Sources/MacrecCore/Transcription/Live/AppleSpeech/` exists if at all. | Plan-006 §3.1; Codebase scan §2 | **Adopt: create `Sources/MacrecCore/Transcription/Live/Soniox/`** as a fresh subtree mirroring AppleSpeech's session-grouping convention. The provider conformer itself stays in `Sources/MacrecCore/Transcription/Providers/SonioxStreamingTranscriptionProvider.swift` for factory discoverability. The wire-protocol code (codecs, aggregator, transport, keepalive, language mapper, error mapper) lives in `Live/Soniox/`. |
+| **D-SX-5** | `URLSessionWebSocketTask` cannot be intercepted via `URLProtocol` (per codebase scan §4.1.K). Plan-006 §4.8 introduces a `WebSocketTransport` protocol seam. | Plan-006 §4.8; Codebase scan §4.1.K | **Adopt: protocol-based test seam.** Production: `URLSessionWebSocketTransport` wraps `URLSessionWebSocketTask`. Tests: `MockWebSocketTransport` (a.k.a. `FakeWebSocketTransport`) replays scripted server frames. This is the same dependency-injection shape as `analyzerFactory` in `AppleSpeechTranscriptionProvider`. |
+
+If any of D-SX-1..D-SX-5 are wrong, the corresponding sub-section of this
+design is the only thing that needs to change; the rest of the
+architecture is independent.
+
+### SX-1. System Architecture (Component Diagram)
+
+The Soniox subsystem plugs into plan-005's `StreamingTranscriptionPipeline`
+exactly the way Apple Speech does — only the provider conformer changes.
+The pipeline, the manager, the source buffers, the sidecar writers, and
+the UI panel are unchanged.
+
+```
+                                 RECORDER (unchanged from §1.1, lossless to disk)
+ ┌─────────────────────────┐
+ │ SCKitSystemAudioSource  │──sync,lossless──┐
+ │   transcriptionTap      │                 │
+ └─────────────────────────┘                 │
+ ┌─────────────────────────┐                 ▼
+ │ AVMicrophoneSource      │──sync,lossless──┤  BufferSummer ──► HostClockAligner ──► Recorder ──► .m4a/.wav/.caf
+ │   transcriptionTap      │                 │                                       (UNCHANGED)
+ └─────────────────────────┘                 │
+                                             │ AlignedFrame
+                                             │ (every 100 ms)
+                                             ▼
+                              ┌─────────────────────────────────┐
+                              │ TranscriptionManager (actor)    │
+                              │   selects pipeline by mode:     │
+                              │   .streaming → StreamingPipeline│
+                              └────────────────┬────────────────┘
+                                               │
+                                               │ AsyncStream<[Float]>  (16 kHz mono)
+                                               │ (post AudioDownsampler — UNCHANGED)
+                                               ▼
+                              ┌─────────────────────────────────┐
+                              │ StreamingTranscriptionPipeline   │
+                              │ (plan-005, UNCHANGED)            │
+                              │   provider.openStreamingSession()│
+                              │   bridges events into manager    │
+                              └────────────────┬────────────────┘
+                                               │
+                          ┌────────────────────┴───────────────────┐
+                          │ NEW IN PLAN-006 (Soniox subsystem)    │
+                          │                                        │
+                          │ ┌──────────────────────────────────┐   │
+                          │ │ SonioxStreamingTranscriptionProvider │
+                          │ │   id=soniox                      │   │
+                          │ │   supportedModes=[.streaming]    │   │
+                          │ │   openStreamingSession(source:)  │   │
+                          │ └──────────┬───────────────────────┘   │
+                          │            │                            │
+                          │            ▼  init(...) async throws    │
+                          │ ┌──────────────────────────────────┐   │
+                          │ │ SonioxStreamingSession           │   │
+                          │ │  (StreamingTranscriptionSession) │   │
+                          │ │                                  │   │
+                          │ │  events: AsyncThrowingStream<    │   │
+                          │ │    StreamingTranscriptionEvent,  │   │
+                          │ │    Error>                        │   │
+                          │ │                                  │   │
+                          │ │  ingest(_:[Float]) async         │   │
+                          │ │  pause() async                   │   │
+                          │ │  resume() async                  │   │
+                          │ │  finish() async                  │   │
+                          │ └─┬──────┬────────┬──────┬─────────┘   │
+                          │   │      │        │      │              │
+                          │   │ owns │ uses   │ uses │ owns         │
+                          │   ▼      ▼        ▼      ▼              │
+                          │  ┌──────────┐ ┌──────┐ ┌──────────┐    │
+                          │  │ Keepalive│ │Aggreg│ │ConfigBldr│    │
+                          │  │  Timer   │ │ator  │ │          │    │
+                          │  └────┬─────┘ └──┬───┘ └────┬─────┘    │
+                          │       │          │          │           │
+                          │       │          ▼          │           │
+                          │       │   Token state mach. │           │
+                          │       │   <end>/<fin>       │           │
+                          │       │   detection         │           │
+                          │       │                     │           │
+                          │       │  ┌──────────────────┴────┐      │
+                          │       │  │ LanguageHintMapper    │      │
+                          │       │  │ (BCP-47 → ISO 639-1)  │      │
+                          │       │  └───────────────────────┘      │
+                          │       │                                  │
+                          │       │  ┌──────────────────────────┐   │
+                          │       │  │ ErrorMapper              │   │
+                          │       │  │ (HTTP code → action)     │   │
+                          │       │  └──────────────────────────┘   │
+                          │       │                                  │
+                          │       ▼                                  │
+                          │ ┌──────────────────────────────────────┐ │
+                          │ │ WebSocketTransport (PROTOCOL)        │ │
+                          │ │   connect(url:) async throws         │ │
+                          │ │   send(WebSocketMessage) async throws│ │
+                          │ │   receive() async throws → message   │ │
+                          │ │   cancel(closeCode, reason)          │ │
+                          │ │                                      │ │
+                          │ │   ┌──────────────────┐  ┌──────────┐ │ │
+                          │ │   │ URLSessionWebSocketTransport │   │ │
+                          │ │   │ (production —     │  │ Mock     │ │ │
+                          │ │   │ wraps URLSession  │  │ WebSocket│ │ │
+                          │ │   │ WebSocketTask)    │  │ Transport│ │ │
+                          │ │   └─────┬─────────────┘  │ (tests)  │ │ │
+                          │ │         │                 └──────────┘ │ │
+                          │ └─────────┼──────────────────────────────┘ │
+                          └───────────┼────────────────────────────────┘
+                                      │ wss://stt-rt.soniox.com/transcribe-websocket
+                                      │ (or wss://stt-rt.eu.soniox.com / .jp.soniox.com)
+                                      │
+                                      │ Wire frames:
+                                      │   1. TEXT JSON: SonioxConfigMessage
+                                      │   N. BINARY:    PCM16-LE 16 kHz mono
+                                      │   K. TEXT JSON: SonioxControlMessage (keepalive / finalize)
+                                      │   1. TEXT "":   end-of-stream
+                                      ▼
+                                   SONIOX CLOUD
+                                      │
+                                      │ Server frames (TEXT JSON):
+                                      │   M. SonioxServerMessage  (token batches)
+                                      │   1. SonioxServerMessage  (finished:true OR error_code)
+                                      ▼
+                          ┌──────────────────────────────────────┐
+                          │ Receive loop in SonioxStreamingSession│
+                          │   JSONDecoder → SonioxServerMessage  │
+                          │   SonioxTokenAggregator.apply(msg)   │
+                          │   eventsContinuation.yield(.partial) │
+                          │   eventsContinuation.yield(.final)   │
+                          │   eventsContinuation.yield(.error)   │
+                          │   eventsContinuation.yield(.metrics) │
+                          └─────────────┬────────────────────────┘
+                                        │
+                                        │ StreamingTranscriptionEvent
+                                        ▼
+                          (back into StreamingTranscriptionPipeline → TranscriptionManager → SidecarWriter + UI)
+```
+
+**Key invariants preserved:**
+
+- The recorder pipeline is on a different Task tree from any Soniox code.
+  An exception thrown by `transport.send(...)` or a `400/401/402/408/429/500/503`
+  Soniox response cannot reach the recorder. NFR-SX-1 / project-design's
+  foundational integrity isolation invariant is preserved by construction.
+- The `StreamingTranscriptionPipeline` from plan-005 is unchanged. Soniox
+  reuses every plumbing element it provides (event bridging, sidecar
+  policy `.streaming`, `.partial` / `.final` / `.metrics` / `.error`
+  routing).
+- The audio path (`AudioDownsampler` Float32 48 kHz stereo →
+  Float32 16 kHz mono) is unchanged. Soniox consumes the same
+  `[Float]` 16 kHz mono buffers Apple Speech consumes; the only
+  Soniox-specific work is Float32 → Int16 LE byte packing inside
+  `SonioxStreamingSession.ingest(_:)` before the binary WebSocket
+  send.
+
+### SX-2. Module Organization
+
+```
+Sources/MacrecCore/Transcription/
+├── Providers/
+│   ├── AppleSpeechTranscriptionProvider.swift          (UNCHANGED)
+│   ├── GeminiRESTTranscriptionProvider.swift           (UNCHANGED)
+│   ├── WhisperKitTranscriptionProvider.swift           (UNCHANGED)
+│   ├── SonioxStreamingTranscriptionProvider.swift      [NEW — Phase D]
+│   └── TranscriptionProviderFactory.swift              (EDITED — Phase D)
+└── Live/
+    ├── AppleSpeech/                                     (existing — UNCHANGED)
+    │   └── AppleSpeechSession.swift
+    └── Soniox/                                          [NEW DIRECTORY — Phase C/D]
+        ├── SonioxStreamingSession.swift                [NEW — Phase D]
+        ├── SonioxWireMessages.swift                    [NEW — Phase C]
+        │     ├── SonioxConfigMessage           (Codable, Sendable, Equatable)
+        │     ├── SonioxControlMessage          (Codable, Sendable, Equatable)
+        │     ├── SonioxServerMessage           (Codable, Sendable, Equatable)
+        │     └── SonioxToken                   (Codable, Sendable, Equatable)
+        ├── SonioxConfigBuilder.swift                   [NEW — Phase D]
+        │     └── build(apiKey:modelId:options:source:recordingId:) -> SonioxConfigMessage
+        ├── SonioxLanguageHintMapper.swift              [NEW — Phase C]
+        │     └── static func map(_ bcp47: [String]) -> [String]
+        ├── SonioxTokenAggregator.swift                 [NEW — Phase C]
+        │     └── mutating func apply(_ msg) -> [StreamingTranscriptionEvent]
+        ├── SonioxErrorMapper.swift                     [NEW — Phase C]
+        │     └── static func action(forErrorCode:message:) -> SonioxErrorAction
+        ├── SonioxKeepaliveTimer.swift                  [NEW — Phase D]
+        │     └── actor; recordAudioSent / start / stop
+        └── WebSocketTransport.swift                    [NEW — Phase C/D]
+              ├── protocol WebSocketTransport            (Sendable)
+              ├── enum WebSocketMessage                  (.data / .string)
+              ├── enum WebSocketCloseCode
+              └── struct URLSessionWebSocketTransport    (production conformer)
+
+Tests/MacrecCoreTests/Transcription/
+├── Providers/
+│   ├── SonioxStreamingTranscriptionProviderTests.swift [NEW — Phase D/I]
+│   └── MockWebSocketTransport.swift                    [NEW — Phase C/D]
+└── Live/Soniox/                                         [NEW DIRECTORY]
+    ├── SonioxWireMessagesTests.swift                   [NEW — Phase C]
+    ├── SonioxLanguageHintMapperTests.swift             [NEW — Phase C]
+    ├── SonioxTokenAggregatorTests.swift                [NEW — Phase C]
+    └── SonioxErrorMapperTests.swift                    [NEW — Phase C]
+
+test_scripts/
+├── e2e-transcription-soniox.sh                          [NEW — Phase I]
+├── e2e-transcription-soniox-greek.sh                    [NEW — Phase I]
+├── e2e-transcription-soniox-english.sh                  [NEW — Phase I]
+├── e2e-transcription-soniox-bilingual.sh                [NEW — Phase I]
+├── e2e-transcription-soniox-key-missing.sh              [NEW — Phase I]
+├── e2e-transcription-soniox-detach.sh                   [NEW — Phase I]
+├── e2e-transcription-soniox-split.sh                    [NEW — Phase I]
+└── probe-soniox-ws.swift                                [NEW OPTIONAL — Phase C]
+```
+
+The split between `Providers/SonioxStreamingTranscriptionProvider.swift`
+and `Live/Soniox/...` mirrors the AppleSpeech grouping (the conformer in
+`Providers/`, the per-provider session details in `Live/<Provider>/`).
+
+### SX-3. Codable Wire-Format Types
+
+All four types live in `Sources/MacrecCore/Transcription/Live/Soniox/SonioxWireMessages.swift`.
+Snake-case Swift property names are kept verbatim from the wire format —
+no `CodingKeys` mapping is needed (chosen for minimal Codable noise; the
+types are only used at the Soniox boundary).
+
+#### SX-3.1 `SonioxConfigMessage` — first WS frame, client → server
+
+```swift
+public struct SonioxConfigMessage: Codable, Sendable, Equatable {
+    public let api_key: String
+    public let model: String                          // "stt-rt-v4"
+    public let audio_format: String                   // "pcm_s16le"
+    public let sample_rate: Int                       // 16000
+    public let num_channels: Int                      // 1
+    public let language_hints: [String]?              // ["el", "en"]
+    public let language_hints_strict: Bool?           // false
+    public let enable_language_identification: Bool?  // true
+    public let enable_endpoint_detection: Bool?       // true
+    public let max_endpoint_delay_ms: Int?            // 2000
+    public let client_reference_id: String?           // "macrec-<recordingId>-<source>"
+    // Out of v1 scope — fields NOT included:
+    //   enable_speaker_diarization, context, translation
+}
+```
+
+| JSON field | Swift field | Type | Required | Default in macrec |
+|---|---|---|---|---|
+| `api_key` | `api_key` | `String` | yes | (resolved from `SONIOX_API_KEY`) |
+| `model` | `model` | `String` | yes | `"stt-rt-v4"` |
+| `audio_format` | `audio_format` | `String` | yes | `"pcm_s16le"` |
+| `sample_rate` | `sample_rate` | `Int` | yes | `16000` |
+| `num_channels` | `num_channels` | `Int` | yes | `1` |
+| `language_hints` | `language_hints` | `[String]?` | no | `["el", "en"]` (post `LanguageHintMapper`) |
+| `language_hints_strict` | `language_hints_strict` | `Bool?` | no | `false` (bias not restriction) |
+| `enable_language_identification` | `enable_language_identification` | `Bool?` | no | `true` (FR-SX-10) |
+| `enable_endpoint_detection` | `enable_endpoint_detection` | `Bool?` | no | `true` (clean `<end>` finals) |
+| `max_endpoint_delay_ms` | `max_endpoint_delay_ms` | `Int?` | no | `2000` |
+| `client_reference_id` | `client_reference_id` | `String?` | no | `"macrec-<recordingId>-<source>"` |
+
+#### SX-3.2 `SonioxControlMessage` — `keepalive` and `finalize`
+
+```swift
+public enum SonioxControlMessage: Codable, Sendable, Equatable {
+    case keepalive   // {"type":"keepalive"}
+    case finalize    // {"type":"finalize"}
+
+    private enum CodingKeys: String, CodingKey { case type }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .keepalive: try c.encode("keepalive", forKey: .type)
+        case .finalize:  try c.encode("finalize",  forKey: .type)
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        switch try c.decode(String.self, forKey: .type) {
+        case "keepalive": self = .keepalive
+        case "finalize":  self = .finalize
+        default:
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "Unknown SonioxControlMessage type"))
+        }
+    }
+}
+```
+
+| JSON field | Swift case | Notes |
+|---|---|---|
+| `{"type":"keepalive"}` | `.keepalive` | sent every 10 s of audio silence |
+| `{"type":"finalize"}` | `.finalize` | sent on Pause to flush pending utterance |
+
+#### SX-3.3 `SonioxServerMessage` — single envelope for ALL server frames
+
+Per `soniox-wire-schema.md` CRITICAL FINDINGS #1 and #2: the same envelope
+covers normal token batches, the terminal `finished` response, and error
+responses. All non-`tokens` fields are optional.
+
+```swift
+public struct SonioxServerMessage: Codable, Sendable, Equatable {
+    public let tokens: [SonioxToken]
+    public let final_audio_proc_ms: Int?     // present in normal + finished
+    public let total_audio_proc_ms: Int?     // present in normal + finished
+    public let finished: Bool?               // true only in terminal response
+    public let error_code: Int?              // 4xx/5xx in error responses
+    public let error_message: String?
+}
+```
+
+| JSON field | Swift field | Always present? |
+|---|---|---|
+| `tokens` | `tokens` | yes (may be `[]`) |
+| `final_audio_proc_ms` | `final_audio_proc_ms` | normal + finished |
+| `total_audio_proc_ms` | `total_audio_proc_ms` | normal + finished |
+| `finished` | `finished` | only in terminal frame |
+| `error_code` | `error_code` | only in error frames (4xx/5xx) |
+| `error_message` | `error_message` | only in error frames |
+
+#### SX-3.4 `SonioxToken`
+
+```swift
+public struct SonioxToken: Codable, Sendable, Equatable {
+    public let text: String
+    public let start_ms: Int?
+    public let end_ms: Int?
+    public let confidence: Double
+    public let is_final: Bool
+    public let language: String?              // ISO 639-1; present when LID enabled
+    public let speaker: String?               // present when diarization enabled (unused v1)
+    public let translation_status: String?    // unused v1
+    public let source_language: String?       // unused v1
+}
+```
+
+| JSON field | Swift field | Always present? | Notes |
+|---|---|---|---|
+| `text` | `text` | yes | may be `"<end>"` or `"<fin>"` |
+| `start_ms` | `start_ms` | usually | absent for translation tokens |
+| `end_ms` | `end_ms` | usually | absent for translation tokens |
+| `confidence` | `confidence` | yes | 0.0–1.0; markers typically 1.0 |
+| `is_final` | `is_final` | yes | `false` = provisional, may be revised |
+| `language` | `language` | when LID on | ISO 639-1 (`"el"`, `"en"`) |
+| `speaker` | `speaker` | when diarization on | unused v1 |
+| `translation_status` | `translation_status` | translation only | unused v1 |
+| `source_language` | `source_language` | translation only | unused v1 |
+
+Marker tokens are detected by `text == "<end>"` (endpoint-detected end of
+utterance) or `text == "<fin>"` (after a manual `finalize`). The aggregator
+flushes pending finals on either marker.
+
+### SX-4. API Contracts and Interfaces
+
+#### SX-4.1 `WebSocketTransport` (test seam protocol)
+
+`URLSessionWebSocketTask` cannot be intercepted via `URLProtocol` (per
+codebase scan §4.1.K). The Soniox subsystem therefore uses a small
+Sendable protocol as the dependency-injection point, mirroring the
+`analyzerFactory` shape in `AppleSpeechTranscriptionProvider`.
+
+```swift
+public protocol WebSocketTransport: Sendable {
+    /// Open the connection. Throws on TLS / DNS / handshake failure.
+    func connect(to url: URL) async throws
+
+    /// Send a TEXT or BINARY frame.
+    func send(_ message: WebSocketMessage) async throws
+
+    /// Await the next inbound frame. Throws if the socket is closed.
+    func receive() async throws -> WebSocketMessage
+
+    /// Close locally; idempotent.
+    func cancel(with closeCode: WebSocketCloseCode, reason: Data?)
+}
+
+public enum WebSocketMessage: Sendable, Equatable {
+    case data(Data)
+    case string(String)
+}
+
+public enum WebSocketCloseCode: Sendable, Equatable {
+    case normalClosure          // 1000
+    case goingAway              // 1001
+    case protocolError          // 1002
+    case unsupportedData        // 1003
+    case noStatusReceived       // 1005
+    case abnormalClosure        // 1006
+    case invalidFramePayloadData // 1007
+    case policyViolation        // 1008
+    case messageTooBig          // 1009
+    case mandatoryExtension     // 1010
+    case internalServerError    // 1011
+    case tlsHandshake           // 1015
+}
+```
+
+**Production conformer:** `URLSessionWebSocketTransport` — wraps
+`URLSession.shared.webSocketTask(with:)`. `@unchecked Sendable` because
+`URLSessionWebSocketTask` carries shared mutable state internally; the
+wrapping struct holds the task by reference.
+
+**Test conformer:** `MockWebSocketTransport` — programmable response
+queue. Records every `send(_:)` call (in order) so tests can assert the
+client-side wire trace; supplies a queue of `WebSocketMessage` values to
+return from `receive()`. Used by `SonioxStreamingTranscriptionProviderTests`
+and recording-integrity isolation tests.
+
+#### SX-4.2 `SonioxStreamingSession: StreamingTranscriptionSession`
+
+Conforms to the unmodified `StreamingTranscriptionSession` protocol added
+by plan-005:
+
+```swift
+final class SonioxStreamingSession: StreamingTranscriptionSession,
+                                     @unchecked Sendable {
+    /// Tagging on emitted segments. Set at init.
+    public let source: SourceTag
+
+    /// Event stream consumed by StreamingTranscriptionPipeline.
+    public let events: AsyncThrowingStream<StreamingTranscriptionEvent, Error>
+
+    init(
+        source: SourceTag,
+        configMessage: SonioxConfigMessage,
+        endpoint: URL,
+        transport: any WebSocketTransport,
+        logger: Logger,
+        clock: any Clock = ContinuousClock()
+    ) async throws
+
+    /// Push 16 kHz mono Float32 audio. Non-blocking. Internally:
+    ///   1. Clamp [-1.0, 1.0]
+    ///   2. Convert Float32 → Int16 LE via withUnsafeBufferPointer
+    ///   3. transport.send(.data(pcm16Data))
+    ///   4. keepaliveTimer.recordAudioSent()
+    /// Lossy under backpressure (drop-oldest if send queue saturates).
+    public func ingest(_ samples: [Float]) async
+
+    /// Pause: send {"type":"finalize"}; await <fin> token batch (timeout ~2 s);
+    /// emit final from pending tokens; keep WebSocket open; keepalive stays running.
+    public func pause() async
+
+    /// Resume: no special control message; just resumes audio frame ingestion.
+    public func resume() async
+
+    /// Stop / drain: send empty TEXT frame (""); await `finished` (timeout 5 s);
+    /// emit any final segments from pending; transport.cancel(.normalClosure, nil);
+    /// emit one .metrics event; finish() the events stream.
+    public func finish() async
+}
+```
+
+**Internal moving parts:**
+
+- One `Task` for the WebSocket receive loop (decodes `SonioxServerMessage`
+  → routes through `SonioxTokenAggregator` → emits events).
+- One `Task` (held by `SonioxKeepaliveTimer` actor) for the keepalive
+  loop.
+- An `NSLock` (or `actor` — Phase D Designer review) protects metrics
+  counters and the "last audio sent at" timestamp.
+- `events` is `AsyncThrowingStream.makeStream(of:throwing:bufferingPolicy:.bufferingNewest(128))`
+  — same buffering policy as `AppleSpeechSession` for parity.
+
+**Concurrency posture:** `final class @unchecked Sendable` with `NSLock`
+for shared counter state — mirrors `AppleSpeechSession.swift:194`.
+Designer review at Phase D may swap to `actor` if all state turns out to
+be naturally isolatable.
+
+#### SX-4.3 `SonioxStreamingTranscriptionProvider: TranscriptionProvider`
+
+```swift
+public struct SonioxStreamingTranscriptionProvider: TranscriptionProvider {
+    public let id: String = "soniox"
+    public let displayName: String = "Soniox (cloud, streaming)"
+    public let supportedModes: Set<TranscriptionMode> = [.streaming]
+
+    let apiKey: String
+    let modelId: String           // default "stt-rt-v4" (factory default if not overridden)
+    let endpoint: URL             // default wss://stt-rt.soniox.com/transcribe-websocket
+    let logger: Logger
+    let transportFactory: @Sendable () -> any WebSocketTransport
+    let clock: any Clock          // injectable for deterministic latency tests
+
+    public init(
+        apiKey: String,
+        modelId: String = "stt-rt-v4",
+        endpoint: URL = URL(string: "wss://stt-rt.soniox.com/transcribe-websocket")!,
+        logger: Logger,
+        transportFactory: @escaping @Sendable () -> any WebSocketTransport
+            = { URLSessionWebSocketTransport() },
+        clock: any Clock = ContinuousClock()
+    )
+
+    /// Streaming-native; see SX-4.2 SonioxStreamingSession.
+    public func openStreamingSession(
+        source: SourceTag,
+        options: TranscriptionOptions
+    ) async throws -> any StreamingTranscriptionSession
+
+    /// Bridges streaming → batch by ingesting all samples in 64 ms slices,
+    /// sending empty-frame close, awaiting `finished`, concatenating finals.
+    /// Same shape as AppleSpeechTranscriptionProvider's bridge (lines 167-180).
+    public func transcribe(
+        samples: [Float],
+        source: SourceTag,
+        options: TranscriptionOptions
+    ) async throws -> String
+}
+```
+
+**Sendable**: yes (a `struct` with `let` properties on `Sendable` types).
+Safe for concurrent calls from `TranscriptionManager`.
+
+**No fallback for `apiKey`**: the `init` requires it. The factory guards
+against `nil` and throws `MacrecError.transcriptionApiKeyMissing(provider: "soniox", envVar: "SONIOX_API_KEY", sources: [...])`
+before `init` is reached.
+
+#### SX-4.4 `AsyncThrowingStream` Event Flow (token → aggregator → event)
+
+```
+WebSocket frame (TEXT, JSON)
+   │
+   ▼ JSONDecoder
+SonioxServerMessage
+   │
+   ▼ SonioxTokenAggregator.apply(_:)
+[StreamingTranscriptionEvent]    (zero or more)
+   │
+   ▼ for-each → eventsContinuation.yield(_)
+events: AsyncThrowingStream<StreamingTranscriptionEvent, Error>
+   │
+   ▼ consumed by StreamingTranscriptionPipeline (plan-005)
+TranscriptionManager event bus
+   │
+   ▼ split by event type
+   ├─► .partial   → TranscriptionPanel (UI live preview)
+   ├─► .final     → SidecarWriter (.streaming policy → JSONL/TXT/SRT/VTT)
+   ├─► .metrics   → TranscriptionMetrics (FR-SX-15 surface)
+   └─► .error     → log .warning; recording continues (NFR-SX-1)
+```
+
+**Aggregator state machine (SX-4.7):**
+
+State: `pendingFinals: [SonioxToken]`, `partialBuffer: [SonioxToken]`.
+
+For each `SonioxServerMessage`:
+
+1. `partialBuffer ← message.tokens.filter { !$0.is_final }`. If non-empty,
+   yield `.partial(SegmentDraft(text: partialText, language: modeLanguage))`.
+2. For each `is_final: true` token in message order:
+   - If `text == "<end>"` or `text == "<fin>"`: aggregate `pendingFinals`
+     into one `TranscriptSegment` (text=concat, startTime=first.start_ms/1000,
+     endTime=last.end_ms/1000, language=mode of `language` fields,
+     model=`"soniox"`, confidence=mean), yield
+     `.final(StreamingFinal(segment: segment, source: self.source))`,
+     clear `pendingFinals`.
+   - Otherwise: append to `pendingFinals`.
+3. If `message.finished == true`: flush `pendingFinals` if non-empty,
+   yield one `.metrics(...)`, signal end-of-stream by completing the
+   continuation.
+4. If `message.error_code != nil`: route via `SonioxErrorMapper.action(...)`;
+   for `.stopWithApiKeyInvalid` yield `.error(...)` and complete; for
+   `.warnRecordingContinues` yield `.error(...)` and continue; for
+   `.reconnect` schedule a reconnect (NFR-SX-5 v1 = at most one).
+
+### SX-5. Configuration Plumbing
+
+#### SX-5.1 New keys in `ConfigKeys.swift` (i.e. `ConfigResolver.Keys`)
+
+```swift
+public enum Keys {
+    // ... existing keys unchanged ...
+
+    /// Soniox API key (vendor-canonical); resolved through 4-tier chain.
+    public static let sonioxApiKey         = "SONIOX_API_KEY"
+
+    /// Optional Soniox WebSocket endpoint override. Defaults to
+    /// wss://stt-rt.soniox.com/transcribe-websocket. Regional variants:
+    ///   wss://stt-rt.eu.soniox.com/transcribe-websocket
+    ///   wss://stt-rt.jp.soniox.com/transcribe-websocket
+    public static let sonioxEndpoint       = "MACREC_SONIOX_ENDPOINT"
+
+    /// Optional per-provider expiry override. Provider-scoped > shared
+    /// MACREC_TRANSCRIBE_KEY_EXPIRES_AT (D-SX-3 / OQ-SX-12).
+    public static let sonioxKeyExpiresAt   = "MACREC_SONIOX_KEY_EXPIRES_AT"
+}
+```
+
+#### SX-5.2 `ConfigResolver.resolveTranscriptionApiKey()` branching (line 345)
+
+The new branch slots into the existing API-key resolution switch
+exactly the way `case .gemini, .geminiLive:` does:
+
+```swift
+switch transcribeProviderEnum {
+// ... existing branches ...
+
+case .gemini, .geminiLive:
+    apiKey = value(Keys.geminiApiKey)
+
+case .soniox:                                   // NEW
+    apiKey = value(Keys.sonioxApiKey)            // NEW
+
+case .apple, .none:
+    apiKey = nil
+}
+```
+
+If `transcribeProviderEnum == .soniox` and the resolved `apiKey` is
+nil, the resolver throws:
+
+```swift
+throw MacrecError.transcriptionApiKeyMissing(
+    provider: "soniox",
+    envVar: Keys.sonioxApiKey,
+    sources: [
+        "shell environment",
+        "~/.tool-agents/macrec/.env",
+        "./.env",
+        "CLI flags (none accepted for keys)"
+    ]
+)  // exit 78 (EX_CONFIG)
+```
+
+**No fallback** is permitted (CLAUDE.md rule + FR-SX-4).
+
+#### SX-5.3 4-Tier Resolution Chain — Reused As-Is
+
+The resolution mechanism is the same one Gemini uses:
+
+| Tier | Source | Lowest priority → highest |
+|---|---|---|
+| 1 | Shell environment (`getenv("SONIOX_API_KEY")`) | lowest |
+| 2 | `~/.tool-agents/macrec/.env` (mode `0600`) | |
+| 3 | `./.env` (project local) | |
+| 4 | CLI flag | highest (none for keys) |
+
+For `MACREC_SONIOX_ENDPOINT` and `MACREC_SONIOX_KEY_EXPIRES_AT` the same
+chain applies, with `--soniox-endpoint <url>` accepted as a CLI flag at
+tier 4 (FR-SX-7).
+
+#### SX-5.4 `MACREC_SONIOX_KEY_EXPIRES_AT` Precedence
+
+```swift
+let sonioxKeyExpiresAt: Date? = {
+    if let raw = value(Keys.sonioxKeyExpiresAt) {
+        // Provider-scoped (D-SX-3 / OQ-SX-12)
+        return ISO8601DateFormatter().date(from: raw)
+    }
+    // Shared fallback — backward compatible with Gemini-only setup
+    return transcriptionKeyExpiresAt
+}()
+```
+
+If past, log a `.warning` at recording start; recording is NOT blocked
+(AC-SX-16).
+
+### SX-6. Audio Adaptation
+
+The Soniox provider adds **zero new audio pipeline code**. The existing
+`AudioDownsampler` already produces exactly the format Soniox needs:
+
+| Stage | Input | Output | Owner |
+|---|---|---|---|
+| Capture | Float32 / 48 kHz / stereo planar | Float32 / 48 kHz / stereo planar | UNCHANGED |
+| `AudioDownsampler` | Float32 / 48 kHz / stereo | **Float32 / 16 kHz / mono** | UNCHANGED |
+| `SonioxStreamingSession.ingest(_:)` | Float32 / 16 kHz / mono `[Float]` | **Int16 LE 16 kHz mono `Data`** | NEW (in-session, ~5 lines) |
+| `transport.send(.data(...))` | Int16 LE bytes | Binary WebSocket frame | NEW (URLSessionWebSocketTask) |
+
+The Float32 → Int16 LE pack uses `withUnsafeBufferPointer` + clamping
+to `[-1.0, 1.0]` then `* Float(Int16.max)` rounded — a pattern already
+established by `AudioWAVEncoder`. No new helper file is needed; the
+~5-line conversion lives inside `SonioxStreamingSession.ingest(_:)`.
+
+`audio_format: "pcm_s16le"`, `sample_rate: 16000`, `num_channels: 1` are
+hard-coded on the `SonioxConfigMessage` to match what `AudioDownsampler`
+emits. If the downsampler's output ever changes (future plan), the
+config message must be updated in sync.
+
+### SX-7. Language Hint Strategy
+
+#### SX-7.1 `SonioxLanguageHintMapper`
+
+A pure value with one method:
+
+```swift
+public struct SonioxLanguageHintMapper {
+    /// Strip BCP-47 region suffixes; deduplicate; preserve order.
+    /// Empty input or all-empty after strip → ["el", "en"].
+    ///
+    /// Examples:
+    ///   ["el-GR", "en-US", "en-GB"]  → ["el", "en"]
+    ///   ["el-GR"]                    → ["el"]
+    ///   ["fr"]                       → ["fr"]
+    ///   ["en", "EN", "en-US"]        → ["en"]
+    ///   []                           → ["el", "en"]
+    ///   nil  (callers should pass [])→ ["el", "en"]
+    public static func map(_ bcp47: [String]) -> [String]
+}
+```
+
+Implementation sketch: lower-case → split on first `-` or `_` → take
+prefix → ordered-deduplicate → if empty, return `["el", "en"]`.
+
+**Why ISO 639-1 stripping?** Soniox accepts ISO 639-1 only;
+`"el-GR"` causes a `400 Bad Request` (`"Invalid language hint."` per
+soniox-wire-schema.md §1.3 / CRITICAL FINDING #9). The project's
+`TranscriptionOptions.languageHints` carries BCP-47 (parity with
+Apple Speech), so the mapper is required at the boundary.
+
+#### SX-7.2 Default — `["el", "en"]`
+
+When the user passes nothing on `--transcribe-language` /
+`MACREC_TRANSCRIBE_LANGUAGE`, the Soniox provider defaults to
+`language_hints: ["el", "en"]` (Greek first per FR-SX-9 — Greek is the
+project's primary language; English second). Order is a tie-breaker bias
+only (per soniox-wire-schema.md §1.3 / CRITICAL FINDING #8) — both
+languages are always recognized; the order communicates which one to
+prefer when acoustically ambiguous.
+
+#### SX-7.3 `language_hints_strict: false`
+
+The provider hard-codes `language_hints_strict: false`. This is a bias,
+not a restriction — content in other languages (e.g. a Spanish phrase
+mid-conversation) is still transcribed best-effort. This aligns with the
+project's "no-fallback" posture (we never silently drop content) and is
+consistent with the multilingual workflow Soniox is being adopted for.
+
+### SX-8. Error Handling Strategy
+
+#### SX-8.1 Configuration-Time Error (no fallback)
+
+If `--transcribe soniox` is selected and `SONIOX_API_KEY` is absent in
+all four tiers, the resolver raises:
+
+```swift
+MacrecError.transcriptionApiKeyMissing(
+    provider: "soniox",
+    envVar: "SONIOX_API_KEY",
+    sources: [...4-tier list...]
+)
+```
+
+This exits with code 78 (`EX_CONFIG`) **before any audio file is created**
+(AC-SX-5 parity with AC-LT-4). No fallback value, no demo key, no
+anonymous mode — per CLAUDE.md "no fallback solutions for configuration
+settings" + FR-SX-4.
+
+#### SX-8.2 Runtime Errors via `SonioxErrorMapper`
+
+WebSocket close codes and `SonioxServerMessage.error_code` values are
+mapped to typed `SonioxStreamingError` cases by `SonioxErrorMapper`:
+
+```swift
+public enum SonioxStreamingError: Error, Sendable, Equatable {
+    case invalidApiKey                         // 401
+    case quotaExceeded                         // 402
+    case idleTimeout                           // 408
+    case malformedConfig(detail: String)       // 400
+    case rateLimited                           // 429
+    case serverOutage(httpCode: Int)           // 500
+    case terminatedReconnect                   // 503 — operational, not a bug
+    case unknownError(code: Int, detail: String?)
+}
+
+public enum SonioxErrorAction: Sendable, Equatable {
+    case stopWithApiKeyInvalid
+    case warnRecordingContinues(SonioxStreamingError)
+    case reconnect
+}
+
+public struct SonioxErrorMapper {
+    public static func action(forErrorCode code: Int, message: String?)
+        -> SonioxErrorAction
+}
+```
+
+| Soniox code | Action | Surfaces as |
+|---|---|---|
+| `400` | `.warnRecordingContinues(.malformedConfig)` | `.error` event, recording continues |
+| `401` | `.stopWithApiKeyInvalid` | `.error` event, events stream finishes |
+| `402` | `.warnRecordingContinues(.quotaExceeded)` | `.error` event, recording continues |
+| `408` | `.reconnect` | reconnect once, then `.error` if it fails |
+| `429` | `.warnRecordingContinues(.rateLimited)` | `.error` event, recording continues |
+| `500` | `.reconnect` | reconnect after short backoff, then `.error` if it fails |
+| `503` | `.reconnect` | immediate reconnect (mid-session signal, not a bug) |
+| other | `.warnRecordingContinues(.unknownError)` | `.error` event, recording continues |
+
+#### SX-8.3 Recording-Integrity Isolation (NFR-SX-1, AC-SX-6)
+
+**Every** Soniox failure mode emits `.error` events into the transcription
+stream and **never** propagates to the recorder pipeline. The recorder
+runs on a separate Task tree; the transcription session's
+`AsyncThrowingStream` carries Soniox failures, but the consumer
+(`StreamingTranscriptionPipeline`) treats them as side-channel events —
+no upstream cancellation is propagated to the audio capture sources or
+the file writer.
+
+This is verified by `RecordingIntegrityIsolationTests` extended with a
+`SonioxAlwaysFailingFake` (a `WebSocketTransport` that throws on every
+`send(_:)`) — the test asserts the audio file produced under the
+failing-fake injection is byte-for-byte identical to a control recording
+with `--transcribe none` (AC-SX-6).
+
+### SX-9. UI / Picker Integration
+
+#### SX-9.1 New `TranscriptionProviderId.soniox` enum case
+
+```swift
+public enum TranscriptionProviderId: String, Sendable, Codable, CaseIterable {
+    case none
+    case apple
+    case gemini
+    case geminiLive = "gemini-live"   // existing deprecated alias
+    case soniox                        // NEW — plan-006
+    // (whisperkit handled as raw string per codebase scan §5)
+}
+```
+
+**Note on the `.whisperkit` anomaly (D-SX-1):** the picker / factory
+already dispatch `whisperkit` as a raw string today — `TranscriptionProviderId`
+does not enumerate it. Plan-006 does NOT regularize this. WhisperKit
+continues as a string tag; Soniox is added as a proper enum case.
+PEND-SX-2 in `Issues - Pending Items.md` tracks the regularization
+follow-up.
+
+#### SX-9.2 `TranscriptionPicker.swift` — Soniox row + provider-aware tooltip
+
+Edit `Sources/macrec-ui/Views/Transcription/TranscriptionPicker.swift:75`:
+
+```swift
+Picker("Provider", selection: $providerRaw) {
+    Text("None").tag("none")
+    Text("Apple (on-device)").tag("apple")
+    Text("Gemini (cloud)").tag("gemini")
+    Text("WhisperKit (on-device)").tag("whisperkit")
+    Text("Soniox (cloud, streaming)").tag("soniox")    // NEW
+}
+```
+
+Final picker order: `None / Apple / Gemini / WhisperKit / Soniox` (per
+plan-006 §0 OQ-SX-8 default — Soniox appended at the end).
+
+`missingKeyTooltip` (currently hard-coded to `GOOGLE_API_KEY`, line
+67–68) becomes a function of `providerRaw`:
+
+```swift
+static func requiredKeyEnvVar(for providerRaw: String) -> String? {
+    switch providerRaw {
+    case "gemini":  return "GOOGLE_API_KEY"
+    case "soniox":  return "SONIOX_API_KEY"
+    default:        return nil
+    }
+}
+
+static func missingKeyTooltip(for providerRaw: String) -> String? {
+    guard let envVar = requiredKeyEnvVar(for: providerRaw) else { return nil }
+    return "Set \(envVar) in shell env, ~/.tool-agents/macrec-ui/.env, or ./.env."
+}
+```
+
+#### SX-9.3 `PrivacyDisclosureSheet.swift` — Soniox-keyed copy
+
+Add a `soniox`-keyed disclosure body block:
+
+> "Audio is being sent to Soniox (soniox.com) for cloud-based
+> speech-to-text transcription. Soniox processes the audio in their
+> data centers (US/EU/JP region depending on your account). Configure
+> data retention preferences at console.soniox.com. See
+> https://soniox.com/docs/data-residency for details."
+
+Persistence: `@AppStorage("com.macrec.ui.sonioxPrivacyAccepted")` (parity
+with the Gemini disclosure flag). Dismissing with "Don't show again"
+suppresses the dialog on subsequent Soniox starts within the same
+launch (FR-SX-16, AC-SX-9).
+
+#### SX-9.4 `StartCommand.swift:95` — fix stale help string + add endpoint flag
+
+The current `--transcribe` help string at line 95 reads
+`"none | gemini-live"` — already stale (Apple, WhisperKit shipped
+without help-text updates). Fix as part of plan-006:
+
+```swift
+@Option(name: .long,
+        help: "Live transcription provider: none | apple | gemini | whisperkit | soniox")
+var transcribe: String?
+
+@Option(name: .customLong("soniox-endpoint"),
+        help: "Override Soniox WebSocket endpoint (default: wss://stt-rt.soniox.com/transcribe-websocket)")
+var sonioxEndpoint: String?
+```
+
+In `buildCLIOverrides()` (line 216), forward `sonioxEndpoint` as
+`Keys.sonioxEndpoint`. **Do NOT add a `--soniox-api-key` flag** —
+NFR-SX-3 (parity with NFR-20) prohibits API keys on the command line.
+
+### SX-10. Technology Choices With Rationale
+
+| Choice | Rationale |
+|---|---|
+| **Hand-rolled `URLSessionWebSocketTask`** (no Swift SDK) | (1) No Swift SDK exists at github.com/soniox; the Python and JS SDKs are not consumable from a Swift macOS process without a sidecar. (2) The Soniox protocol is small — one config JSON, binary PCM, two control messages, JSON response envelope, empty-frame close. (3) Matches the original Gemini Live pick (plan-003 OQ-LT-4) and Foundation-only constraint. (4) NFR-SX-7 (no new SPM dependency) is satisfied — `Package.swift` diff stays empty. |
+| **Protocol-based test seam (`WebSocketTransport`)** | (1) `URLSessionWebSocketTask` is NOT intercepted by `URLProtocol` (per codebase scan §4.1.K). (2) Same dependency-injection shape as `analyzerFactory` in `AppleSpeechTranscriptionProvider` — already established convention. (3) Allows `MockWebSocketTransport` to script bidirectional flows for unit tests without spinning up a real socket. |
+| **`AsyncThrowingStream<StreamingTranscriptionEvent, Error>`** | Matches plan-005 surface (`StreamingTranscriptionSession.events`). Keeps Soniox interchangeable with Apple Speech at the pipeline boundary; consumers don't care which provider produced the events. |
+| **`AsyncStream<URLSessionWebSocketTask.Message>` wrapped in `WebSocketTransport`** | Hides `URLSessionWebSocketTask` behind a protocol; the production conformer wraps; tests substitute. The wrapping enum (`WebSocketMessage` cases `.data`/`.string`) is plain Sendable. |
+| **`Codable` with `JSONEncoder.OutputFormatting = []`** (compact, no pretty-print) | Wire efficiency. Soniox config message is sent once per session; control messages every 10 s. Pretty-print is unnecessary overhead. |
+| **`Task` + `Task.detached` only where structured concurrency requires isolation** | The keepalive timer is a child Task of the session's lifecycle so cancellation cascades naturally. `Task.detached` is used only for the WebSocket receive loop where the lifetime must outlive the caller's task tree (parity with `AppleSpeechSession`). |
+| **ISO 639-1 stripping in Swift, NOT relying on Soniox to tolerate BCP-47** | Soniox returns `400 Bad Request` ("Invalid language hint.") for `el-GR` (verified by soniox-wire-schema.md §1.3 / CRITICAL FINDING #9). Doing the strip client-side is a one-line pure function and makes the wire payload always-valid. |
+| **Per-provider expiry env var (`MACREC_SONIOX_KEY_EXPIRES_AT`)** with shared fallback | Per-provider visibility for users who maintain multiple keys with different expiry dates. Backward-compatible: existing single-`MACREC_TRANSCRIBE_KEY_EXPIRES_AT` configs continue to work unchanged (D-SX-3 / OQ-SX-12 default). |
+| **Soniox appended to picker** (`None / Apple / Gemini / WhisperKit / Soniox`) | Preserves existing UI ordering — Apple-first (default), then existing entries in their existing positions. Adding the newcomer at the end is the least disruptive choice (OQ-SX-8 default). |
+| **No diarization in v1** (`enable_speaker_diarization` omitted from config) | Out of scope per refined request §Out of scope and OQ-SX-3. Diarization is a project-level v2 backlog item. Keeping it off in v1 reduces wire payload size and avoids the speaker-tag UI question. |
+| **`client_reference_id = "macrec-<recordingId>-<source>"` (NOT raw UUIDs)** | Vendor-side debugging aid (appears in Soniox Console logs) without leaking PII (NFR-SX-4 — no host name, user name, mic device name). The `<recordingId>` is project-internal (a UUID generated by `RecordingSession`); the `<source>` is `mic` / `system` / `mixed`. The `macrec-` prefix lets a Soniox support engineer immediately identify the source application. Max 256 chars (well within Soniox's limit). |
+| **`AsyncThrowingStream.makeStream(bufferingPolicy: .bufferingNewest(128))`** | Same buffer depth as `AppleSpeechSession`. 128 events of headroom is enough to absorb a server burst (Soniox can emit 5–10 token batches per second per source); over-saturation drops oldest, never blocks the recorder. |
+
+### SX-11. Integration Points (Cross-Reference Codebase Scan)
+
+| Touch point | File | Line(s) | Change | Phase |
+|---|---|---|---|---|
+| `TranscriptionProviderId` enum | `Sources/MacrecCore/Config/RecordingOptions.swift` | 74-79 | Add `case soniox` | B |
+| `TranscriptionProviderFactory` | `Sources/MacrecCore/Transcription/Providers/TranscriptionProviderFactory.swift` | 46-93 | Add `case "soniox":` branch; update `default:` error message at line 91 to include `'soniox'`; add `sonioxEndpoint: URL?` to `TranscriptionProviderFactoryInput` | D |
+| `ConfigResolver.Keys` | `Sources/MacrecCore/Config/ConfigResolver.swift` | 404-436 | Add `Keys.sonioxApiKey = "SONIOX_API_KEY"`, `Keys.sonioxEndpoint = "MACREC_SONIOX_ENDPOINT"`, `Keys.sonioxKeyExpiresAt = "MACREC_SONIOX_KEY_EXPIRES_AT"` | B |
+| `ConfigResolver.resolveTranscriptionApiKey()` | `Sources/MacrecCore/Config/ConfigResolver.swift` | 345 | Add `case .soniox:` branch reading `value(Keys.sonioxApiKey)` | B |
+| `ConfigResolver.transcriptionProviderId` switch | `Sources/MacrecCore/Config/ConfigResolver.swift` | 241-261 | Add `case .soniox: return "soniox"` | B |
+| Endpoint + expiry resolution | `Sources/MacrecCore/Config/ConfigResolver.swift` | (after 345 block) | Parse `MACREC_SONIOX_ENDPOINT` as URL (exit 64 on bad parse); resolve `sonioxKeyExpiresAt` with provider-scoped > shared precedence | B |
+| `RecordingOptions.withOutput(_:)` | `Sources/MacrecCore/Config/RecordingOptions.swift` | 306-331 | Forward new fields `sonioxEndpoint`, `sonioxKeyExpiresAt` in copy constructor | B |
+| `StartCommand.swift` `--transcribe` help string | `Sources/macrec/Commands/StartCommand.swift` | 95 | Replace stale `"none \| gemini-live"` with `"none \| apple \| gemini \| whisperkit \| soniox"` | H |
+| `StartCommand.swift` add `--soniox-endpoint` | `Sources/macrec/Commands/StartCommand.swift` | (new `@Option`) + 216 (forward in `buildCLIOverrides`) | New optional flag → `Keys.sonioxEndpoint`. **NO `--soniox-api-key` flag** | H |
+| `TranscriptionPicker.swift` Soniox row | `Sources/macrec-ui/Views/Transcription/TranscriptionPicker.swift` | 75 | Add `Text("Soniox (cloud, streaming)").tag("soniox")` | H |
+| `TranscriptionPicker.swift` provider-aware tooltip | `Sources/macrec-ui/Views/Transcription/TranscriptionPicker.swift` | 67-68 | Replace hard-coded `GOOGLE_API_KEY` with `requiredKeyEnvVar(for: providerRaw)` lookup | H |
+| `PrivacyDisclosureSheet.swift` Soniox copy | `Sources/macrec-ui/Views/Transcription/PrivacyDisclosureSheet.swift` | (new keyed branch) | Add Soniox-specific disclosure body + `@AppStorage("com.macrec.ui.sonioxPrivacyAccepted")` | H |
+| `MacrecError.swift` provider-parameterized cases | `Sources/MacrecCore/Errors/MacrecError.swift` | (verify presence) | Ensure `transcriptionApiKeyMissing(provider:envVar:sources:)` is parameterized by provider; add `transcriptionApiKeyInvalid`, `transcriptionConfigError`, `transcriptionQuotaExhausted`, `transcriptionRateLimited`, `transcriptionUnknownError` if not present | B |
+
+All other modules (capture, mixing, encoding, daemon, aligner,
+`TranscriptionManager`, `SourceBuffer`, `SegmentCoalescer`,
+`TranscriptSanitizer`, sidecar writers, `SessionCoordinator`,
+`RecordingController`) are explicitly OUT OF SCOPE per the refined
+request §Out of scope and codebase scan §4.2 — no edits.
+
+### SX-12. Implementation Units (Parallel Build Plan)
+
+Mirroring plan-006 §11 Phases. The dependency graph is:
+
+```
+Unit 0 (docs / spec alignment) ───┐
+Unit A (wire-format Codable types)│
+Unit B (config plumbing)          ├──→ Unit D (provider + session + keepalive)
+Unit C (WebSocketTransport seam)──┘                             │
+                                                                 ├──→ Unit I (e2e + docs)
+Unit H (UI: picker / disclosure / StartCommand) ────────────────┘
+```
+
+#### Unit A — Wire-format Codable types + JSON snapshot tests
+
+**Independent.** Produces only `Sources/MacrecCore/Transcription/Live/Soniox/SonioxWireMessages.swift`
++ `Tests/MacrecCoreTests/Transcription/Live/Soniox/SonioxWireMessagesTests.swift`.
+
+Owns:
+- `SonioxConfigMessage`, `SonioxControlMessage`, `SonioxServerMessage`,
+  `SonioxToken` (per SX-3).
+- Round-trip Codable tests against verbatim fixtures from
+  `docs/research/soniox-wire-schema.md` §3.1–3.5.
+
+**No dependencies.** Can be built in isolation.
+
+#### Unit B — Config plumbing + ConfigResolver branch + ConfigKeys
+
+**Independent.** Produces:
+- New keys in `ConfigResolver.Keys`.
+- New `.soniox` case in `TranscriptionProviderId`.
+- New branch in `resolveTranscriptionApiKey()`.
+- New `sonioxEndpoint`, `sonioxKeyExpiresAt` fields on `RecordingOptions`.
+- Endpoint URL parsing + expiry precedence logic.
+- New `MacrecError` cases (or verification that existing cases are
+  provider-parameterized).
+- `ConfigResolverTranscriptionTests` extensions.
+
+**No dependencies on A, C, D.** Touches only existing `Config/` files.
+
+#### Unit C — `WebSocketTransport` protocol + production adapter + test mock
+
+**Independent.** Produces:
+- `Sources/MacrecCore/Transcription/Live/Soniox/WebSocketTransport.swift`
+  — protocol + `WebSocketMessage` + `WebSocketCloseCode`.
+- `URLSessionWebSocketTransport` (production).
+- `Tests/MacrecCoreTests/Transcription/Providers/MockWebSocketTransport.swift`
+  (test).
+- Plus the pure-value pieces:
+  - `SonioxLanguageHintMapper.swift` + tests.
+  - `SonioxTokenAggregator.swift` + tests.
+  - `SonioxErrorMapper.swift` + tests.
+
+**No dependencies on A, B.** Aggregator depends on `SonioxToken` /
+`SonioxServerMessage` as Codable types (Unit A) for its `apply(_:)`
+input — but the tests can use scripted Swift instances directly without
+JSON parsing, so Unit C is parallel-safe with Unit A.
+
+#### Unit D — `SonioxStreamingTranscriptionProvider` + `SonioxStreamingSession` + supporting types
+
+**Depends on A, B, C.** Produces:
+- `Sources/MacrecCore/Transcription/Providers/SonioxStreamingTranscriptionProvider.swift`.
+- `Sources/MacrecCore/Transcription/Live/Soniox/SonioxStreamingSession.swift`.
+- `Sources/MacrecCore/Transcription/Live/Soniox/SonioxConfigBuilder.swift`.
+- `Sources/MacrecCore/Transcription/Live/Soniox/SonioxKeepaliveTimer.swift`.
+- Factory wiring (`TranscriptionProviderFactory.swift` `case "soniox":` branch).
+- `SonioxStreamingTranscriptionProviderTests.swift` — exercises the
+  full session lifecycle against `MockWebSocketTransport`.
+
+#### Unit H — UI: TranscriptionPicker / PrivacyDisclosureSheet / StartCommand help
+
+**Depends on B (for the `.soniox` enum case so the picker tag
+round-trips through `RecordingOptions`) + D (so the factory dispatches
+the new provider).** Produces:
+- `TranscriptionPicker.swift` Soniox row + provider-aware tooltip.
+- `PrivacyDisclosureSheet.swift` Soniox copy + `@AppStorage` flag.
+- `StartCommand.swift` help-string fix + `--soniox-endpoint` flag.
+- UI snapshot/selection tests.
+
+**Parallel-safe with C.** Touches only `Sources/macrec-ui/` and
+`Sources/macrec/Commands/`; no overlap with the Live/Soniox/ subtree.
+
+#### Unit I — Documentation + e2e + recording-integrity injection
+
+**Depends on D + H.** Produces:
+- `docs/tools/macrec.md` Soniox row in the `--transcribe` table.
+- `docs/tools/macrec-ui.md` picker entry + disclosure copy.
+- `docs/design/configuration-guide.md` Soniox section.
+- `docs/design/project-functions.md` §1.6 (FR-SX-1..18, NFR-SX-1..7,
+  AC-SX-1..18).
+- `test_scripts/e2e-transcription-soniox*.sh` (7 scripts).
+- `RecordingIntegrityIsolationTests` extension with
+  `SonioxAlwaysFailingFake` injection.
+- Optional `test_scripts/probe-soniox-ws.swift` to close PEND-SX-1.
+
+### SX-13. Interface Contracts BETWEEN Parallel Units
+
+The contracts below are the **shared truth** that lets each Unit be
+implemented WITHOUT consulting any other Unit's owner.
+
+#### A ↔ D — Wire-format Codable types
+
+**A produces (public API consumed by D):**
+
+```swift
+// In Sources/MacrecCore/Transcription/Live/Soniox/SonioxWireMessages.swift
+public struct SonioxConfigMessage: Codable, Sendable, Equatable { ... }
+public enum   SonioxControlMessage: Codable, Sendable, Equatable { ... }
+public struct SonioxServerMessage: Codable, Sendable, Equatable { ... }
+public struct SonioxToken: Codable, Sendable, Equatable { ... }
+```
+
+**D consumes by:**
+
+```swift
+let configJSON = try JSONEncoder().encode(configMessage)
+try await transport.send(.string(String(data: configJSON, encoding: .utf8)!))
+
+// Receive loop:
+let raw = try await transport.receive()
+guard case .string(let text) = raw, let data = text.data(using: .utf8) else { /* skip */ }
+let msg = try JSONDecoder().decode(SonioxServerMessage.self, from: data)
+```
+
+D never reaches into A's types directly — only via JSON encode/decode.
+A can change its private internals freely as long as the public field
+list and Codable conformance stay stable.
+
+#### B ↔ D — Config resolution
+
+**B produces (public API consumed by D):**
+
+```swift
+// In Sources/MacrecCore/Config/ConfigResolver.swift
+public enum Keys {
+    public static let sonioxApiKey         = "SONIOX_API_KEY"
+    public static let sonioxEndpoint       = "MACREC_SONIOX_ENDPOINT"
+    public static let sonioxKeyExpiresAt   = "MACREC_SONIOX_KEY_EXPIRES_AT"
+}
+
+// In Sources/MacrecCore/Config/RecordingOptions.swift
+extension RecordingOptions {
+    public let sonioxEndpoint: URL?
+    public let sonioxKeyExpiresAt: Date?
+}
+```
+
+**D consumes via the existing factory input shape** (with the new field
+added in Unit B):
+
+```swift
+// In Sources/MacrecCore/Transcription/Providers/TranscriptionProviderFactory.swift
+public struct TranscriptionProviderFactoryInput {
+    // ... existing fields ...
+    public let sonioxEndpoint: URL?      // NEW (added in Unit B/D)
+}
+
+// Factory branch:
+case "soniox":
+    guard let apiKey = input.apiKey else {
+        throw MacrecError.transcriptionApiKeyMissing(
+            provider: "soniox",
+            envVar: "SONIOX_API_KEY",
+            sources: ConfigResolver.searchedSources)
+    }
+    return SonioxStreamingTranscriptionProvider(
+        apiKey: apiKey,
+        modelId: input.modelOverride ?? "stt-rt-v4",
+        endpoint: input.sonioxEndpoint
+            ?? URL(string: "wss://stt-rt.soniox.com/transcribe-websocket")!,
+        logger: input.logger)
+```
+
+D never reads env vars directly. The `transcriptionApiKey(for: .soniox)`
+contract is: "if the user set `SONIOX_API_KEY` in any of the four tiers,
+it's resolved into `input.apiKey`; otherwise the factory throws BEFORE
+constructing the provider."
+
+#### C ↔ D — WebSocket transport
+
+**C produces (public API consumed by D):**
+
+```swift
+// In Sources/MacrecCore/Transcription/Live/Soniox/WebSocketTransport.swift
+public protocol WebSocketTransport: Sendable {
+    func connect(to url: URL) async throws
+    func send(_ message: WebSocketMessage) async throws
+    func receive() async throws -> WebSocketMessage
+    func cancel(with closeCode: WebSocketCloseCode, reason: Data?)
+}
+
+public enum WebSocketMessage: Sendable, Equatable {
+    case data(Data)
+    case string(String)
+}
+
+public struct URLSessionWebSocketTransport: WebSocketTransport {
+    public init()
+    // ... conforms ...
+}
+```
+
+**D consumes:**
+
+```swift
+let transport = transportFactory()           // injectable, defaults to URLSessionWebSocketTransport()
+try await transport.connect(to: endpoint)
+try await transport.send(.string(configJSON))
+// ... per-frame ingest ...
+try await transport.send(.data(pcm16))
+// ... receive loop ...
+let msg = try await transport.receive()
+// ... close ...
+transport.cancel(with: .normalClosure, reason: nil)
+```
+
+Unit C also exposes `MockWebSocketTransport` for tests — this is the
+shared test double for both Unit C's own pure-value tests and Unit D's
+session-lifecycle tests.
+
+#### D ↔ H — Provider registration + picker discovery
+
+**D produces (public API consumed by H):**
+
+```swift
+// In TranscriptionProviderFactory.swift — registered provider id "soniox"
+// dispatches to SonioxStreamingTranscriptionProvider.
+```
+
+**H consumes:**
+
+```swift
+// In TranscriptionPicker.swift
+Text("Soniox (cloud, streaming)").tag("soniox")
+// The string "soniox" is the contract — H never imports any Soniox-specific type.
+
+// In missingKeyTooltip:
+case "soniox": return "SONIOX_API_KEY"
+// Same string contract.
+
+// In PrivacyDisclosureSheet.swift:
+case "soniox": Text("Audio is being sent to Soniox (soniox.com) ...")
+// Same string contract.
+```
+
+H is fully decoupled from D's implementation details. The only contract
+between them is the string `"soniox"` (the provider id).
+
+### SX-14. Architectural Decisions Recorded
+
+Each non-obvious decision below is documented so future maintainers
+understand the rationale and can revisit if circumstances change.
+
+| ADR | Decision | Rationale |
+|---|---|---|
+| **ADR-SX-1** | Hand-rolled `URLSessionWebSocketTask`, no Swift SDK | (1) No official Swift SDK exists at github.com/soniox. (2) Soniox protocol is small (one config, binary frames, two control messages, JSON envelope). (3) Adding a 3rd-party dependency violates NFR-SX-7. (4) Mirrors plan-003 OQ-LT-4 precedent for Gemini Live. **Revisit when:** Soniox publishes an official Swift SDK with non-trivial protocol handling (binary message framing, automatic reconnect, session resumption). |
+| **ADR-SX-2** | Protocol-based test seam (`WebSocketTransport`) | (1) `URLSessionWebSocketTask` cannot be intercepted via `URLProtocol` (per codebase scan §4.1.K). (2) Mirrors `analyzerFactory` injection in `AppleSpeechTranscriptionProvider`. (3) Lets tests script bidirectional flows deterministically without spinning up a real socket. **Revisit when:** Apple publishes an official `URLProtocol`-style stub for WebSocket. |
+| **ADR-SX-3** | ISO 639-1 stripping in Swift, not relying on Soniox | (1) Soniox returns `400` for BCP-47 codes (`el-GR` → "Invalid language hint."). (2) Project convention is BCP-47 (parity with Apple Speech). (3) Pure-function mapping at the boundary keeps the wire payload always-valid. **Revisit when:** Soniox adds BCP-47 tolerance (unlikely; ISO 639-1 is the documented contract). |
+| **ADR-SX-4** | Per-provider expiry envvar (`MACREC_SONIOX_KEY_EXPIRES_AT`) with shared fallback | (1) Multiple keys with different expiry dates need per-provider visibility. (2) Backward-compatible: existing single-`MACREC_TRANSCRIBE_KEY_EXPIRES_AT` configs continue to work. (3) Provider-scoped > shared resolution order is consistent and predictable. **Revisit when:** the project converges on a single-key model (unlikely with three providers). |
+| **ADR-SX-5** | Soniox appended to picker (`None / Apple / Gemini / WhisperKit / Soniox`) | (1) Preserves existing UI ordering. (2) Apple stays as the SwiftUI-app default. (3) Adding the newcomer at the end is the least-disruptive choice (parity with how Gemini was originally added). **Revisit when:** the project introduces a "favourites" / reorderable picker. |
+| **ADR-SX-6** | No diarization in v1 (`enable_speaker_diarization` omitted from config) | (1) Out of scope per refined request §Out of scope. (2) Diarization is a project-level v2 backlog item (no UI for speaker tags exists). (3) Keeping it off reduces wire payload and avoids the speaker-tag UI question. **Revisit when:** the v2 diarization-aware UI lands (project-functions §Deferred). |
+| **ADR-SX-7** | `client_reference_id = "macrec-<recordingId>-<source>"` (NOT raw UUIDs) | (1) `recordingId` alone is opaque; the `macrec-` prefix lets a Soniox support engineer immediately identify the source application without leaking PII. (2) `<source>` (`mic` / `system` / `mixed`) gives debugging context for split-source recordings. (3) No host name, user name, mic device name (NFR-SX-4). (4) Stays well within Soniox's 256-char limit. **Revisit when:** a customer-support escalation needs more context (in which case extend the suffix, not the prefix). |
+| **ADR-SX-8** | `language_hints_strict: false` (bias not restriction) | (1) Soniox docs warn `strict: true` "may degrade accuracy on ambiguous speech." (2) Project's "no-fallback" posture: never silently drop content; transcribe best-effort. (3) Greek + English bilingual workflows occasionally include other languages (Spanish, French) that should still produce text. **Revisit when:** the user reports cross-language false positives degrading the Greek-only or English-only experience. |
+| **ADR-SX-9** | `enable_endpoint_detection: true`, `max_endpoint_delay_ms: 2000` | (1) Required for clean `<end>` token-batch boundaries — gives `.final` event semantics that mirror Apple Speech. (2) 2000 ms is the Soniox default; faster values trigger more false endpoints. **Revisit when:** the user wants tunable endpointing (would surface as a `--soniox-endpoint-delay-ms` flag). |
+| **ADR-SX-10** | `enable_language_identification: true` | (1) Required by FR-SX-10 (per-segment language tagging). (2) Without it, the `language` field on each token is absent and the aggregator cannot populate `TranscriptSegment.language`. **Never revisit** — required by FR. |
+| **ADR-SX-11** | Pin model to `stt-rt-v4` as default | (1) `stt-rt-v4` is the current best multilingual real-time model with native Greek+English (~7.4% Greek WER). (2) Pinning prevents the user being auto-routed to a future v5 with a possibly different config schema. (3) `--transcribe-model` accepts overrides for opt-in to newer models. **Revisit when:** Soniox publishes a v5 that benchmarks better. |
+| **ADR-SX-12** | Snake-case Swift property names on wire types (no `CodingKeys`) | (1) Minimizes Codable noise. (2) The wire types are used only at the Soniox boundary — no other code reads them. (3) Conventional Swift style would rename to camelCase, but the readability cost (extra `CodingKeys` enum per type) outweighs the gain when the only consumer is `JSONEncoder`/`JSONDecoder`. **Revisit when:** the wire types start being passed to Swift code outside the Soniox subsystem (unlikely). |
+
+### SX-15. Cross-Reference Matrix (Spec → Design)
+
+| FR / NFR / AC | Where addressed in this design |
+|---|---|
+| FR-SX-1 (provider id `soniox`) | SX-9.1 (enum case); SX-11 (factory branch) |
+| FR-SX-2 (`SonioxStreamingTranscriptionProvider`) | SX-4.3 |
+| FR-SX-3 (4-tier API key resolution) | SX-5.2, SX-5.3 |
+| FR-SX-4 (no fallback for key) | SX-5.2, SX-8.1 |
+| FR-SX-5 (expiry companion) | SX-5.4 (with provider-scoped + shared) |
+| FR-SX-6 (model id override) | SX-4.3 (modelId default `stt-rt-v4`) + factory wiring |
+| FR-SX-7 (endpoint override) | SX-5.1 + SX-9.4 (`--soniox-endpoint`) |
+| FR-SX-8 (audio adaptation) | SX-6 |
+| FR-SX-9 (Greek + English language strategy) | SX-7.1, SX-7.2 |
+| FR-SX-10 (per-segment language tagging) | SX-3.4 (`SonioxToken.language`) + ADR-SX-10 |
+| FR-SX-11 (sidecar parity) | unchanged from plan-005 — provider sets `model: "soniox"` on each `TranscriptSegment` (SX-4.4 step 2) |
+| FR-SX-12 (detach mode) | inherited from plan-005 lift; no Soniox-specific work |
+| FR-SX-13 (pause/resume/split) | SX-4.2 (`pause()` / `resume()` / `finish()`); `split()` triggers full close-and-reopen |
+| FR-SX-14 (5 s drain) | SX-4.2 (`finish()` 5 s timeout) |
+| FR-SX-15 (per-session metrics) | SX-4.4 (`.metrics` event); aggregator emits on `finish()` |
+| FR-SX-16 (privacy disclosure) | SX-9.3 |
+| FR-SX-17 (UI picker option) | SX-9.2 |
+| FR-SX-18 (help + doc updates) | SX-9.4 + Unit I |
+| NFR-SX-1 (recording integrity isolation) | SX-1 (component diagram), SX-8.3 |
+| NFR-SX-2 (latency targets) | observability via `.metrics` event (SX-4.4); warn-on-exceed |
+| NFR-SX-3 (no key in logs / disk) | SX-5.2 (no `--soniox-api-key` flag); SX-9.4 |
+| NFR-SX-4 (no PII) | ADR-SX-7 (`client_reference_id` shape) |
+| NFR-SX-5 (bounded retry) | SX-8.2 (mapper returns `.reconnect` only for 408/500/503; v1 = at most one) |
+| NFR-SX-6 (memory footprint) | SX-4.2 (`bufferingNewest(128)`); Float32 → Int16 chunked send |
+| NFR-SX-7 (no new SPM dep) | SX-10 (hand-rolled `URLSessionWebSocketTask`) |
+| AC-SX-1..18 | covered by plan-006 §8.8 test matrix |
+
+End of §SX.
+

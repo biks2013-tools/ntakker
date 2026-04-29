@@ -185,6 +185,11 @@ struct RootView: View {
                             // (mode 0600) and pushes it into the running
                             // process so the very next Start picks it up.
                             GeminiKeyField()
+                            // Soniox API key (plan-006) — visible only when
+                            // the picker selects the Soniox provider.
+                            // Persists SONIOX_API_KEY to
+                            // ~/.tool-agents/macrec-ui/.env (mode 0600).
+                            SonioxKeyField()
                         }
                     }
                     .padding(.top, 4)
@@ -315,7 +320,7 @@ struct RootView: View {
     /// upgrading from a previous release also see the sheet.
     private static func isCloudProvider(_ raw: String) -> Bool {
         switch raw.lowercased() {
-        case "gemini", "gemini-live":
+        case "gemini", "gemini-live", "soniox":
             return true
         default:
             return false

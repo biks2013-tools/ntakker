@@ -754,6 +754,232 @@ the refined request and need no separate disposition line here.
 
 ---
 
+### 1.6 Added 2026-04-29 — Soniox real-time streaming provider (plan-006)
+
+> The requirements below are appended on 2026-04-29 by Phase 4
+> (Planner) for the Soniox cloud-streaming provider add-on. Source:
+> `docs/design/refined-request-soniox-streaming.md` (FR-SX-1..FR-SX-18,
+> NFR-SX-1..NFR-SX-7, AC-SX-1..AC-SX-18, A-SX-1..A-SX-10,
+> OQ-SX-1..OQ-SX-12). Architectural choices are locked in
+> `docs/reference/investigation-soniox-streaming.md` and
+> `docs/research/soniox-wire-schema.md`. Phase mapping below reflects
+> `docs/design/plan-006-soniox-streaming.md` Phases 0 / A / B / C / D / H / I.
+> Soniox is **additive**: the Apple Speech default (`--transcribe apple`)
+> is preserved; Gemini REST and WhisperKit are preserved; Soniox
+> becomes the fifth allowed value for `--transcribe`
+> (`none | apple | gemini | whisperkit | soniox`).
+
+#### FR-SX-1 — Provider id `soniox` accepted by `--transcribe`
+**Status:** PLANNED (Phase B — plan-006). **Phase:** B (plan-006 —
+`TranscriptionProviderId.soniox` enum case + `ConfigResolver`
+validation). **Acceptance:** AC-SX-1, AC-SX-17.
+The `--transcribe` CLI flag and `MACREC_TRANSCRIBE` env var MUST
+accept the literal value `soniox` in addition to the existing
+`none | apple | gemini | whisperkit` set. Invalid values continue to
+fail with exit 64 (`EX_USAGE`) per AC-LT-17.
+
+#### FR-SX-2 — `SonioxStreamingTranscriptionProvider` conformer
+**Status:** PLANNED (Phase D — plan-006). **Phase:** D (plan-006 —
+provider + session). **Acceptance:** AC-SX-7.
+A new type `SonioxStreamingTranscriptionProvider` MUST be added under
+`Sources/MacrecCore/Transcription/Providers/` conforming to the
+existing `TranscriptionProvider` protocol (FR-46), declaring
+`supportedModes = [.streaming]`. The provider MUST be `Sendable`
+and safe for concurrent calls from `TranscriptionManager`. The
+streaming session is hosted in
+`Sources/MacrecCore/Transcription/Live/Soniox/SonioxStreamingSession.swift`
+and owns one `URLSessionWebSocketTask` per source.
+
+#### FR-SX-3 — Soniox API key resolution via the four-tier chain
+**Status:** PLANNED (Phase B — plan-006). **Phase:** B (plan-006 —
+`ConfigResolver` + `Keys.sonioxApiKey`). **Acceptance:** AC-SX-5.
+The provider MUST read its API key through the existing
+`ConfigResolver` four-tier chain (shell env → `~/.tool-agents/macrec/.env`
+→ local `./.env` → CLI flag). The vendor-canonical env var name
+`SONIOX_API_KEY` MUST be used (confirmed by Soniox docs). NO
+`--soniox-api-key` CLI flag is exposed (parity with `GOOGLE_API_KEY`
+per NFR-20). If the key is absent at session start AND
+`--transcribe soniox` is selected, the resolver MUST raise
+`MacrecError.transcriptionApiKeyMissing(provider:envVar:sources:)`
+(exit 78, `EX_CONFIG`); no audio file is created (AC-LT-4 parity).
+
+#### FR-SX-4 — No fallback for the API key
+**Status:** PLANNED (Phase B — plan-006). **Phase:** B. **Acceptance:** AC-SX-5.
+Per CLAUDE.md "no fallback solutions for configuration settings",
+a missing API key MUST raise an exception. The provider MUST NOT
+fall back to any default endpoint, demo key, or anonymous mode.
+
+#### FR-SX-5 — API-key expiration companion variable
+**Status:** PLANNED (Phase B — plan-006). **Phase:** B. **Acceptance:** AC-SX-16.
+The shared `MACREC_TRANSCRIBE_KEY_EXPIRES_AT` (defined in plan-004
+for the Gemini key) MUST be honoured for Soniox keys: if set and in
+the past, log a `.warning` at start; recording is NOT blocked. A
+new Soniox-scoped variant `MACREC_SONIOX_KEY_EXPIRES_AT` MAY be
+added with provider-scoped > shared resolution precedence (per
+OQ-SX-12 default) so users with multiple cloud-provider keys with
+divergent expiry dates can disambiguate.
+
+#### FR-SX-6 — Optional model id override
+**Status:** PLANNED (Phase D — plan-006). **Phase:** D. **Acceptance:** (covered by AC-SX-1 / AC-SX-2 / AC-SX-3 implicitly via successful default-model recognition.)
+The existing `--transcribe-model` flag and `MACREC_TRANSCRIBE_MODEL`
+env var MUST be accepted by the Soniox provider. The provider MUST
+ship with a pinned default model id `stt-rt-v4` (locked by
+investigation OQ-SX-4). Unknown model ids MUST be allowed through
+(with an `info` log line) so users can opt into newer models without
+a code change.
+
+#### FR-SX-7 — Optional region / endpoint override
+**Status:** PLANNED (Phases B + H — plan-006). **Phase:** B (resolver +
+options field) + H (CLI flag). **Acceptance:** (covered by
+ConfigResolverTranscriptionTests endpoint case.)
+A new optional config var `MACREC_SONIOX_ENDPOINT` (CLI flag
+`--soniox-endpoint <url>`) MUST be accepted to point the provider at
+a non-default Soniox endpoint (regional variants
+`wss://stt-rt.eu.soniox.com/transcribe-websocket` and
+`wss://stt-rt.jp.soniox.com/transcribe-websocket`, dedicated
+endpoints, or future self-hosted). Default:
+`wss://stt-rt.soniox.com/transcribe-websocket`. The flag MUST follow
+the same four-tier resolution chain as every other config value.
+
+#### FR-SX-8 — Audio format adaptation
+**Status:** PLANNED (Phase D — plan-006). **Phase:** D (in-provider
+Float32 → Int16 LE conversion).
+The provider MUST accept the project's internal Float32 mono 16 kHz
+buffers (the same shape every other provider gets via
+`AudioDownsampler`) and convert them to raw PCM16 little-endian at
+16 kHz mono inside the provider conformer. Soniox's WebSocket
+endpoint accepts `pcm_s16le` natively, so the conversion is a
+straightforward `withUnsafeBufferPointer` packing. The existing
+`AudioDownsampler` is reused without modification; no
+`AudioWAVEncoder` is needed for Soniox.
+
+#### FR-SX-9 — Language strategy: Greek + English primary
+**Status:** PLANNED (Phase C + Phase D — plan-006). **Phase:** C
+(`SonioxLanguageHintMapper`) + D (provider applies default).
+**Acceptance:** AC-SX-2, AC-SX-3, AC-SX-4.
+The provider MUST default to `language_hints: ["el", "en"]` with
+`language_hints_strict: false` and `enable_language_identification:
+true` when the user does NOT pass `--transcribe-language`. Soniox's
+`language_hints` is a native ISO 639-1 array; the provider MUST
+parse the user's BCP-47 input, strip region tags (`el-GR` → `el`,
+`en-US` → `en`, `en-GB` → `en`), deduplicate preserving order, and
+forward as the hint list. Comma-separated multi-language hints
+(parity with the `apple` provider) are honoured natively (resolves
+OQ-SX-7).
+
+#### FR-SX-10 — Per-segment language tagging
+**Status:** PLANNED (Phase C + Phase D — plan-006). **Phase:** C
+(`SonioxTokenAggregator`) + D (provider populates segment).
+**Acceptance:** AC-SX-2, AC-SX-3, AC-SX-4.
+Each segment emitted by Soniox MUST be tagged with its detected
+ISO 639-1 language code on the `language` field of the sidecar
+record (parity with the `apple` provider's FR-AS-4 / FR-AS-6). For
+TXT / SRT / VTT writers, when ≥ 2 distinct languages appear in a
+session the cue body MUST be prefixed with `[lang]` (parity with
+FR-AS-6).
+
+#### FR-SX-11 — Sidecar parity
+**Status:** PLANNED (Phase D — plan-006; reuses existing sidecar
+pipeline). **Phase:** D (provider sets `model: "soniox"` on each
+segment).
+Soniox sidecar files MUST follow the existing sidecar conventions:
+`*.transcript.<ext>` infix (FR-54), `partNN` rotation on
+`split(nextOutput:)` (FR-55), per-source labelling in
+`--transcribe-source both` (FR-56), and the standard set of formats
+(`jsonl`, `txt`, `srt`, `vtt`). The `model` field on each segment
+line MUST equal `"soniox"`.
+
+#### FR-SX-12 — Detach mode supported
+**Status:** PLANNED (inherits plan-005 lift; no plan-006 work).
+**Acceptance:** AC-SX-10.
+`macrec start --detach --transcribe soniox` MUST work end-to-end
+(parity with plan-005 FR-AS-10).
+
+#### FR-SX-13 — Pause / Resume / Split parity
+**Status:** PLANNED (Phase D — plan-006). **Phase:** D
+(`SonioxStreamingSession.pause / resume / finish`). **Acceptance:**
+AC-SX-11.
+Pause/Resume MUST produce a clean utterance boundary by sending the
+Soniox `{"type":"finalize"}` control message on Pause and waiting
+for the `<fin>` marker. `split(nextOutput:)` MUST close the current
+WebSocket cleanly (empty TEXT frame `""`, await `finished` up to
+2 s) and open a fresh WebSocket for the next sidecar (Soniox does
+not support session resumption).
+
+#### FR-SX-14 — Stop drains in-flight provider work within 5 s
+**Status:** PLANNED (Phase D — plan-006). **Phase:** D
+(`SonioxStreamingSession.finish`). **Acceptance:** AC-SX-12.
+Parity with FR-57. On Stop / SIGINT / SIGTERM, the Soniox provider's
+session(s) MUST be closed cleanly (empty-frame close + await
+`finished`) within the 5 s drain deadline, with cancellation of any
+still-pending work after that.
+
+#### FR-SX-15 — Per-session metrics
+**Status:** PLANNED (Phase D — plan-006). **Phase:** D. **Acceptance:**
+AC-SX-13.
+The provider MUST report into the existing `TranscriptionMetrics`
+aggregate (FR-58): chunks (binary frames) sent, messages (chunks +
+control messages) sent, billable seconds (sum of final-token
+durations), error count, last RTT, first-partial latency P95,
+endpoint latency P95.
+
+#### FR-SX-16 — Privacy disclosure on first opt-in
+**Status:** PLANNED (Phase H — plan-006). **Phase:** H
+(`PrivacyDisclosureSheet`). **Acceptance:** AC-SX-9.
+Selecting Soniox in the UI picker for the first time on a given
+launch MUST surface the same one-time confirmation dialog the
+Gemini provider uses, with body text adapted to name Soniox as the
+destination ("Audio is being sent to Soniox (soniox.com) for
+transcription. Set the org-level data retention preferences in the
+Soniox console at console.soniox.com."). Parity with FR-53 / AC-LT-9
+/ AC-LT-25 / NFR-20.
+
+#### FR-SX-17 — UI picker option
+**Status:** PLANNED (Phase H — plan-006). **Phase:** H
+(`TranscriptionPicker`). **Acceptance:** AC-SX-8.
+The `macrec-ui` popover's live-transcription provider picker MUST
+list `Soniox (cloud, streaming)` as a fifth option in the order
+`None`, `Apple`, `Gemini`, `WhisperKit`, `Soniox` (per OQ-SX-8
+default; user may override). Persisted via the existing
+`@AppStorage("com.macrec.ui.transcribeProvider")` key. Disabled
+while recording (parity with AC-LT-19).
+
+#### FR-SX-18 — `--help` and documentation surfaces updated
+**Status:** PLANNED (Phases 0 + H + I — plan-006). **Phase:** 0 +
+H + I. **Acceptance:** AC-SX-14.
+`macrec start --help` output MUST list `soniox` in the allowed set
+for `--transcribe`, and the surrounding doc files (`docs/tools/macrec.md`,
+`docs/tools/macrec-ui.md`, `docs/design/configuration-guide.md`,
+`docs/design/project-functions.md`, `docs/design/project-design.md`,
+and the new `docs/design/plan-006-soniox-streaming.md`) MUST be
+updated to name Soniox, its env vars, model id, endpoint flag,
+language strategy, and sidecar behaviour.
+
+#### Soniox AC mapping (plan-006)
+
+| AC | Description | Verification mechanism (plan-006) |
+|---|---|---|
+| AC-SX-1 | `--transcribe soniox` produces a sidecar with ≥ 2 segments and `model:"soniox"`, exit 0. | `test_scripts/e2e-transcription-soniox.sh` (real key) |
+| AC-SX-2 | Greek e2e: ≥ 5 keyword hits in concatenated text; first matched segment `language` starts with `el`. | `test_scripts/e2e-transcription-soniox-greek.sh` (real key) |
+| AC-SX-3 | English e2e: ≥ 5 keyword hits; first matched segment `language` starts with `en`. | `test_scripts/e2e-transcription-soniox-english.sh` (real key) |
+| AC-SX-4 | Bilingual single-recording: ≥ 1 `el`-tagged + ≥ 1 `en`-tagged segment. | `test_scripts/e2e-transcription-soniox-bilingual.sh` (real key) |
+| AC-SX-5 | Missing `SONIOX_API_KEY` + `--transcribe soniox` exits 78; no audio file; no sidecar; stderr names `SONIOX_API_KEY`. | `test_scripts/e2e-transcription-soniox-key-missing.sh` (always runs) |
+| AC-SX-6 | Recording integrity isolated from Soniox failures (audio file byte-identical to control with `--transcribe none`). | `RecordingIntegrityIsolationTests` with `SonioxAlwaysFailingFake` injection |
+| AC-SX-7 | Provider conforms to existing `TranscriptionProvider` protocol; `swift build` clean. | `swift build --product macrec && swift build --product macrec-ui` |
+| AC-SX-8 | UI picker lists `Soniox` as the 5th entry. | `TranscriptionPickerSnapshotTests` + `TranscriptionPickerSelectionTests` |
+| AC-SX-9 | Privacy disclosure shown on first Soniox start; "Don't show again" suppresses subsequent shows. | `PrivacyDisclosureSheetTests` (UI test) |
+| AC-SX-10 | Detach + Soniox produces sidecar; exit 0. | `test_scripts/e2e-transcription-soniox-detach.sh` (real key) |
+| AC-SX-11 | Pause/Resume + manual `split()` rotates sidecar atomically; each `partNN` audio has matching `partNN.transcript.jsonl`. | `test_scripts/e2e-transcription-soniox-split.sh` (real key) |
+| AC-SX-12 | Stop drains within 5 s wall-clock. | `SonioxStreamingTranscriptionProviderTests` (stop-drain test with `MockClock`) |
+| AC-SX-13 | Per-session metrics emitted on stop (chunksSent, billableSeconds, errorCount, lastRTT non-nil). | `SonioxStreamingTranscriptionProviderTests` (metrics test) |
+| AC-SX-14 | Help text and docs updated (5 doc files name Soniox + env vars). | `StartCommandHelpTests` + manual review of `docs/tools/macrec.md`, `docs/tools/macrec-ui.md`, `docs/design/configuration-guide.md`, `docs/design/project-functions.md`, `docs/design/project-design.md` |
+| AC-SX-15 | No new SPM dependency unless documented. | `git diff --stat Package.swift` is empty |
+| AC-SX-16 | Past `MACREC_TRANSCRIBE_KEY_EXPIRES_AT` (or Soniox-scoped variant) logs `.warning`; recording NOT blocked. | `ConfigResolverTranscriptionTests` (past-expiry test) |
+| AC-SX-17 | `--transcribe foobar` and `--transcribe soniox-streaming` both exit 64 with remediation listing the five accepted values. | `ConfigResolverTranscriptionTests` (close-but-wrong test) |
+| AC-SX-18 | Latency observability: P50/P95 first-partial + end-of-utterance-to-final logged at session stop; warn on exceed. | `SonioxStreamingTranscriptionProviderTests` (latency observability test) |
+
+---
+
 ## 2. Non-functional requirements
 
 Carried forward from the refined request without modification:
@@ -843,6 +1069,18 @@ Carried forward from the refined request without modification:
 | NFR-AS-2 | Final latency ≤ 1 s P95 (end-of-speech → final event). | PLANNED (Phase D — plan-005) |
 | NFR-AS-3 | CPU footprint per active recognizer ≤ 10 % on M-series at light load. With `--transcribe-source both` + 2 locales (4 active recognizers) total transcription CPU ≤ 40 %. | PLANNED (Phase D — plan-005) |
 
+#### Soniox Streaming NFRs (plan-006)
+
+| NFR | Description | Status |
+|---|---|---|
+| NFR-SX-1 | Recording integrity isolation — any failure inside the Soniox provider (network, auth, rate limit, hung session, malformed message) MUST be non-fatal to the recording pipeline; the audio file is byte-identical to the `--transcribe none` control. Verified by `RecordingIntegrityIsolationTests` with a `SonioxAlwaysFailingFake` injection. | PLANNED (Phase D — plan-006; verification in Phase I — plan-006) |
+| NFR-SX-2 | End-to-end latency targets — ≤ 1.5 s P95 utterance-end → final segment on disk; ≤ 500 ms P95 first-partial. Observability target only (warn on exceed; never blocks the recording). | PLANNED (Phase D — plan-006) |
+| NFR-SX-3 | API key never logged or written to disk except as the configured key file. Parity with NFR-20: `SONIOX_API_KEY` only in the resolver's in-memory `transcriptionApiKey` field and the user-controlled source files. No `--soniox-api-key` CLI flag. | PLANNED (Phase B + Phase H — plan-006; verified by code review) |
+| NFR-SX-4 | No PII metadata in requests — only audio bytes and the source label (`mic` / `system`); `client_reference_id = macrec-<recordingId>-<source>` (no filename, no hostname, no username). Parity with NFR-20. | PLANNED (Phase D — plan-006) |
+| NFR-SX-5 | Bounded retry posture — per-chunk / per-message failures non-fatal (parity with NFR-21). On Soniox 503 (mid-session reconnect signal) reconnect once; on other errors emit `.warning` and continue. v1 does NOT add automatic retry of failed chunks. | PLANNED (Phase D — plan-006) |
+| NFR-SX-6 | Provider footprint — within the per-process transcription memory bound of NFR-18 (≤ 320 KB per active source for in-flight PCM); the streaming session's own buffers (`URLSessionWebSocketTask` defaults + `bufferingNewest(128)` events stream) are additional and bounded. | PLANNED (Phase D — plan-006) |
+| NFR-SX-7 | No new third-party SPM dependency — strong preference for `URLSessionWebSocketTask` (Foundation, no dep). Hand-rolled per investigation OQ-SX-11 (no Swift SDK exists). Verified at AC-SX-15 (`Package.swift` diff empty). | PLANNED (verified at Phase I — plan-006) |
+
 ---
 
 ## 3. Open questions (status snapshot)
@@ -868,6 +1106,18 @@ Carried forward from the refined request without modification:
 | OQ-LT-7 | `--max-duration` propagates to transcription session    | YES, one-way only. Transcription stops when recording stops | LOCKED by plan-003 §0.1 |
 | ESC-LT-1 | Empirical reliability of `inputAudioTranscription` on Gemini 3.1 | Phase I smoke test gates launch; documented fallback to 2.5 model | ESCALATED to user (plan-003 §0.2) |
 | ESC-LT-2 | WebSocket `maxAttempts` parameter                       | Recommended `8` (~110 s worst-case)     | ESCALATED to user (plan-003 §0.2) |
+| OQ-SX-1 | `TranscriptionProvider` protocol extension needed for Soniox? | KEEP existing protocol; `SonioxStreamingSession` bridges internally | LOCKED by plan-006 §0 (RESOLVED) |
+| OQ-SX-2 | Vendor-canonical Soniox API key env var name | `SONIOX_API_KEY` (confirmed by Soniox docs Get-API-key page) | LOCKED by investigation (RESOLVED) |
+| OQ-SX-3 | Diarization / language-id ON by default? | LID ON, endpoint detection ON, diarization OFF | RECOMMENDED by plan-006 §0 (NEEDS USER CONFIRMATION) |
+| OQ-SX-4 | Default Soniox model id | `stt-rt-v4` (active, multilingual, native Greek + English) | LOCKED by investigation (RESOLVED) |
+| OQ-SX-5 | Cost / billing for e2e validation | $0.12/hr streaming; user must confirm trial credit at console.soniox.com | DOCUMENTED, USER ACTION |
+| OQ-SX-6 | Latency target | ≤ 1.5 s P95 utterance-end → final on disk; ≤ 500 ms P95 first-partial | RECOMMENDED by plan-006 §0 (NEEDS USER CONFIRMATION) |
+| OQ-SX-7 | `--transcribe-language` comma-list semantics | Comma list honoured natively (Soniox `language_hints` is array); BCP-47 stripped → ISO 639-1 | LOCKED by investigation (RESOLVED) |
+| OQ-SX-8 | UI picker order | Append after Gemini → `None | Apple | Gemini | WhisperKit | Soniox` | RECOMMENDED by plan-006 §0 (NEEDS USER CONFIRMATION) |
+| OQ-SX-9 | Default `--transcribe-source` for Soniox | `mixed` (project default) | RECOMMENDED by plan-006 §0 (NEEDS USER CONFIRMATION) |
+| OQ-SX-10 | Data-retention disclosure | Document org-level setting in configuration-guide; no per-request opt-out in v1 | RECOMMENDED by plan-006 §0 (NEEDS USER CONFIRMATION) |
+| OQ-SX-11 | Hand-rolled WS vs Soniox SDK | Hand-rolled (no Swift SDK exists at github.com/soniox) | LOCKED by investigation (RESOLVED) |
+| OQ-SX-12 | Per-provider expiry env var split | Add `MACREC_SONIOX_KEY_EXPIRES_AT` with provider-scoped > shared resolution; keep `MACREC_TRANSCRIBE_KEY_EXPIRES_AT` as fallback | RECOMMENDED by plan-006 §0 (NEEDS USER CONFIRMATION) |
 
 Six research-doc follow-ups (SCStream OI-1, OI-2, OI-3 +
 AVAssetWriter 7.1, 7.2, 7.4) are tracked in `Issues - Pending Items.md`
@@ -912,3 +1162,21 @@ with the disposition "validate during Phase 10".
 - Per-recording cost dashboard / multi-recording aggregator — v2.
 - `com.apple.security.network.client` entitlement when `macrec` is
   later sandboxed — v2 prerequisite.
+
+### Added by plan-006 — Soniox v2 candidates
+
+- Soniox speaker diarization (`enable_speaker_diarization`) — refined-request
+  §Out of scope; OQ-SX-3 v2.
+- Soniox translation (`translation: {type, target_language}`) — refined-request
+  §Out of scope; v2.
+- Soniox custom vocabulary / context biasing (`context.terms`,
+  `context.text`, `context.general`) — refined-request §Out of scope; v2.
+- Automatic mid-recording reconnect on Soniox's 5-hour session boundary —
+  Risk 9.5 in plan-006; v2.
+- Per-recording data-retention opt-out for Soniox — vendor does not
+  expose this in WebSocket config schema as of 2026-04-29; revisit if
+  vendor adds it; OQ-SX-10 v2.
+- Soniox async REST batch path via `stt-async-v4` — only streaming in v1;
+  v2.
+- Adoption of an official Soniox Swift SDK if/when one is published at
+  `github.com/soniox/soniox-swift` — OQ-SX-11 v2.

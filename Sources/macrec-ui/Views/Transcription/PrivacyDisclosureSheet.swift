@@ -1,5 +1,7 @@
 // macrec-ui/Views/Transcription/PrivacyDisclosureSheet.swift — see
-// project-design.md §LT-8.2 (FR-53, AC-LT-9) and plan-003 Phase G.
+// project-design.md §LT-8.2 (FR-53, AC-LT-9) and plan-003 Phase G,
+// extended in plan-006 Phase H for the Soniox cloud streaming
+// provider.
 //
 // Modal sheet shown ONCE per app install before the user enables
 // live transcription for the first time. Persists a flag in
@@ -8,6 +10,13 @@
 // Per the design §LT-8.2 the privacy disclosure remains
 // discoverable via a separate help popover (the `?` icon next to
 // the picker — covered by `TranscriptionPicker`'s `.help(...)`).
+//
+// plan-006 Phase H: a parallel Soniox-specific disclosure section is
+// now rendered when the user selects the `"soniox"` provider for the
+// first time. It is gated by its own UserDefaults flag
+// (`hasAcceptedSonioxDisclosure`) so each cloud provider has an
+// independent acceptance state. The original combined flow remains
+// intact for the Gemini path.
 
 import SwiftUI
 
@@ -19,6 +28,12 @@ public final class PrivacyDisclosureViewModel {
     /// by the design §LT-8.2.
     public static let userDefaultsKey =
         "com.local.macrec-ui.transcription.privacyDisclosureAcknowledged"
+
+    /// Canonical UserDefaults key for the Soniox-specific disclosure
+    /// acknowledgement (plan-006 Phase H). Independent of the legacy
+    /// combined flag so providers can be acknowledged separately.
+    public static let sonioxUserDefaultsKey =
+        "com.local.macrec-ui.transcription.hasAcceptedSonioxDisclosure"
 
     private let defaults: UserDefaults
 
@@ -40,6 +55,22 @@ public final class PrivacyDisclosureViewModel {
     public func reset() {
         defaults.removeObject(forKey: Self.userDefaultsKey)
     }
+
+    /// Whether the user has already acknowledged the Soniox-specific
+    /// disclosure (plan-006 Phase H).
+    public var hasAcknowledgedSoniox: Bool {
+        defaults.bool(forKey: Self.sonioxUserDefaultsKey)
+    }
+
+    /// Persist the Soniox-specific acknowledgement.
+    public func acknowledgeSoniox() {
+        defaults.set(true, forKey: Self.sonioxUserDefaultsKey)
+    }
+
+    /// Reset the Soniox-specific acknowledgement (testing / debug only).
+    public func resetSoniox() {
+        defaults.removeObject(forKey: Self.sonioxUserDefaultsKey)
+    }
 }
 
 /// Modal sheet that presents the privacy disclosure text. Shown by
@@ -48,12 +79,31 @@ public final class PrivacyDisclosureViewModel {
 /// AND `hasAcknowledged == false`.
 struct PrivacyDisclosureSheet: View {
 
+    /// The provider id that the user is enabling. When `"soniox"`,
+    /// the Soniox-specific section is rendered in addition to the
+    /// generic disclosure. Defaults to `nil` for backward compatibility
+    /// with the original single-flow call sites (Gemini path).
+    var selectedProvider: String? = nil
+
+    /// Persisted Soniox-specific acknowledgement flag (plan-006 Phase
+    /// H). Reads/writes the same UserDefaults key exposed by
+    /// `PrivacyDisclosureViewModel.sonioxUserDefaultsKey`.
+    @AppStorage("com.local.macrec-ui.transcription.hasAcceptedSonioxDisclosure")
+    private var hasAcceptedSonioxDisclosure: Bool = false
+
     /// Closure invoked when the user taps "I understand".
     let onAcknowledge: () -> Void
 
     /// Closure invoked when the user dismisses without acknowledging
     /// (resets the picker to `none`).
     let onCancel: () -> Void
+
+    /// Whether the Soniox-specific section should be rendered. The
+    /// caller selected `"soniox"` AND has not yet acknowledged the
+    /// Soniox disclosure.
+    private var showSonioxSection: Bool {
+        selectedProvider == "soniox" && !hasAcceptedSonioxDisclosure
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -64,11 +114,34 @@ struct PrivacyDisclosureSheet: View {
                 .font(.body)
                 .fixedSize(horizontal: false, vertical: true)
 
+            // -- Soniox-specific disclosure (plan-006 Phase H) --
+            // Rendered as a parallel section below the generic
+            // disclosure when the user is enabling the Soniox
+            // provider and has not yet acknowledged it.
+            if showSonioxSection {
+                Divider()
+
+                Text("Soniox real-time transcription")
+                    .font(.headline)
+
+                Text(Self.sonioxBodyText)
+                    .font(.body)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel, action: onCancel)
-                Button("I understand", action: onAcknowledge)
-                    .keyboardShortcut(.defaultAction)
+                Button("I understand") {
+                    // Mark Soniox as acknowledged too if the section
+                    // was visible — keeps the per-provider flag in
+                    // sync with the user's affirmative tap.
+                    if showSonioxSection {
+                        hasAcceptedSonioxDisclosure = true
+                    }
+                    onAcknowledge()
+                }
+                .keyboardShortcut(.defaultAction)
             }
         }
         .padding(20)
@@ -81,5 +154,14 @@ struct PrivacyDisclosureSheet: View {
         When live transcription is enabled, your audio is sent to a third-party service \
         (e.g., Google's Gemini API) for processing. Audio leaves your machine. Do not \
         enable transcription for sensitive conversations. Click 'I understand' to continue.
+        """
+
+    /// Soniox-specific disclosure copy block (plan-006 Phase H).
+    /// Locked verbatim — the user's prompt requires this exact wording.
+    static let sonioxBodyText = """
+        Audio is streamed to Soniox cloud servers (default `wss://stt-rt.soniox.com/transcribe-websocket`; \
+        EU/JP regional endpoints available via `MACREC_SONIOX_ENDPOINT`). Soniox does not store audio by \
+        default; configure retention in your Soniox console. See https://soniox.com/docs/stt/data-residency \
+        and https://soniox.com/privacy.
         """
 }

@@ -92,7 +92,7 @@ public struct StartCommand: AsyncParsableCommand {
     // (shell → ~/.tool-agents/macrec/.env → ./.env). Putting a key on a
     // command line would leak it into shell history and `ps` output.
 
-    @Option(name: .long, help: "Live transcription provider (none | gemini-live). Default: none. Env: MACREC_TRANSCRIBE.")
+    @Option(name: .long, help: "Live transcription provider (none | apple | gemini | whisperkit | soniox). Default: none. Env: MACREC_TRANSCRIBE.")
     public var transcribe: String?
 
     @Option(name: .long, help: "Audio source for transcription (system | mic | mixed | both). Default: mixed. Ignored when --transcribe none. Env: MACREC_TRANSCRIBE_SOURCE.")
@@ -107,8 +107,11 @@ public struct StartCommand: AsyncParsableCommand {
     @Option(name: .long, help: "ISO-639-1 language hint for transcription (e.g. en, el). Default: provider auto-detect. Env: MACREC_TRANSCRIBE_LANGUAGE.")
     public var transcribeLanguage: String?
 
-    @Option(name: .long, help: "ISO-8601 expiry date for the transcription API key (warns N days before expiry). Env: MACREC_TRANSCRIBE_KEY_EXPIRES_AT. Note: API keys themselves are NOT accepted as flags; set GOOGLE_API_KEY in your shell or ~/.tool-agents/macrec/.env.")
+    @Option(name: .long, help: "ISO-8601 expiry date for the transcription API key (warns N days before expiry). Env: MACREC_TRANSCRIBE_KEY_EXPIRES_AT. Note: API keys themselves are NOT accepted as flags; set GOOGLE_API_KEY (Gemini) or SONIOX_API_KEY (Soniox) in your shell or ~/.tool-agents/macrec/.env.")
     public var transcribeKeyExpiresAt: String?
+
+    @Option(name: .long, help: "Soniox WebSocket endpoint override (default: wss://stt-rt.soniox.com/transcribe-websocket; for regional endpoints see https://soniox.com/docs/stt/data-residency). Env: MACREC_SONIOX_ENDPOINT.")
+    public var sonioxEndpoint: String?
 
     public init() {}
 
@@ -219,6 +222,15 @@ public struct StartCommand: AsyncParsableCommand {
         if let v = transcribeModel         { o[ConfigResolver.Keys.transcribeModel] = v }
         if let v = transcribeLanguage      { o[ConfigResolver.Keys.transcribeLanguage] = v }
         if let v = transcribeKeyExpiresAt  { o[ConfigResolver.Keys.transcribeKeyExpiresAt] = v }
+        if let v = sonioxEndpoint          { o[ConfigResolver.Keys.sonioxEndpoint] = v }
+        // Soft validation (plan-006 Phase H): warn if --soniox-endpoint
+        // was provided without selecting the Soniox provider. Don't
+        // fail — the override is harmless and may be future-config.
+        if sonioxEndpoint != nil && (transcribe?.lowercased() != "soniox") {
+            FileHandle.standardError.write(
+                Data("macrec: warning: --soniox-endpoint was provided but --transcribe is not 'soniox'; the endpoint override will only take effect when the Soniox provider is selected.\n".utf8)
+            )
+        }
         return o
     }
 }

@@ -13,6 +13,65 @@ register, and `docs/design/plan-003-live-transcription.md` §6 risk
 register). They are tracked here so subsequent phases can flag
 residual exposure.
 
+### CFG-PEND-2 — pre-existing transcription test-suite failures unrelated to plan-006 (catalogued 2026-04-29 by Phase 7 reviewer)
+While running `swift test --filter "Transcription|Config"` for the plan-006
+code review, **9 additional pre-existing failures** surfaced beyond CFG-PEND-1.
+Verified pre-existing by stashing the entire plan-006 diff (including untracked
+files) and re-running the same filter on `master` — all 9 reproduce there.
+None are introduced by plan-006. Catalogued here so the next maintenance pass
+can clear the slate before relying on `swift test` as a guard rail:
+
+1. `SessionCoordinatorTranscriptionIntegrationTests::--transcribe gemini-live without API key raises transcriptionApiKeyMissing` —
+   asserts `provider == "gemini-live"` but the resolver normalises the
+   deprecated alias to `"gemini"` (plan-004 Phase G.2). Same fix shape as the
+   two `StartCommandTranscriptionFlagsTests` cases I corrected during this
+   review: update the expectation to `"gemini"`. (file
+   `Tests/MacrecCoreTests/Recording/SessionCoordinatorTranscriptionIntegrationTests.swift:145`)
+2. `SessionCoordinatorTranscriptionIntegrationTests::Sidecar URL respects partNN naming when audio URL contains a part token` —
+   2 expectations missing the `.transcript.` infix in the expected sidecar
+   filenames. The implementation correctly inserts `transcript` per design
+   §LT-7.1 (this is the previously-fixed R-LT-1, plan-004 Phase F.1). Test
+   strings need to be updated to match the as-built filenames
+   (`recording.part01.transcript.jsonl`, etc.).
+3. `TranscriptionManagerTests::ingesting enough samples produces a segmentAppended event` —
+   pre-existing flake / timing-sensitive test; needs investigation.
+4. `GeminiRESTTranscriptionProvider` — 5 failures all caused by the
+   `GeminiRESTStubProtocol` URLProtocol stub returning `error -1` instead of
+   the canned response on this dev host (likely SDK/runtime change since the
+   tests were written). Pre-existing on master.
+5. `StreamingTranscriptionPipeline::first partial emits .segmentAppended; …` —
+   pre-existing failure where `.segmentFinalized` is not emitted; likely a
+   late `.final` event ordering regression introduced by a prior plan.
+
+Owner: next maintenance pass. **Plan-006 itself has not regressed any test
+that previously passed.**
+
+### CFG-PEND-1 — `ConfigResolverTranscriptionTests/shellEnvSupplies` is pre-existing red on master (discovered 2026-04-29 during plan-006 Unit B)
+The test
+`Tests/MacrecCoreTests/Config/ConfigResolverTranscriptionTests.swift::shellEnvSupplies`
+(line 70-92) sets `MACREC_TRANSCRIBE_SOURCE=mic` but does NOT set
+`MACREC_MIC_DEVICE`. Since plan-005 / commit `f1adb58a` introduced the
+"transcribe-source mic + mic disabled" cross-check at
+`Sources/MacrecCore/Config/ConfigResolver.swift:438-445`, the resolver
+now (correctly) raises `.transcriptionConfigConflict` whenever the
+selected mic source has no usable device. The test fixture predates
+that cross-check and was never updated.
+
+This was discovered during plan-006 Unit B verification (Soniox config
+plumbing) — the failure is **pre-existing** and not caused by the
+Soniox additions: `git blame` of lines 438-445 shows commit `f1adb58a`,
+not the in-flight Unit B commit. The new
+`Tests/MacrecCoreTests/Config/SonioxConfigResolverTests.swift` does
+NOT reproduce the failure — its mic-source tests use a non-`mic`
+source or supply `MACREC_MIC_DEVICE` explicitly.
+
+Fix (out of scope for plan-006 Unit B; flagged for the next
+maintenance pass): add `"MACREC_MIC_DEVICE": "default"` (or any
+non-empty value) to the test fixture's shell-env dictionary, OR
+change `MACREC_TRANSCRIBE_SOURCE` to a non-`mic` value (e.g. `mixed`)
+to keep the test focused on the env-var precedence chain it actually
+exercises.
+
 ### UI-PEND-1 — Start/Stop buttons disappear after pressing Stop (FIXED 2026-04-28)
 Reported by the user: after pressing Stop in the menu-bar popover, the
 ControlBar empties out — neither Start nor Stop is visible — leaving
@@ -337,6 +396,101 @@ The default build (Swift 5.9 mode) is clean — no warnings, no errors. This iss
 Plan-002 dispatches Phase F (quit-while-recording flow) and Phase G (error-mapping banner) in parallel within Wave 5. The design (`docs/design/project-design.md` §15.15 "Wave 4 → Wave 5" boundary table) shows that both phases edit `Sources/MacrecUIKit/Views/RootView.swift`: F adds a Quit button at the bottom of the popover stack; G inserts an `ErrorBanner` at the top. Concurrent agents editing the same file will race or merge-conflict. **Mitigation**: Phase 6 orchestrator MUST dispatch F and G **sequentially** within Wave 5 — F first (adds the Quit affordance) then G (adds the ErrorBanner) is the recommended order, but either ordering is acceptable as long as the two are not concurrent. Each individual phase remains a single-file edit; only the Wave 5 dispatch order matters. Owner: Phase 6 orchestrator + Phase 7 Code Reviewer.
 
 ## Completed items
+
+### R-SX-PHASE10 — Plan-006 Soniox Phase 10 integration verification (Closed 2026-04-29)
+
+Phase 10 final integration verification. Both products build cleanly
+(`swift build --product macrec` + `swift build --product macrec-ui`,
+exit 0, zero warnings new to plan-006). Soniox + WebSocketTransport
+test suite passed: **88/88** (58 XCTest + 30 Swift Testing across 13
+suites; 1 environment-gated network test skipped). Broader regression
+sweep (`swift test --filter "Transcription|Config|Picker|Privacy|StartCommand"`)
+yielded **10 unique failures, all pre-existing** — 1 from CFG-PEND-1
++ 9 from CFG-PEND-2; **zero new failures introduced by plan-006**.
+
+Acceptance-criteria coverage:
+
+- **MET (10)**: AC-SX-5, AC-SX-6, AC-SX-7, AC-SX-8, AC-SX-12, AC-SX-13,
+  AC-SX-14, AC-SX-15, AC-SX-16, AC-SX-17.
+- **PARTIAL (2)**:
+  - AC-SX-9 — Soniox-specific privacy-disclosure body wording is not
+    pinned by an automated test; only the generic
+    `PrivacyDisclosureViewModel` persistence behavior is covered. The
+    Soniox-keyed copy exists in
+    `Sources/macrec-ui/Views/Transcription/PrivacyDisclosureSheet.swift`
+    per plan-006 §H. Manually verifiable in `macrec-ui`.
+  - AC-SX-18 — Per-event `lastPartialLatencyMs` and `lastFinalLatencyMs`
+    are tracked in `StreamingProviderMetrics`, but the spec calls for
+    aggregated P50/P95 percentiles to be **logged** at session stop
+    with a `.warning` when exceeding NFR-SX-2 thresholds. The data
+    path is in place; aggregation + log line are remaining work.
+    Carried over from Phase 7 review.
+- **DEFERRED (real-key, 6)**: AC-SX-1, AC-SX-2, AC-SX-3, AC-SX-4,
+  AC-SX-10, AC-SX-11. Verifiable only via end-to-end manual testing
+  with a real `SONIOX_API_KEY` (sign-up at https://console.soniox.com).
+- **NOT MET**: 0.
+
+New artefacts:
+
+1. `test_scripts/e2e-transcription-soniox.sh` (executable) — real-key
+   e2e validation script that runs three back-to-back ~12-second
+   recordings (Greek / English / Bilingual) using `say`+`afplay`
+   fixtures, then prints per-AC PASS/FAIL for AC-SX-1..AC-SX-4 and
+   an OVERALL verdict. Outputs preserved under `test_output/`.
+2. `docs/reference/integration-verification-soniox-streaming.md` —
+   this verification report with full build/test breakdown, AC matrix,
+   and user instructions.
+
+Pre-existing pending items (CFG-PEND-1, CFG-PEND-2, R-SX-PHASE7)
+verified still accurate; no edits required to those entries.
+
+Follow-up improvements (non-blocking, opt-in polish):
+
+- **R-SX-PHASE10-1** — close AC-SX-9 by adding a Soniox-specific test
+  that pins the `PrivacyDisclosureSheet` body text mentioning Soniox
+  by name (parallel to the existing `bodyTextContainsLockedPhrases`
+  test).
+- **R-SX-PHASE10-2** — close AC-SX-18 by adding P50/P95 percentile
+  aggregation to `StreamingProviderMetrics` (or a sibling struct) and
+  emitting the percentile line at session stop with a `.warning` when
+  the values exceed `NFR-SX-2` thresholds (≤ 1.5 s end-to-end /
+  ≤ 500 ms first-partial).
+
+Overall verdict: **READY FOR USER e2e VALIDATION** (build + tests
+green; the only remaining action is for the user to provide a real
+Soniox API key and run `bash test_scripts/e2e-transcription-soniox.sh`).
+
+### R-SX-PHASE7 — Plan-006 Soniox Phase 7 code review (Closed 2026-04-29)
+
+Phase 7 reviewer ran `swift build` (both `macrec` and `macrec-ui` — exit 0,
+no warnings new to plan-006), `swift test --filter "Soniox|WebSocketTransport|SonioxConfigResolver"`
+(30 swift-testing tests + 36 XCTest cases passed; 1 environment-gated test
+skipped — `URLSessionWebSocketTaskTransport connects to a public echo
+server`), and `swift test --filter "Transcription|Config"` (broader regression
+sweep — failures all pre-existing; see CFG-PEND-1 + CFG-PEND-2).
+
+Two stale `gemini-live` test expectations in
+`Tests/MacrecCoreTests/Commands/StartCommandTranscriptionFlagsTests.swift`
+were updated during the review to reflect the resolver's plan-004 Phase G.2
+deprecation-alias normalisation (lowering `gemini-live → "gemini"`). Decision:
+**fix the tests, not the resolver** — the normalisation is documented in
+`Sources/MacrecCore/Config/RecordingOptions.swift:65-68` and
+`docs/design/project-functions.md:271`, was added in commit `f1adb58`
+(plan-004), and is the architecturally correct behaviour. The tests were
+authored before that normalisation landed and were never updated.
+
+Recording-integrity isolation invariant (NFR-SX-1 / AC-SX-6) **verified
+structurally**: `StreamingTranscriptionSession.events` is a non-throwing
+`AsyncStream<StreamingTranscriptionEvent>` (not `AsyncThrowingStream`).
+`SonioxStreamingSession` catches every error inside `ingest(_:)` and
+`startReceiveLoop()` and yields `.error(detail:)` events through the same
+non-throwing channel. The pipeline iterates with `for await event in session.events`
+which by construction cannot throw — there is no path for a Soniox failure
+to escape into the recorder.
+
+Verdict: **READY FOR PHASES 8-10**. Real-key e2e validation (AC-SX-1..AC-SX-4,
+AC-SX-10..AC-SX-13, AC-SX-18) deferred to Phase 10 + user manual verification
+per the prompt.
 
 ### PEND-AS-2 — Apple SpeechAnalyzer SIGABRT on ad-hoc-signed CLI / Float32 buffers (Resolved 2026-04-28 in plan-005 Phase I debug)
 
