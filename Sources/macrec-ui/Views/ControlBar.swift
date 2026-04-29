@@ -248,13 +248,23 @@ struct ControlBar: View {
         // `RecordingController.transcriptionMissingKey` true and
         // `RecordingSession` will throw `transcriptionApiKeyMissing`
         // BEFORE the recorder starts (per project no-fallback rule).
-        // (plan-004 Phase H: provider id is now `"gemini"`; the
-        // resolver accepts `"gemini-live"` as a deprecated alias for
-        // any persisted UI state from the previous release.)
-        let resolvedTranscriptionApiKey: String? = transcriptionEnabled
-            ? ProcessInfo.processInfo.environment["GOOGLE_API_KEY"]
+        //
+        // The env-var name is provider-specific (vendor-canonical):
+        // GOOGLE_API_KEY for Gemini (also gemini-live alias),
+        // SONIOX_API_KEY for Soniox (plan-006 SX-5 / SX-9).
+        // Apple Speech and WhisperKit are on-device and need no key.
+        let resolvedTranscriptionApiKey: String? = {
+            guard transcriptionEnabled else { return nil }
+            let envVar: String?
+            switch (resolvedProviderId ?? "").lowercased() {
+            case "gemini", "gemini-live": envVar = "GOOGLE_API_KEY"
+            case "soniox":                envVar = "SONIOX_API_KEY"
+            default:                      envVar = nil
+            }
+            guard let envVar else { return nil }
+            return ProcessInfo.processInfo.environment[envVar]
                 .flatMap { $0.isEmpty ? nil : $0 }
-            : nil
+        }()
 
         // Build the language-hints array from the two persisted slots
         // (`TranscriptionLanguagePicker` writes to them). Empty primary

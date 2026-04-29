@@ -96,6 +96,15 @@ public enum TranscriptionProviderFactory {
             guard let key = input.apiKey, !key.isEmpty else {
                 throw MacrecError.transcriptionApiKeyMissing(provider: "soniox")
             }
+            // Diagnostic: log the key fingerprint (prefix + suffix only,
+            // never the full secret) so the user can verify the running
+            // app is sending the same key that's in their .env file.
+            // Helps diagnose stale-process / wrong-env-var issues.
+            let fingerprint: String = {
+                guard key.count >= 10 else { return "(short, \(key.count) chars)" }
+                return "\(key.prefix(6))…\(key.suffix(4)) (\(key.count) chars)"
+            }()
+            input.logger.info("soniox: using API key fingerprint \(fingerprint)")
             return SonioxStreamingTranscriptionProvider(
                 apiKey: key,
                 model: input.modelId ?? SonioxConfigBuilder.defaultModel,

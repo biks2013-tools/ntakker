@@ -204,6 +204,11 @@ public actor SonioxStreamingSession: StreamingTranscriptionSession {
                     await self.handleIncoming(msg, aggregator: aggregator)
                 }
             } catch {
+                // Suppress the receive-side error if we already
+                // terminated due to a server-side error envelope —
+                // otherwise we'd emit a redundant "soniox.receive_failed:
+                // Socket is not connected" right after the real cause.
+                if await self.isFinished { return }
                 self.recordError("soniox.receive_failed: \(error.localizedDescription)")
             }
         }
@@ -238,6 +243,12 @@ public actor SonioxStreamingSession: StreamingTranscriptionSession {
         if let code = server.errorCode {
             let mapped = SonioxErrorMapper.map(httpCode: code, message: server.errorMessage)
             recordError("soniox.server_error: \(mapped.errorDescription ?? "code \(code)")")
+            // Soniox sent a server-side error envelope and will now close
+            // the WebSocket. Terminate the session BEFORE any further
+            // audio frames are accepted, so the next `ingest(_:)` calls
+            // become no-ops instead of emitting a cascade of
+            // "Socket is not connected" errors that hide the real cause.
+            await terminate()
             return
         }
 
@@ -287,6 +298,24 @@ public actor SonioxStreamingSession: StreamingTranscriptionSession {
         guard !didFinishContinuation else { return }
         didFinishContinuation = true
         eventContinuation.finish()
+    }
+
+    /// Terminate the session immediately after a fatal server-side
+    /// condition (e.g. a 401 from Soniox in the error envelope). Stops
+    /// the keepalive, cancels the receive loop, closes the transport,
+    /// and finishes the events stream — all without emitting a
+    /// redundant `.error` (the caller already emitted the real cause
+    /// just before invoking this).
+    ///
+    /// Idempotent: a second call is a no-op.
+    private func terminate() async {
+        guard !isFinished else { return }
+        isFinished = true
+        await keepalive.stop()
+        receiveTask?.cancel()
+        receiveTask = nil
+        await transport.close(code: .normal, reason: "soniox terminal error")
+        finishContinuationIfNeeded()
     }
 
     /// Convert Float32 mono samples in `[-1, 1]` to little-endian

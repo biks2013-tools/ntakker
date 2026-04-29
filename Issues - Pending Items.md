@@ -6,6 +6,14 @@
 
 ## Pending items (most critical first)
 
+### SX-PEND-3 (RESOLVED 2026-04-29) — `ControlBar.startTapped()` hardcoded `GOOGLE_API_KEY` regardless of selected provider
+
+- **Symptom (user-reported)**: Picking Soniox in the menu-bar picker, saving a valid `SONIOX_API_KEY` via `SonioxKeyField`, then clicking Start produced `soniox.server_error: invalid or expired API key (401)`. Diagnostic fingerprint logged in `TranscriptionProviderFactory.build` showed the running app was sending the user's `GOOGLE_API_KEY` (prefix `AIzaSy…`) to Soniox.
+- **Root cause**: `Sources/macrec-ui/Views/ControlBar.swift:254-257` (pre-fix) read `ProcessInfo.processInfo.environment["GOOGLE_API_KEY"]` unconditionally whenever transcription was enabled, ignoring the selected `resolvedProviderId`. Plan-006 Unit H fixed the provider-aware tooltip in `TranscriptionPicker` and added `SonioxKeyField`, but missed this single env-var lookup in `ControlBar`.
+- **Fix**: provider-aware switch in `ControlBar.startTapped()` — `gemini`/`gemini-live` → `GOOGLE_API_KEY`, `soniox` → `SONIOX_API_KEY`, otherwise nil.
+- **Why the workflow missed it**: codebase scan focused on `TranscriptionPicker.swift:67` (the tooltip) but not the parallel ENV-var lookup in `ControlBar.startTapped`. Code review checked the resolver branch but did not trace UI-side callers. Lesson: any time a new provider needs an API key, grep ALL of `Sources/macrec-ui/` and `Sources/MacrecUIKit/` for the existing provider's env-var name to confirm parity.
+- **Verification**: rebuild .app, restart menu-bar app, watch for `soniox: using API key fingerprint c6c2b0…` in `~/.tool-agents/macrec-ui/macrec-ui.log` (should now show the Soniox key prefix, not Gemini's `AIzaSy…`).
+
 The risks below were captured during Phases 4–6 of the planning and
 implementation workflow (see `docs/design/plan-001-recording-tool.md`
 §6 risk register, `docs/design/plan-002-toolbar-ui.md` §5 risk
