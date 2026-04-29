@@ -80,6 +80,68 @@ public final class HostClockAligner: @unchecked Sendable {
     /// queue. Set by the orchestrator before any `ingest` call.
     public var onAlignedFrame: ((AlignedFrame) -> Void)?
 
+    // MARK: - Live taps (Phase B / plan-003 §LT-6)
+
+    /// Token returned by `addLiveTap(_:)`. Pass back to `removeLiveTap(_:)`
+    /// to detach the tap. The token is opaque and identity-based — taps
+    /// are looked up by reference equality, not by closure identity (Swift
+    /// closures are not `Equatable`).
+    ///
+    /// `final class` so multiple taps can be distinguished by `===`.
+    public final class TapToken: Sendable {
+        // The closure is held on the aligner's side; the token is just
+        // an identity handle. Sendable because it carries no mutable
+        // state.
+        fileprivate init() {}
+    }
+
+    /// Install a synchronous, non-blocking tap that observes every
+    /// `AlignedFrame` AFTER the recorder write callback runs.
+    ///
+    /// **Threading**: the closure is invoked on the aligner's serial
+    /// dispatch queue (`macrec.aligner.serial`), inline with the
+    /// recorder's write. **The closure MUST be lossy / non-blocking**:
+    ///
+    /// 1. No `await`, no `try await`, no `Task.sleep`.
+    /// 2. No allocation > 1 KB; no I/O; no logging (logging is async
+    ///    deferred — typically it routes through a `nonisolated`
+    ///    actor entry point that yields onto an `AsyncStream`).
+    /// 3. No actor hops that suspend. Calling a `nonisolated` function
+    ///    on an actor is fine if that function is itself synchronous.
+    /// 4. No re-entrant calls back into the aligner (`ingest`, `flush`,
+    ///    `addLiveTap`, `removeLiveTap`). Such a call would dead-lock on
+    ///    the serial queue.
+    ///
+    /// Violating any of the above blocks the aligner's queue and
+    /// therefore stalls the recorder — see project-design.md §LT-6.2.
+    ///
+    /// `addLiveTap(_:)` is idempotent in the sense that calling it
+    /// multiple times with the same closure registers the closure
+    /// multiple times; each call returns a distinct `TapToken`.
+    ///
+    /// - Parameter closure: The synchronous tap.
+    /// - Returns: A `TapToken` to pass to `removeLiveTap(_:)` for
+    ///   detachment.
+    @discardableResult
+    public func addLiveTap(_ closure: @escaping @Sendable (AlignedFrame) -> Void) -> TapToken {
+        let token = TapToken()
+        serialQueue.sync {
+            _liveTaps.append((token, closure))
+        }
+        return token
+    }
+
+    /// Detach a previously-installed live tap.
+    ///
+    /// The lookup is by reference equality on the returned
+    /// `TapToken`; passing a stale or unknown token is a no-op
+    /// (the tap is simply not found). Safe to call from any thread.
+    public func removeLiveTap(_ token: TapToken) {
+        serialQueue.sync {
+            _liveTaps.removeAll { $0.token === token }
+        }
+    }
+
     /// Snapshot of the current stats. Thread-safe — read-only access
     /// hops onto the serial queue.
     public var stats: Stats {
@@ -99,6 +161,13 @@ public final class HostClockAligner: @unchecked Sendable {
 
     private let serialQueue = DispatchQueue(label: "macrec.aligner.serial")
     private let logger: Logger?
+
+    /// Live taps registered via `addLiveTap(_:)`. Mutated only on
+    /// `serialQueue`; read on `serialQueue` inside `emitWindow(...)` so
+    /// the dispatch is consistent with `onAlignedFrame`. The tuple keeps
+    /// the token alongside the closure so `removeLiveTap(_:)` can look
+    /// up entries by reference equality.
+    private var _liveTaps: [(token: TapToken, closure: @Sendable (AlignedFrame) -> Void)] = []
 
     /// Format description used to wrap silence + emitted buffers.
     /// Built lazily from `targetSampleRate` / `targetChannelCount`.
@@ -542,6 +611,18 @@ public final class HostClockAligner: @unchecked Sendable {
         _framesEmitted += 1
         _nextExpectedFramePTS = CMTimeAdd(windowStart, frameDuration)
         onAlignedFrame?(frame)
+
+        // Live taps (Phase B / project-design §LT-6). Snapshot the array
+        // BEFORE invoking each tap so a tap that hypothetically called
+        // `removeLiveTap(_:)` would not mutate the array we are
+        // iterating. The current contract forbids re-entrant calls back
+        // into the aligner from a tap closure (it would dead-lock the
+        // serial queue), but the snapshot is cheap and keeps the
+        // iteration safe under any future relaxation of that rule.
+        let snapshot = _liveTaps
+        for entry in snapshot {
+            entry.closure(frame)
+        }
     }
 
     /// Carve a `windowFrames`-long slice for one source. Either:

@@ -85,6 +85,31 @@ public struct StartCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Log file path for --detach mode (mode 0600, append). Default: ~/.tool-agents/macrec/macrec.log. Env: MACREC_LOG_FILE. (FR-29)")
     public var logFile: String?
 
+    // MARK: - Live transcription knobs (plan-003 Phase C; design §LT-5.3)
+    //
+    // SECURITY: there is intentionally NO `--transcribe-key` flag. Provider
+    // API keys live ONLY in the env-var resolution chain
+    // (shell → ~/.tool-agents/macrec/.env → ./.env). Putting a key on a
+    // command line would leak it into shell history and `ps` output.
+
+    @Option(name: .long, help: "Live transcription provider (none | gemini-live). Default: none. Env: MACREC_TRANSCRIBE.")
+    public var transcribe: String?
+
+    @Option(name: .long, help: "Audio source for transcription (system | mic | mixed | both). Default: mixed. Ignored when --transcribe none. Env: MACREC_TRANSCRIBE_SOURCE.")
+    public var transcribeSource: String?
+
+    @Option(name: .long, help: "Sidecar transcript format (jsonl | srt | vtt | txt). Default: jsonl. Env: MACREC_TRANSCRIBE_FORMAT.")
+    public var transcribeFormat: String?
+
+    @Option(name: .long, help: "Provider model id override (e.g. gemini-3.1-flash-live-preview). Default: provider's pinned default. Env: MACREC_TRANSCRIBE_MODEL.")
+    public var transcribeModel: String?
+
+    @Option(name: .long, help: "ISO-639-1 language hint for transcription (e.g. en, el). Default: provider auto-detect. Env: MACREC_TRANSCRIBE_LANGUAGE.")
+    public var transcribeLanguage: String?
+
+    @Option(name: .long, help: "ISO-8601 expiry date for the transcription API key (warns N days before expiry). Env: MACREC_TRANSCRIBE_KEY_EXPIRES_AT. Note: API keys themselves are NOT accepted as flags; set GOOGLE_API_KEY in your shell or ~/.tool-agents/macrec/.env.")
+    public var transcribeKeyExpiresAt: String?
+
     public init() {}
 
     // MARK: - Execution
@@ -171,7 +196,7 @@ public struct StartCommand: AsyncParsableCommand {
     /// dictionary expected by `ConfigResolver.resolve(cliOverrides:)`.
     /// Only present (non-nil / true) flags are forwarded; absent flags
     /// fall through to the lower-precedence sources.
-    private func buildCLIOverrides() -> [String: String] {
+    func buildCLIOverrides() -> [String: String] {
         var o: [String: String] = [:]
         if let v = output       { o[ConfigResolver.Keys.output] = v }
         if let v = format       { o[ConfigResolver.Keys.format] = v }
@@ -187,6 +212,13 @@ public struct StartCommand: AsyncParsableCommand {
         if detach               { o[ConfigResolver.Keys.detach] = "true" }
         if let v = pidFile      { o[ConfigResolver.Keys.pidFile] = v }
         if let v = logFile      { o[ConfigResolver.Keys.logFile] = v }
+        // -- Live transcription (plan-003 Phase C) --
+        if let v = transcribe              { o[ConfigResolver.Keys.transcribe] = v }
+        if let v = transcribeSource        { o[ConfigResolver.Keys.transcribeSource] = v }
+        if let v = transcribeFormat        { o[ConfigResolver.Keys.transcribeFormat] = v }
+        if let v = transcribeModel         { o[ConfigResolver.Keys.transcribeModel] = v }
+        if let v = transcribeLanguage      { o[ConfigResolver.Keys.transcribeLanguage] = v }
+        if let v = transcribeKeyExpiresAt  { o[ConfigResolver.Keys.transcribeKeyExpiresAt] = v }
         return o
     }
 }

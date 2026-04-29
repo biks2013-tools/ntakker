@@ -111,6 +111,29 @@ public final class AVMicrophoneSource: NSObject,
     /// shape uniform with `SCKitSystemAudioSource`).
     private var _lastBufferArrival: Date = Date()
 
+    // MARK: - Mic-health diagnostics
+    //
+    // Cumulative counters + a 1 Hz heartbeat timer that emits a single
+    // info-level log line summarising what the AVCaptureSession is
+    // actually delivering. The intent is to make TCC silent-deny and
+    // zero-only-buffer pathologies trivially visible: a healthy mic
+    // emits non-zero `recentPeakAmp`; a TCC-denied mic emits
+    // `buffers=0`; a muted-but-running device emits `buffers>0` with
+    // `recentPeakAmp ≈ 0`.
+    //
+    // All fields are guarded by `stateQueue` (writes from
+    // `captureOutput` go through `stateQueue.async`; the heartbeat
+    // timer reads them via `stateQueue.sync`).
+    private var _bufferCount: Int = 0
+    private var _totalFramesReceived: Int = 0
+    private var _lastBufferSize: Int = 0
+    private var _recentMaxAmplitude: Float32 = 0
+    private var _healthHeartbeatTimer: DispatchSourceTimer?
+    private let healthHeartbeatQueue = DispatchQueue(
+        label: "macrec.capture.mic.health",
+        qos: .utility
+    )
+
     // MARK: - AudioSource conformance (public surface)
 
     public var formatDescription: CMAudioFormatDescription? {
@@ -174,6 +197,20 @@ public final class AVMicrophoneSource: NSObject,
     // MARK: - Lifecycle
 
     public func start() async throws {
+        // Mic-health diagnostic: log the LIVE TCC mic-authorization
+        // value at the exact moment we are about to open the capture
+        // session. If this prints `.authorized` but no buffers ever
+        // arrive (see the 1 Hz heartbeat below), the cached TCC bit
+        // and the live HAL TCC check have diverged — typically a
+        // stale grant after an ad-hoc-signed rebuild. If this prints
+        // anything other than `.authorized`, the orchestrator's
+        // `PermissionGate` should already have thrown earlier; seeing
+        // a non-authorized value here means the gate was bypassed.
+        let liveAuthStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+        logger.info(
+            "AVMicrophoneSource.start: live TCC mic authorization = \(authStatusDescription(liveAuthStatus))"
+        )
+
         // 1. Resolve the device synchronously — this is fast (Core
         //    Audio property reads) and does not need to be off the
         //    calling task.
@@ -200,6 +237,11 @@ public final class AVMicrophoneSource: NSObject,
         //    add/remove is thread-safe; do it outside the state queue.
         installSleepWakeObservers()
 
+        // 4. Install the mic-health heartbeat (1 Hz info-level log
+        //    line). See `installHealthHeartbeat()` for the rationale
+        //    and the exact log format.
+        installHealthHeartbeat()
+
         logger.info(
             "AVMicrophoneSource started (device='\(device.localizedName)', uid='\(device.uniqueID)', rate=\(targetSampleRate), channels=\(targetChannelCount))"
         )
@@ -213,6 +255,7 @@ public final class AVMicrophoneSource: NSObject,
             }
         }
         removeSleepWakeObservers()
+        removeHealthHeartbeat()
         logger.info("AVMicrophoneSource stopped")
     }
 
@@ -440,6 +483,15 @@ public final class AVMicrophoneSource: NSObject,
         from connection: AVCaptureConnection
     ) {
         let now = Date()
+        let frameCount = CMSampleBufferGetNumSamples(sampleBuffer)
+        // Cheap peak amplitude over channel 0 of this buffer. We only
+        // sample the first 64 frames (≈ 1.3 ms at 48 kHz) so the cost
+        // is bounded; an audible signal will register in the very first
+        // millisecond. The result is folded into `_recentMaxAmplitude`
+        // and reset by the heartbeat.
+        let peakAmpThisBuffer = AVMicrophoneSource.cheapPeakAmplitude(
+            from: sampleBuffer
+        )
         // Cache the format description on first call. Routed through
         // the state queue to avoid a torn read elsewhere.
         stateQueue.async { [weak self] in
@@ -447,6 +499,12 @@ public final class AVMicrophoneSource: NSObject,
             self._lastBufferArrival = now
             if self._formatDescription == nil {
                 self._formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer)
+            }
+            self._bufferCount &+= 1
+            self._totalFramesReceived &+= frameCount
+            self._lastBufferSize = frameCount
+            if peakAmpThisBuffer > self._recentMaxAmplitude {
+                self._recentMaxAmplitude = peakAmpThisBuffer
             }
         }
 
@@ -456,6 +514,123 @@ public final class AVMicrophoneSource: NSObject,
         // the primary forward so an exception inside the tap cannot
         // disrupt the recording pipeline.
         levelTap?(envelope)
+    }
+
+    // MARK: - Mic-health diagnostics helpers
+
+    /// Map an `AVAuthorizationStatus` into a short human string for
+    /// log lines. Kept local so the macrec-ui's log file doesn't pull
+    /// in the AppKit-side mapping in `MicrophonePermission`.
+    private func authStatusDescription(_ status: AVAuthorizationStatus) -> String {
+        switch status {
+        case .notDetermined: return "notDetermined"
+        case .restricted:    return "restricted"
+        case .denied:        return "denied"
+        case .authorized:    return "authorized"
+        @unknown default:    return "unknown(\(status.rawValue))"
+        }
+    }
+
+    /// Sample the first 64 frames of channel 0 from `sampleBuffer` and
+    /// return the maximum absolute value. Used by the heartbeat to
+    /// detect zero-only buffers (TCC silently denied the device but
+    /// CoreAudio still routes empty frames).
+    ///
+    /// Performs a single small `CMBlockBufferCopyDataBytes` of at most
+    /// 256 bytes (64 × Float32). Pure read; no allocation hot path.
+    /// Returns 0 on any error (the heartbeat treats 0 as "silent").
+    private static func cheapPeakAmplitude(
+        from sampleBuffer: CMSampleBuffer
+    ) -> Float32 {
+        let frames = CMSampleBufferGetNumSamples(sampleBuffer)
+        guard frames > 0,
+              let bb = CMSampleBufferGetDataBuffer(sampleBuffer) else {
+            return 0
+        }
+        let sampleCount = min(frames, 64)
+        let bytes = sampleCount * MemoryLayout<Float32>.size
+        var scratch = [Float32](repeating: 0, count: sampleCount)
+        let status = scratch.withUnsafeMutableBufferPointer { ptr -> OSStatus in
+            guard let base = ptr.baseAddress else { return -1 }
+            return CMBlockBufferCopyDataBytes(
+                bb,
+                atOffset: 0,
+                dataLength: bytes,
+                destination: UnsafeMutableRawPointer(base)
+            )
+        }
+        guard status == kCMBlockBufferNoErr else { return 0 }
+        var peak: Float32 = 0
+        for v in scratch {
+            let a = abs(v)
+            if a > peak { peak = a }
+        }
+        return peak
+    }
+
+    /// Schedule the 1 Hz heartbeat timer on `healthHeartbeatQueue`.
+    /// Each fire snapshots the cumulative counters under `stateQueue`,
+    /// emits a single info-level log line, and resets the per-interval
+    /// peak amplitude. Cancelled by `removeHealthHeartbeat()` on stop.
+    ///
+    /// Log format (sample):
+    ///
+    ///   mic_health: buffers=42 totalFrames=43008 lastSize=1024 \
+    ///   recentPeakAmp=0.1234 sinceLastBuf=0.02s
+    ///
+    /// Interpretation:
+    ///   * `buffers=0` for several seconds AFTER `start: live TCC mic
+    ///     authorization = authorized` ⇒ TCC silent-deny / HAL did not
+    ///     route the device. Re-grant macrec-ui in System Settings →
+    ///     Microphone (or `tccutil reset Microphone com.local.macrec-ui`
+    ///     and re-run).
+    ///   * `buffers>0` but `recentPeakAmp` stays at `0.0000` ⇒ the OS is
+    ///     handing us zero-filled frames (device muted, wrong device
+    ///     selected, or TCC silent-deny variant that returns frames).
+    ///   * Healthy run: `buffers` increments by ~10–50/s, `lastSize` ≈
+    ///     1024–4800, `recentPeakAmp` floats in [0.001, 1.0] when the
+    ///     user speaks.
+    private func installHealthHeartbeat() {
+        let timer = DispatchSource.makeTimerSource(queue: healthHeartbeatQueue)
+        timer.schedule(
+            deadline: .now() + .seconds(1),
+            repeating: .seconds(1),
+            leeway: .milliseconds(100)
+        )
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            let snapshot = self.stateQueue.sync { () -> (Int, Int, Int, Float32, Date) in
+                let bc = self._bufferCount
+                let tf = self._totalFramesReceived
+                let ls = self._lastBufferSize
+                let pa = self._recentMaxAmplitude
+                let lba = self._lastBufferArrival
+                // Reset per-interval amplitude so we measure the next
+                // window cleanly.
+                self._recentMaxAmplitude = 0
+                return (bc, tf, ls, pa, lba)
+            }
+            let sinceLast = Date().timeIntervalSince(snapshot.4)
+            let ampStr = String(format: "%.4f", snapshot.3)
+            let sinceStr = String(format: "%.2fs", max(sinceLast, 0))
+            self.logger.info(
+                "mic_health: buffers=\(snapshot.0) totalFrames=\(snapshot.1) lastSize=\(snapshot.2) recentPeakAmp=\(ampStr) sinceLastBuf=\(sinceStr)"
+            )
+        }
+        stateQueue.sync {
+            self._healthHeartbeatTimer = timer
+        }
+        timer.resume()
+    }
+
+    /// Cancel the heartbeat timer if installed. Idempotent.
+    private func removeHealthHeartbeat() {
+        let timer: DispatchSourceTimer? = stateQueue.sync {
+            let t = self._healthHeartbeatTimer
+            self._healthHeartbeatTimer = nil
+            return t
+        }
+        timer?.cancel()
     }
 
     // MARK: - NSWorkspace sleep/wake parity hook

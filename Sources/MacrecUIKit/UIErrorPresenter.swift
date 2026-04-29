@@ -336,6 +336,67 @@ public struct UIErrorPresenter: Sendable {
                 recovery: .dismiss
             )
 
+        // MARK: Live transcription (plan-003 Phase C) ------------------------
+        //
+        // Minimal mapping added to keep the exhaustive switch compiling
+        // after `MacrecError`'s plan-003 Phase C cases were introduced.
+        // Phase G owns the final UI presentation contract for these cases
+        // (see plan-003 §0.3); this stub is the no-fallback placeholder.
+
+        case let .transcriptionApiKeyMissing(provider):
+            return UIErrorMessage(
+                title: String(localized: "Transcription API key missing"),
+                detail: String(
+                    localized: "Set the API key for provider '\(provider)' in your shell or ~/.tool-agents/macrec/.env, then try again."
+                ),
+                recovery: .dismiss
+            )
+
+        case let .transcriptionPermissionDenied(provider):
+            // plan-005 Phase C — Apple on-device Speech requires Speech
+            // Recognition TCC permission. The Phase H UI integration may
+            // upgrade this to an `openSystemSettings(...)` deep link
+            // (Privacy_SpeechRecognition); for now keep it consistent
+            // with the other plan-003 transcription stubs.
+            return UIErrorMessage(
+                title: String(localized: "Speech Recognition permission required"),
+                detail: String(
+                    localized: "Transcription provider '\(provider)' needs Speech Recognition permission. Open System Settings > Privacy & Security > Speech Recognition and enable macrec, then try again."
+                ),
+                recovery: .dismiss
+            )
+
+        case let .transcriptionProviderUnavailable(reason):
+            return UIErrorMessage(
+                title: String(localized: "Transcription provider unavailable"),
+                detail: String(
+                    localized: "The transcription provider could not start: \(reason)"
+                ),
+                recovery: .retry
+            )
+
+        case let .transcriptionConfigConflict(reason):
+            return UIErrorMessage(
+                title: String(localized: "Conflicting transcription settings"),
+                detail: String(
+                    localized: "The transcription configuration is inconsistent: \(reason)"
+                ),
+                recovery: .dismiss
+            )
+
+        case let .transcriptionKeyExpired(provider, expiredAt):
+            let formatter = DateFormatter()
+            formatter.dateStyle = .medium
+            formatter.timeStyle = .short
+            let when = formatter.string(from: expiredAt)
+            return UIErrorMessage(
+                title: String(localized: "Transcription API key expired"),
+                detail: String(
+                    localized: "The API key for provider '\(provider)' expired on \(when). Renew the key and update your env files."
+                ),
+                recovery: .dismiss
+            )
+
         // MARK: Generic -------------------------------------------------------
 
         case let .ioError(message):

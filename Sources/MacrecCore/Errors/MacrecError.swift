@@ -53,6 +53,17 @@ public enum MacrecError: Error, LocalizedError, CustomStringConvertible {
     case alreadyRecording(pid: Int32, pidFilePath: String)
     case pidFileWriteFailed(path: String, reason: String)
 
+    // Live transcription (plan-003 Phase C; design §LT-4)
+    //
+    // No new exit codes are introduced — these cases map to the existing
+    // EX_CONFIG (78) / EX_USAGE (64) / EX_SOFTWARE (70) buckets. See the
+    // `exitCode` switch below.
+    case transcriptionApiKeyMissing(provider: String)
+    case transcriptionPermissionDenied(provider: String)
+    case transcriptionProviderUnavailable(reason: String)
+    case transcriptionConfigConflict(reason: String)
+    case transcriptionKeyExpired(provider: String, expiredAt: Date)
+
     // Generic
     case ioError(String)
     case unknown(String)
@@ -67,11 +78,14 @@ public enum MacrecError: Error, LocalizedError, CustomStringConvertible {
         case .missingRequiredConfig,
              .micDeviceNotFound,
              .alreadyRecording,
-             .noActiveRecording:
+             .noActiveRecording,
+             .transcriptionApiKeyMissing,
+             .transcriptionKeyExpired:
             return 78  // EX_CONFIG
 
         case .invalidConfigValue,
-             .dotEnvParseError:
+             .dotEnvParseError,
+             .transcriptionConfigConflict:
             return 64  // EX_USAGE
 
         case .outputParentMissing,
@@ -86,7 +100,8 @@ public enum MacrecError: Error, LocalizedError, CustomStringConvertible {
 
         case .screenRecordingPermissionDenied,
              .microphonePermissionDenied,
-             .microphonePermissionRestricted:
+             .microphonePermissionRestricted,
+             .transcriptionPermissionDenied:
             return 77  // EX_NOPERM
 
         case .noInputDevicesAvailable,
@@ -94,7 +109,8 @@ public enum MacrecError: Error, LocalizedError, CustomStringConvertible {
              .scStreamSilentStopExceeded,
              .avCaptureFailedToStart,
              .writerFailedToStart,
-             .stopTimeout:
+             .stopTimeout,
+             .transcriptionProviderUnavailable:
             return 70  // EX_SOFTWARE
 
         case .writerFinalizationTimeout:
@@ -188,6 +204,22 @@ public enum MacrecError: Error, LocalizedError, CustomStringConvertible {
 
         case let .pidFileWriteFailed(path, reason):
             return "Failed to write PID file at \(path): \(reason)."
+
+        case let .transcriptionApiKeyMissing(provider):
+            return "transcription API key missing for provider '\(provider)'"
+
+        case let .transcriptionPermissionDenied(provider):
+            return "transcription permission denied for provider '\(provider)'. Enable in System Settings → Privacy & Security → Speech Recognition, then re-run."
+
+        case let .transcriptionProviderUnavailable(reason):
+            return "transcription provider unavailable: \(reason)"
+
+        case let .transcriptionConfigConflict(reason):
+            return "transcription configuration conflict: \(reason)"
+
+        case let .transcriptionKeyExpired(provider, expiredAt):
+            let formatter = ISO8601DateFormatter()
+            return "transcription API key for provider '\(provider)' expired at \(formatter.string(from: expiredAt))"
         }
     }
 
@@ -271,6 +303,21 @@ public enum MacrecError: Error, LocalizedError, CustomStringConvertible {
 
         case .pidFileWriteFailed:
             return "Check that the parent directory exists and is writable; try passing '--pid-file <path>' to a writable location."
+
+        case .transcriptionApiKeyMissing:
+            return "Set the provider's API key (e.g. GOOGLE_API_KEY for gemini-live) in your shell, ~/.tool-agents/macrec/.env, or ./.env, then re-run."
+
+        case .transcriptionPermissionDenied:
+            return "Open System Settings > Privacy & Security > Speech Recognition and enable macrec, then re-run."
+
+        case .transcriptionProviderUnavailable:
+            return "Verify the provider configuration (model id, endpoint) and try again, or pass '--transcribe none' to disable live transcription."
+
+        case .transcriptionConfigConflict:
+            return "Adjust the conflicting flags (e.g. set --transcribe-source mixed when --mic none, or pass --transcribe none to disable transcription)."
+
+        case .transcriptionKeyExpired:
+            return "Renew the API key with the provider, update the value in your shell, ~/.tool-agents/macrec/.env, or ./.env, then re-run. Update MACREC_TRANSCRIBE_KEY_EXPIRES_AT to the new expiry date."
         }
     }
 

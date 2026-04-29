@@ -478,6 +478,282 @@ file — the user manages its size.
 
 ---
 
+### 1.5 Added 2026-04-26 — Live transcription side-channel (plan-003, REST-rewritten by plan-004)
+
+> The requirements below were appended on 2026-04-26 by Phase 4 (Planner)
+> for the live-transcription v1.2 add-on. Source: `docs/design/refined-request-live-transcription.md`
+> (FR-45..FR-58, NFR-17..NFR-21, AC-LT-1..AC-LT-25, OQ-LT-1..OQ-LT-7).
+> Architectural choices were originally locked in `docs/reference/investigation-live-transcription.md`
+> and `docs/research/gemini-live-wire-schema.md`, `docs/research/audio-downsample-conversion.md`,
+> and `docs/research/websocket-asyncstream-pattern.md` against a Gemini Live WebSocket
+> pipeline. **Plan-004 (`docs/design/plan-004-rest-batch-transcription.md`) supersedes that
+> pipeline with a notch-style REST-batch architecture using Gemini's `generateContent`
+> endpoint.** The wording of FR-45..FR-58 / NFR-17..NFR-21 below has been refreshed to
+> match plan-004 semantics; the original plan-003 wording is preserved in
+> `docs/design/plan-003-live-transcription.md` as a historical record. Phase mapping
+> below reflects plan-004's Phases A..J.
+
+#### FR-45 — Opt-in transcription side-channel via `--transcribe`
+**Status:** PLANNED (Phase G — plan-004). **Phase:** G (plan-004 — wiring in `RecordingSession` + `ConfigResolver` + `MacrecError`). **Acceptance:** AC-LT-1, AC-LT-2, AC-LT-3, AC-LT-4.
+`macrec` MUST expose an opt-in transcription side-channel selectable via
+`--transcribe <none|gemini>` (env: `MACREC_TRANSCRIBE`). Default `none`
+(no network connections opened, no API keys read, no sidecar files
+written). When non-`none`, each buffered audio chunk drives **one REST
+per-chunk request** to the configured provider's HTTP endpoint
+(Gemini's `generateContent`); there is no persistent socket. Recording
+integrity is preserved by isolation: any transcription failure is
+non-fatal to the recording (NFR-17). The `gemini-live` value is accepted
+as a deprecated alias for `gemini` for one release with a `.notice`
+log line.
+
+#### FR-46 — Provider abstraction supports multiple backends
+**Status:** PLANNED (Phase C — plan-004). **Phase:** C (plan-004 — `TranscriptionProvider` protocol + conformers). **Acceptance:** AC-LT-3, AC-LT-11, NFR-21.
+`MacrecCore` MUST expose a `TranscriptionProvider` protocol with the
+batch-call signature
+`func transcribe(samples: [Float], source: SourceTag, options: TranscriptionOptions) async throws -> String`.
+Concrete v1 conformers: `NoOpTranscriptionProvider`,
+`FakeTranscriptionProvider` (test double), `GeminiRESTTranscriptionProvider`.
+The protocol MUST be designed so an additional provider (OpenAI,
+Deepgram, AssemblyAI, etc.) can be added without touching call sites
+(NFR-21). All conformers must be `Sendable` and safe for concurrent
+calls (the manager keeps up to two in-flight calls per source under load).
+
+#### FR-47 — Audio downsampled to 16 kHz mono PCM16 before provider call
+**Status:** PLANNED (Phase A — plan-004). **Phase:** A (plan-004 — pure value types incl. `AudioWAVEncoder`; reuses the existing `AudioDownsampler`). **Acceptance:** AC-LT-3.
+Captured audio (48 kHz Float32 stereo from `ScreenCaptureKit` /
+`AVFoundation`) MUST be downsampled to **16 kHz mono Float32** before
+being handed to a provider. The Gemini provider further encodes the
+buffered `[Float]` into PCM16 little-endian and wraps it in a 44-byte
+WAV header (`audio/wav` MIME) for the REST body. The downsampling
+helper is shared across providers so each provider receives the same
+input shape regardless of source layout (`mic`, `system`, `mixed`).
+
+#### FR-48 — Per-chunk buffering window of 2.5 s before flush
+**Status:** PLANNED (Phase B — plan-004). **Phase:** B (plan-004 — `SourceBuffer` actor). **Acceptance:** AC-LT-2, AC-LT-3, NFR-18, NFR-19.
+Per-source `[Float]` ring buffers MUST accumulate ~2.5 s of 16 kHz
+mono samples before being drained and submitted to the provider as one
+REST request. Flushing is driven by a single `processLoop` Task that
+wakes every 0.8 × `chunkSeconds` (≈ 2.0 s). A drain below the
+`minSamples` floor (~400 ms / 6 400 samples — Gemini consistently
+returns empty text below this) is held in the buffer for the next
+tick. On final stop, residual samples are flushed regardless of the
+floor with `final: true`. The buffer is bounded: if the accumulator
+exceeds `2 × chunkSamples`, the oldest half is dropped and a
+`bufferOverflowCount` metric increments (lossy-under-backpressure
+contract; recording is never blocked).
+
+#### FR-49 — Energy gate suppresses near-silent chunks (peak < 0.01)
+**Status:** PLANNED (Phase A — plan-004). **Phase:** A (plan-004 — `TranscriptSanitizer` pure function). **Acceptance:** AC-LT-3, NFR-19.
+After draining a buffer the manager MUST compute the peak absolute
+sample value (`TranscriptSanitizer.peak`) and skip the provider call
+when peak < `silenceThreshold` (0.01, ≈ −40 dBFS). This prevents
+billing and latency for near-silent audio (long pauses between
+sentences, silent meeting backgrounds, etc.) while still allowing
+quiet speech through. The skipped chunk is dropped — there is no
+buffer-and-retry — so the next 2.5 s window starts fresh.
+
+#### FR-50 — Hallucination filter suppresses known-noise tokens
+**Status:** PLANNED (Phase A — plan-004). **Phase:** A (plan-004 — `TranscriptSanitizer.clean`). **Acceptance:** AC-LT-3.
+After a provider returns text the manager MUST run it through a
+hallucination filter (`TranscriptSanitizer.clean`) that trims
+whitespace, strips leading punctuation, requires at least one letter
+or digit, lowercases the result, and matches against a known
+hallucination set (verbatim from notch — e.g. `"thank you"`,
+`"thanks"`, `"thanks for watching"`, etc., the canonical short
+phrases that streaming and batch ASR systems emit on silent or
+non-speech input). A match returns `""`, which suppresses the segment
+end-to-end (no event emitted, no sidecar line written).
+
+#### FR-51 — Same-source segments coalesce within 12 s and not at sentence end
+**Status:** PLANNED (Phase A — plan-004). **Phase:** A (plan-004 — `SegmentCoalescer` pure function). **Acceptance:** AC-LT-3, AC-LT-7.
+A `SegmentCoalescer` MUST extend the most-recent `TranscriptSegment`
+in place when the new chunk has the same `source` tag, the gap from
+the prior `lastUpdated` to the new chunk is ≤ 12 s, and the prior
+segment's text does not end with a sentence-final punctuation mark
+(`.!?…`). Otherwise, a new segment is appended. Coalescer output is
+expressed via two events on the events stream:
+`.segmentAppended(idx, segment)` (new line) and
+`.segmentUpdated(idx, segment)` (rewrite of an existing line in
+place). Different-source segments never coalesce (preserves the
+per-source labelling that `--transcribe-source both` requires).
+
+#### FR-52 — Inline transcript panel shows growing-segment updates in place
+**Status:** PLANNED (Phase H — plan-004). **Phase:** H (plan-004 — UI integration). **Acceptance:** AC-LT-7, AC-LT-20.
+The `macrec-ui` popover MUST render a live, scrollable transcript
+panel below the level meters (fixed max-height ~120 pt). The panel
+appends a new line on `.segmentAppended` and rewrites the
+most-recently-appended line in place on `.segmentUpdated` (replacing
+the previous text in place when the segment grows, mirroring the
+in-place rewrite the on-disk sidecar performs). There is no
+"partial vs final" UI distinction in this architecture — segments
+just grow. Auto-scroll to the bottom unless the user has scrolled
+away (in which case a "Jump to live" affordance appears). Closing the
+popover does not stop transcription, only its rendering; on reopen
+the most recent N segments are visible.
+
+#### FR-53 — Privacy disclosure tooltip shown on first transcribe start
+**Status:** PLANNED (Phase H — plan-004). **Phase:** H (plan-004 — UI integration). **Acceptance:** AC-LT-9, AC-LT-25, NFR-20.
+Selecting any non-`None` provider for the first time on a given launch
+MUST surface a one-time confirmation dialog explaining that the
+captured audio will be sent to a third-party API ("Audio is being
+sent to Google" for the Gemini provider). A "Don't show again"
+affordance suppresses the dialog for subsequent launches; the
+disclosure remains discoverable via tooltip on the picker. The CLI
+mode emits the same disclosure once to stderr (and to the detach
+log file when `--detach`).
+
+#### FR-54 — Sidecar formats `jsonl` / `txt` / `srt` / `vtt` with `*.transcript.<ext>` infix
+**Status:** PLANNED (Phase F — plan-004). **Phase:** F (plan-004 — sidecar writers, including the path fix). **Acceptance:** AC-LT-5, AC-LT-6.
+When transcription is enabled, a sidecar transcript file MUST be
+written alongside the audio file using the same basename plus the
+mandatory `.transcript.` infix (closes R-LT-1 spec-side):
+- Single segment, mixed / stereo-split layout: `recording-….m4a` →
+  `recording-….transcript.<ext>`.
+- Multi-segment (`partNN`): `recording-….part01.m4a` →
+  `recording-….part01.transcript.<ext>`.
+- `--layout split` with `--transcribe-source both`: two sidecars,
+  `recording-….system.transcript.<ext>` AND
+  `recording-….mic.transcript.<ext>`.
+- `--layout split` with `--transcribe-source mixed|system|mic`: one
+  sidecar (`recording-….transcript.<ext>` or, for `system` / `mic`,
+  the source-suffixed variant).
+Sidecar formats supported in v1: `jsonl` (default — one JSON object
+per coalesced segment, line rewritten in place when the segment
+extends), `txt` (one line per finished segment), `srt`, `vtt`.
+
+#### FR-55 — Sidecar rotates on `split(nextOutput:)`
+**Status:** PLANNED (Phase G — plan-004). **Phase:** G (plan-004 — `RecordingSession.split` calls `manager.rotateSidecar(toAudioURL:)`; sidecar writer surface added in Phase F). **Acceptance:** AC-LT-5, AC-LT-20.
+When `RecordingSession.split(nextOutput:)` rotates the audio recorder
+to a new `partNN` file, the transcription side-channel MUST also
+rotate: close the current sidecar writer(s), open fresh ones at the
+new path derived from `nextOutput` via `SidecarPathBuilder`, and
+reset the `SegmentCoalescer` so the first segment of the new part is
+appended (not coalesced into the previous part's tail). Closes R-LT-5
+spec-side. Pause/Resume continues to be handled by the existing
+`SessionCoordinator.pause/resume` stop-and-restart path (which builds
+a fresh sidecar via `setUpTranscriptionPipelineIfNeeded`).
+
+#### FR-56 — `--transcribe-source both` produces per-source labels in a single sidecar
+**Status:** PLANNED (Phases E + F — plan-004). **Phase:** E (TranscriptionManager fans out into per-source `SourceBuffer`s) + F (sidecar writer carries the `source` field on each segment line). **Acceptance:** AC-LT-7, AC-LT-12.
+With `--transcribe-source both` (and a non-`split` recording layout),
+the `TranscriptionManager` MUST instantiate one `SourceBuffer` per
+source (`mic` and `system`), submit independent REST chunks per
+source, and emit segments tagged with the originating `SourceTag`. A
+single sidecar file is written; each segment line carries
+`"source": "mic"` or `"source": "system"`. The split-layout case
+(two audio files) gets two sidecars per FR-54. Closes LT-PEND-2
+spec-side: `both` is a real per-source fan-out, not a fallback to
+`mixed`.
+
+#### FR-57 — Stop drains in-flight provider calls within 5 s
+**Status:** PLANNED (Phase E — plan-004). **Phase:** E (plan-004 — `TranscriptionManager.stop`). **Acceptance:** AC-LT-13.
+On Stop / SIGINT / SIGTERM, the `TranscriptionManager` MUST: (1) flush
+each `SourceBuffer` with `final: true` so any residue ≥ `minSamples`
+is sent, (2) await in-flight provider tasks up to a 5 s drain
+deadline (cancel any still pending after that), (3) finish the events
+stream so subscribers can complete, and (4) close the sidecar
+writers. The final on-disk transcript path is surfaced through the
+existing post-stop disclosure that already lists audio files.
+
+#### FR-58 — Per-session metrics emitted: chunks sent, billable seconds, error count, last RTT
+**Status:** PLANNED (Phases E + H — plan-004). **Phase:** E (manager emits `TranscriptionMetrics`) + H (UI surfaces them in the post-stop summary). **Acceptance:** AC-LT-14.
+The transcription subsystem MUST track and emit (at `info` level on
+stop, in the post-stop UI summary, and in the JSONL sidecar header
+update at finalization):
+- Number of REST chunks sent to the provider.
+- Total billable audio seconds (sum of chunk durations actually
+  submitted, after silence-gating).
+- Number of provider errors (`transcriptionProviderFailed` count).
+- Last observed RTT (wall-clock seconds for the most recent provider
+  round-trip).
+- Number of buffer overflow drops (`bufferOverflowCount`).
+The first-token / first-partial latency metric from plan-003 is
+removed (no streaming, no first-token concept). RTT is the analogous
+observable for the REST architecture.
+
+#### Apple Speech Streaming (plan-005)
+
+| FR | Description | Status |
+|---|---|---|
+| FR-AS-1 | New provider id `apple` for `--transcribe`; on-device streaming via `SpeechAnalyzer` (macOS 26+). | PLANNED (Phase D — plan-005) |
+| FR-AS-2 | `MACREC_TRANSCRIBE` default flips from `none` to `apple`. | PLANNED (Phase G — plan-005) |
+| FR-AS-3 | Per-utterance partial transcriptions surface to UI within ~250 ms of speech start. | PLANNED (Phase D + Phase H — plan-005) |
+| FR-AS-4 | Per-utterance final transcription persists to sidecar with `model:"apple"` and BCP-47 `language` field. | PLANNED (Phase F — plan-005) |
+| FR-AS-5 | `--transcribe-language en-US,el-GR` activates dual-locale parallel recognition. | PLANNED (Phase D — plan-005) |
+| FR-AS-6 | When ≥ 2 locales are active, sidecar lines carry `language` and TXT/SRT/VTT writers prefix the cue body with `[lang]`. | PLANNED (Phase F — plan-005) |
+| FR-AS-7 | Per-utterance reconciliation picks the higher-confidence final from parallel locales (150 ms wait window). | PLANNED (Phase D — plan-005) |
+| FR-AS-8 | TCC `NSSpeechRecognitionUsageDescription` preflight; missing grant → `transcriptionPermissionDenied` exit 78. | PLANNED (Phase C — plan-005) |
+| FR-AS-9 | Unsupported locale → `transcriptionConfigConflict` exit 64 with remediation pointing to System Settings → Language & Region. | PLANNED (Phase G — plan-005) |
+| FR-AS-10 | Detach mode supported (parity with plan-004 R-LT-2 lift); TCC must be granted before launching detached. | PLANNED (Phase G — plan-005) |
+| FR-AS-11 | Pause/resume produces a clean utterance boundary. | PLANNED (Phase E — plan-005) |
+| FR-AS-12 | `split(nextOutput:)` rotates the sidecar atomically; sessions keep running across the split. | PLANNED (Phase E + Phase G — plan-005) |
+
+#### AC-LT-1..AC-LT-25 — Acceptance criteria mapping (REST-batch verification)
+
+The full AC-LT-* statements are defined in
+`docs/design/refined-request-live-transcription.md` §AC-LT. The table
+below maps each criterion to the verifying test artefact in the
+plan-004 architecture (per plan-004 §8.7). Items whose original
+formulation was tied to WebSocket-specific behaviour (close codes,
+session-resumption tokens, sliding-window context limits) are
+explicitly superseded.
+
+| AC | Verification mechanism (plan-004) |
+|---|---|
+| AC-LT-1 (None is the default and a true no-op) | `test_scripts/e2e-transcription-noop.sh` — asserts no `*.transcript.*` file appears in the output folder when `--transcribe` is absent or `none`. |
+| AC-LT-2 (sidecar exists with `--transcribe gemini`) | `test_scripts/e2e-transcription-gemini.sh` — asserts a `*.transcript.jsonl` sidecar with ≥ 2 segments. |
+| AC-LT-3 (recording integrity unaffected by transcription) | Audio-file assertions in both e2e scripts above + `RecordingIntegrityIsolationTests` (hanging `FakeTranscriptionProvider` injection asserts byte-identical audio file). |
+| AC-LT-4 (no audio file when key missing) | `test_scripts/e2e-transcription-key-missing.sh` — exit 78, no audio file, no sidecar. |
+| AC-LT-5 (sidecar filename `.transcript.` infix per segmentation) | `SidecarPathBuilderTests` (every layout / source / partNN combination) + e2e file glob assertion. |
+| AC-LT-6 (sidecar formats valid: jsonl / txt / srt / vtt) | Per-format unit tests in `Tests/MacrecCoreTests/Transcription/Persistence/*WriterTests.swift` with golden fixtures. |
+| AC-LT-7 (live UI panel shows growing-segment updates in place) | `RecordingControllerTranscriptTests` — `.segmentAppended` adds a line, `.segmentUpdated` rewrites the most-recent line in place. |
+| AC-LT-8 (UI surfaces missing-key state) | UI test on `TranscriptionMissingKeyBadge` (red badge + tooltip when `transcriptionMissingKey == true`). |
+| AC-LT-9 (privacy disclosure on first opt-in) | UI test on `TranscriptionPrivacyAlert` + `@AppStorage("…transcribePrivacyAccepted")`. |
+| AC-LT-10 — superseded by plan-004. | Plan-003's AC-LT-10 specified WebSocket reconnect-on-transient-failure; the REST architecture has no persistent socket so this criterion no longer applies. The closest analogue is the per-chunk non-fatal failure posture in NFR-21 (verified via `URLProtocol`-stub provider unit tests for 4xx / 5xx / transport error → `transcriptionProviderFailed`, recording continues). |
+| AC-LT-11 (bounded queue drops, never blocks) | `SourceBufferOverflowTests` — `> 2 × chunkSamples` triggers `bufferOverflowCount` and drops oldest half; downstream pipeline is never blocked. |
+| AC-LT-12 (source selection routes correctly) | `TranscriptionManagerSourceRoutingTests` (`mic` / `system` / `mixed` / `both`) + `e2e-transcription-gemini.sh` source-flag variants. |
+| AC-LT-13 (clean shutdown drains finals) | `TranscriptionManagerLifecycleTests` — `start → ingest N synthetic frames → stop` produces expected event count within 5 s drain bound. |
+| AC-LT-14 (cost / volume metrics emitted) | `TranscriptionMetricsTests` (chunks sent, billable seconds, error count, last RTT, overflow count) + UI test on the post-stop summary line. |
+| AC-LT-15 (`macrec start --help` lists all new flags) | `StartCommandHelpTests` — snapshot of `--help` output includes `--transcribe`, `--transcribe-source`, `--transcript-format`, `--transcribe-model`, `--transcribe-language`, `--transcribe-key-expires-at`. |
+| AC-LT-16 (`--transcribe none` is the default; zero behaviour change) | `e2e-transcription-noop.sh` + the existing AC-1..AC-20 / AC-UI-1..AC-UI-18 e2e suite (which run unchanged when `--transcribe` is absent). |
+| AC-LT-17 (invalid provider name → exit 64) | `ConfigResolverTranscriptionTests` — `--transcribe foobar` raises `transcriptionInvalidConfigValue`, exit 64. |
+| AC-LT-18 (live transcription picker present in popover) | UI test on `TranscriptionPicker` + DisclosureGroup; persisted defaults loaded from `@AppStorage`. |
+| AC-LT-19 (picker disabled while recording) | UI test using the same `isLocked` computed pattern as `FormatPicker`. |
+| AC-LT-20 (transcript panel survives Pause/Resume / Split across segments) | `e2e-transcription-gemini.sh` split variant — sidecar rotates per `partNN`; coalescer reset asserted via JSONL line count per part. |
+| AC-LT-21 (`docs/tools/macrec.md` updated) | Manual review at plan-004 Phase J.5. |
+| AC-LT-22 (`docs/tools/macrec-ui.md` updated) | Manual review at plan-004 Phase J.6. |
+| AC-LT-23 (`docs/design/configuration-guide.md` updated) | Manual review at plan-004 Phase 0.5. |
+| AC-LT-24 (`docs/design/project-functions.md` updated) | This section is the deliverable — verified at plan-004 Phase 0.7. |
+| AC-LT-25 (privacy disclosure shown on first start) | UI test (covered by AC-LT-9 mechanism). |
+
+#### Apple Speech AC mapping (plan-005)
+
+| AC | Verification |
+|---|---|
+| AC-AS-1 | `*.transcript.jsonl` sidecar with `model:"apple"` lines | `e2e-transcription-apple.sh` |
+| AC-AS-2 | First partial within 500 ms | unit test on `StreamingProviderMetrics.lastPartialLatencyMs` (`AppleSpeechSessionLatencyTests.swift`) |
+| AC-AS-3 | Final within 1 s of end-of-speech | unit test on `lastFinalLatencyMs` |
+| AC-AS-4 | Single-locale → no `[lang]` prefix in TXT/SRT/VTT | `WriterLanguagePrefixTests.swift` |
+| AC-AS-5 | Dual-locale → `[lang]` prefix present | `e2e-transcription-apple-dual-locale.sh` + `WriterLanguagePrefixTests` |
+| AC-AS-6 | Dual-locale picks higher-confidence final | `AppleSpeechSessionReconciliationTests.swift` (uses `MockSpeechAnalyzer`) |
+| AC-AS-7 | TCC denied → exit 78 | `e2e-transcription-permission-denied.sh` |
+| AC-AS-8 | Detach + apple → sidecar lands | `e2e-transcription-apple-detach.sh` |
+| AC-AS-9 | Pause/resume → clean utterance boundary | `StreamingTranscriptionPipelineTests` |
+| AC-AS-10 | Split rotates sidecar atomically | `TranscriptionManagerRotateTests` |
+| AC-AS-11 | Unsupported locale fails fast | `ConfigResolverAppleLocaleTests.swift` |
+| AC-AS-12 | Recording integrity isolation under provider error | `TranscriptionManagerErrorIsolationTests.swift` |
+
+Three plan-003 AC-LT items keyed to WebSocket-specific behaviour
+(close codes, session-resumption tokens, sliding-window context
+limits) were already superseded by removal in the migration from
+plan-003 to plan-004 — the closing of `Sources/MacrecCore/Transcription/Networking/`
+removes the surfaces these AC items asserted on. AC-LT-10 is the
+single explicit "AC-N — superseded by plan-004" line above; the
+other two surfaces were never named as standalone AC numbers in
+the refined request and need no separate disposition line here.
+
+---
+
 ## 2. Non-functional requirements
 
 Carried forward from the refined request without modification:
@@ -510,6 +786,63 @@ Carried forward from the refined request without modification:
   output-path validation. E2E tests are manual (TCC unavailable in
   CI).
 
+### Added 2026-04-26 by plan-003, REST-rewritten 2026-04-28 by plan-004 — Live transcription side-channel
+
+- **NFR-17 — Recording integrity isolation.** Transcription failures
+  (provider 4xx/5xx, transport error, decode error, sidecar I/O error,
+  hung provider Task) MUST NOT stop, slow, or corrupt the on-disk
+  recording. Verified by an integration test that injects a hanging
+  `FakeTranscriptionProvider` and asserts the audio file is byte-for-byte
+  identical to a control recording without transcription enabled.
+  All transcription-runtime errors are logged + surfaced as a UI amber
+  banner but never propagate to the recorder pipeline.
+- **NFR-18 — Transcription pipeline memory bounded — per-source buffer
+  ≤ 320 KB peak.** Each `SourceBuffer` accumulates at most
+  `2 × chunkSamples` Float32 samples before the actor's bounded-drop
+  policy kicks in: 2 × 2.5 s × 16 000 samples × 4 bytes = 320 KB per
+  source. With at most two sources active (`--transcribe-source both`)
+  the per-process worst-case is 640 KB of in-flight transcription PCM.
+  This replaces the streaming pipeline's 8 MB ceiling from plan-003 —
+  the REST architecture has no per-WebSocket queue.
+- **NFR-19 — End-to-end latency from utterance end to transcript line
+  ≤ 5 s P95.** Latency budget = 2.5 s buffer flush window + 2.0 s
+  provider RTT (Gemini REST `generateContent` typical) + 0.5 s
+  pipeline overhead (downsample, sanitize, coalesce, sidecar write).
+  Replaces plan-003's first-token / first-partial NFR (no streaming,
+  no first-token concept). Observability target, not a hard SLO —
+  exceeding it logs a warning but never stops the recording.
+- **NFR-20 — API key never logged or written to disk except as
+  configured key file.** `GOOGLE_API_KEY` MUST appear only inside the
+  resolver's in-memory `RecordingOptions.transcriptionApiKey` field
+  (and the user-controlled source: `~/.tool-agents/macrec/.env` mode
+  `0600`, `~/.tool-agents/macrec-ui/.env` mode `0600`, local `./.env`,
+  or shell environment). It MUST NOT appear in any log line, in the
+  sidecar header, in the post-stop UI summary, or in any error
+  message. No `--google-api-key` CLI flag exists (avoids leakage into
+  shell history and `ps` output). Audio bytes and the source label
+  are the only data transmitted; no PII metadata (filename, mic
+  device name, host name, user name) is included in the request.
+- **NFR-21 — Retry policy: per-chunk failures non-fatal; no automatic
+  retry of failed REST calls in v1.** A failed `transcribe(samples:…)`
+  call MUST emit `transcriptionProviderFailed(detail:)` (non-fatal),
+  increment the error metric, and move on — the next 2.5 s chunk is
+  attempted independently. There is **no automatic retry of the
+  failed chunk** in v1 (idempotency of `generateContent` is unclear
+  and retry costs money). Recording continues uninterrupted; the
+  sidecar continues with a missed-chunk gap line. Replaces plan-003's
+  WebSocket session-resumption / exponential-backoff NFR which has no
+  REST analogue. Provider extensibility (new conformer = new file +
+  single registration line, zero changes to `MacrecCore` orchestration
+  code) is a separate property of the protocol design — see FR-46.
+
+#### Apple Speech Streaming NFRs (plan-005)
+
+| NFR | Description | Status |
+|---|---|---|
+| NFR-AS-1 | First-partial latency ≤ 500 ms P95 (mic → first partial event) on Apple Silicon. | PLANNED (Phase D — plan-005) |
+| NFR-AS-2 | Final latency ≤ 1 s P95 (end-of-speech → final event). | PLANNED (Phase D — plan-005) |
+| NFR-AS-3 | CPU footprint per active recognizer ≤ 10 % on M-series at light load. With `--transcribe-source both` + 2 locales (4 active recognizers) total transcription CPU ≤ 40 %. | PLANNED (Phase D — plan-005) |
+
 ---
 
 ## 3. Open questions (status snapshot)
@@ -526,6 +859,15 @@ Carried forward from the refined request without modification:
 | OQ-8  | Mic device selection                                       | Either name or UID; UID wins; warn on multi-match | LOCKED |
 | OQ-9  | System silence behavior                                    | RMS heartbeat every 10 s @ debug (FR-23) | LOCKED |
 | OQ-10 | Required vs defaultable config                             | Required: `--output` only                | LOCKED |
+| OQ-LT-1 | Exact Gemini model id ("Gemini 3.1 Live")               | `gemini-3.1-flash-live-preview` (with `models/` prefix). Fallback: `gemini-live-2.5-flash-native-audio` | LOCKED by plan-003 §0.1 |
+| OQ-LT-2 | Default transcription source: `mixed` vs `both`         | `mixed` default; `both` exposed as a UI option | LOCKED by plan-003 §0.1 |
+| OQ-LT-3 | Inline transcript panel vs separate window              | Inline panel (max-height ~120 pt). Separate window logged as v2 | LOCKED by plan-003 §0.1 |
+| OQ-LT-4 | Streaming transport: WebSocket vs gRPC                  | `URLSessionWebSocketTask` (Foundation, no dep) | LOCKED by plan-003 §0.1 |
+| OQ-LT-5 | Detach-mode transcription scope                         | EXCLUDED from v1; `--detach --transcribe` exits 64 | LOCKED by plan-003 §0.1 |
+| OQ-LT-6 | Maximum session length on Gemini Live                   | Mitigated by `contextWindowCompression` + `sessionResumption`; brief gap at reconnects accepted | LOCKED by plan-003 §0.1 |
+| OQ-LT-7 | `--max-duration` propagates to transcription session    | YES, one-way only. Transcription stops when recording stops | LOCKED by plan-003 §0.1 |
+| ESC-LT-1 | Empirical reliability of `inputAudioTranscription` on Gemini 3.1 | Phase I smoke test gates launch; documented fallback to 2.5 model | ESCALATED to user (plan-003 §0.2) |
+| ESC-LT-2 | WebSocket `maxAttempts` parameter                       | Recommended `8` (~110 s worst-case)     | ESCALATED to user (plan-003 §0.2) |
 
 Six research-doc follow-ups (SCStream OI-1, OI-2, OI-3 +
 AVAssetWriter 7.1, 7.2, 7.4) are tracked in `Issues - Pending Items.md`
@@ -550,3 +892,23 @@ with the disposition "validate during Phase 10".
   `SystemAudioSource` protocol is the abstraction seam.
 - FLAC, MP3, Opus output codecs.
 - Cross-platform (Linux, Windows) — explicitly out of scope.
+
+### Added by plan-003 — Live transcription v2 candidates
+
+- On-device transcription (Apple `SFSpeechRecognizer`, WhisperKit) as a
+  network-free provider — refined-request §Out of scope; tracked as v2.
+- Detach-mode transcription (sidecar-only output without a UI to render
+  partials) — OQ-LT-5 v2.
+- Separate transcript window (NSWindow on demand) for long meetings —
+  OQ-LT-3 v2.
+- Additional providers: OpenAI Realtime (`gpt-realtime`), Deepgram
+  Streaming (`nova-3`), AssemblyAI Universal-Streaming. All admit the
+  v1 `TranscriptionProvider` protocol per NFR-21.
+- Translation (target-language selection) — refined-request §Out of
+  scope; v2.
+- Speaker diarization beyond `system`/`mic` source labels — v2.
+- In-app transcript editor / merge-and-re-export — v2.
+- Re-transcription of finished recordings (offline batch) — v2.
+- Per-recording cost dashboard / multi-recording aggregator — v2.
+- `com.apple.security.network.client` entitlement when `macrec` is
+  later sandboxed — v2 prerequisite.

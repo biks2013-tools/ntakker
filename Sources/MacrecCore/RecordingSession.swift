@@ -58,6 +58,7 @@
 //     cleanup is idempotent.
 //   * Foreground mode: NEVER writes or removes the PID file.
 
+import AVFoundation
 import CoreMedia
 import Dispatch
 import Foundation
@@ -79,6 +80,22 @@ public enum StopReason: Sendable, Equatable {
     case programmatic
     case error
 }
+
+// MARK: - Transcription factory typealias (plan-003 Phase G)
+
+/// Test seam for injecting a fake `TranscriptionProvider` into a
+/// `RecordingSession`. Production passes `nil` (the session falls back
+/// to `TranscriptionProviderFactory.make(...)`); tests pass a closure
+/// that returns a `FakeTranscriptionProvider` so the integration tests
+/// can run without network access.
+///
+/// The closure receives the resolved `RecordingOptions` so a test can
+/// inspect the chosen provider id / source / format and decide what
+/// fake to return. The closure throws if the options are malformed —
+/// the throw propagates out of `RecordingSession.run()` as a
+/// `MacrecError`.
+public typealias TranscriptionProviderFactoryClosure =
+    @Sendable (RecordingOptions) throws -> any TranscriptionProvider
 
 // MARK: - RecordingSession
 
@@ -120,6 +137,40 @@ public final class RecordingSession: @unchecked Sendable {
     private let options: RecordingOptions
     private let logger: Logger
     private let pidLogger: Logger
+
+    // MARK: - Transcription wiring (plan-004 Phase G)
+
+    /// Optional injected provider factory. When `nil`, the session
+    /// falls through to `TranscriptionProviderFactory.build(...)`.
+    /// Tests inject a closure returning `FakeTranscriptionProvider`.
+    private let transcriptionProviderFactory: TranscriptionProviderFactoryClosure?
+
+    /// Active transcription manager for this session. Created in
+    /// `run()` when `options.transcriptionProviderId != nil && != "none"`,
+    /// stopped in the finalize path. `nil` when transcription is
+    /// disabled — the recording path is byte-identical in that case
+    /// (NFR-17 / AC-LT-2). The manager owns its own per-session
+    /// `TranscriptSidecarWriter`; the session does not retain a
+    /// separate sidecar reference (plan-004 Phase E rewrite).
+    private var _transcriptionManager: TranscriptionManager?
+
+    /// Token for the live tap installed on the aligner. Removed on
+    /// teardown so a misbehaving manager can never starve the recorder
+    /// post-finalize.
+    private var _transcriptionTapToken: HostClockAligner.TapToken?
+
+    /// Forwarder Task that drains the manager's events stream into the
+    /// public `transcriptEvents` stream consumed by the UI. Sidecar
+    /// writes are owned inside the manager itself (plan-004 Phase E).
+    /// Awaited in the finalize path.
+    private var _transcriptionForwarderTask: Task<Void, Never>?
+
+    /// Public events stream — populated when transcription is active,
+    /// otherwise simply finishes the moment `run()` exits without ever
+    /// having yielded an event. UI consumers iterate via
+    /// `for await event in session.transcriptEvents { ... }`.
+    public nonisolated let transcriptEvents: AsyncStream<TranscriptionEvent>
+    private nonisolated let _transcriptEventsContinuation: AsyncStream<TranscriptionEvent>.Continuation
 
     /// Serial queue protecting all mutable orchestrator state.
     private let serialQueue = DispatchQueue(
@@ -215,7 +266,8 @@ public final class RecordingSession: @unchecked Sendable {
         logger: Logger? = nil,
         systemSource: (any SystemAudioSource)? = nil,
         micSource: (any MicrophoneSource)? = nil,
-        permissionGate: (any PermissionGating)? = nil
+        permissionGate: (any PermissionGating)? = nil,
+        transcriptionProviderFactory: TranscriptionProviderFactoryClosure? = nil
     ) {
         let resolvedLogger = logger ?? LoggerFactory.make("macrec.session")
         self.options = options
@@ -223,6 +275,7 @@ public final class RecordingSession: @unchecked Sendable {
         self.pidLogger = LoggerFactory.make("macrec.pidfile")
         self.injectedSystemSource = systemSource
         self.injectedMicSource = micSource
+        self.transcriptionProviderFactory = transcriptionProviderFactory
         // Resolve the permission gate. Default-`nil` preserves
         // pre-Phase-A behavior: the live `PermissionGate` is built and
         // used exactly as before. Test injection paths supply a stub.
@@ -236,6 +289,17 @@ public final class RecordingSession: @unchecked Sendable {
         )
         self.stateStream = pair.stream
         self._stateContinuation = pair.continuation
+        // Wire the transcription events stream. Bounded at 64 events so
+        // a slow UI consumer drops oldest events without backing up the
+        // driver (design §LT-6.4 row 4). The stream is created
+        // unconditionally; if transcription is disabled it simply
+        // finishes when `run()` returns without ever yielding.
+        let trPair = AsyncStream.makeStream(
+            of: TranscriptionEvent.self,
+            bufferingPolicy: .bufferingNewest(64)
+        )
+        self.transcriptEvents = trPair.stream
+        self._transcriptEventsContinuation = trPair.continuation
     }
 
     // MARK: - Public API
@@ -393,6 +457,20 @@ public final class RecordingSession: @unchecked Sendable {
             }
         }
 
+        // ---- Step 7.5: transcription pipeline (plan-003 Phase G). ----
+        // Constructed BEFORE `recorder.start()` so any pre-flight
+        // failure (missing API key, unknown provider, non-writable
+        // sidecar path) surfaces before the recorder ever opens.
+        // When transcription is disabled the entire block is a no-op
+        // (NFR-17 / AC-LT-2: byte-identical recording path).
+        do {
+            try await setUpTranscriptionPipelineIfNeeded(aligner: aligner)
+        } catch {
+            logger.error("transcription pipeline setup failed: \(error.localizedDescription)")
+            failAndFinishStream(with: error)
+            throw error
+        }
+
         // ---- Step 8/9: start recorder, write PID, start sources. ----
         // (Recorder must be open before any buffer arrives.)
         do {
@@ -400,7 +478,9 @@ public final class RecordingSession: @unchecked Sendable {
         } catch {
             logger.error("recorder.start failed: \(error.localizedDescription)")
             // No PID file written yet, no sources started — nothing
-            // to clean up.
+            // to clean up. Tear down the transcription pipeline if it
+            // was set up.
+            await tearDownTranscriptionPipelineIfNeeded(aligner: aligner)
             failAndFinishStream(with: error)
             throw error
         }
@@ -422,6 +502,7 @@ public final class RecordingSession: @unchecked Sendable {
                 // effort finalize with a generous timeout; ignore
                 // any further error in favor of the original.
                 _ = try? await recorder.finalize(timeout: 5)
+                await tearDownTranscriptionPipelineIfNeeded(aligner: aligner)
                 failAndFinishStream(with: error)
                 throw error
             }
@@ -440,6 +521,7 @@ public final class RecordingSession: @unchecked Sendable {
         } catch {
             logger.error("microphone source failed to start: \(error.localizedDescription)")
             await cleanupAfterStartFailure(recorder: recorder, system: nil, mic: nil)
+            await tearDownTranscriptionPipelineIfNeeded(aligner: aligner)
             failAndFinishStream(with: error)
             throw error
         }
@@ -449,6 +531,7 @@ public final class RecordingSession: @unchecked Sendable {
         } catch {
             logger.error("system audio source failed to start: \(error.localizedDescription)")
             await cleanupAfterStartFailure(recorder: recorder, system: nil, mic: micSource)
+            await tearDownTranscriptionPipelineIfNeeded(aligner: aligner)
             failAndFinishStream(with: error)
             throw error
         }
@@ -513,6 +596,24 @@ public final class RecordingSession: @unchecked Sendable {
             finalizeError = error
         }
 
+        // Tear the transcription pipeline down AFTER the recorder has
+        // finalized — the design (§LT-12) guarantees the recording is
+        // the primary artefact. Errors during transcription teardown
+        // are logged but never override `finalizeError`. The teardown
+        // is bounded with a hard timeout (§LT-12.1, added 2026-04-29):
+        // a wedged provider session (e.g. an Apple Speech analyzer
+        // whose on-device asset failed to download and is now stuck
+        // inside `finalizeAndFinishThroughEndOfInput`) MUST NOT
+        // prevent `run()` from reaching `emitState(.stopped)`. If the
+        // teardown does not complete within the budget, log a warning
+        // and proceed; the leaked provider task will be torn down with
+        // the process.
+        await withTranscriptionTeardownTimeout(
+            seconds: Self.transcriptionTeardownTimeoutSeconds
+        ) { [aligner] in
+            await self.tearDownTranscriptionPipelineIfNeeded(aligner: aligner)
+        }
+
         // Mark as no-longer-running.
         serialQueue.sync { self._running = false }
 
@@ -545,9 +646,11 @@ public final class RecordingSession: @unchecked Sendable {
 
         // FR-33 / project-design §15.3.1: clean exit. Emit `.stopped`
         // and finish the continuation (R-28: every `for await` consumer
-        // sees the stream terminate).
+        // sees the stream terminate). Also finish the transcript-events
+        // stream so UI consumers' `for await` loops exit cleanly.
         emitState(.stopped)
         _stateContinuation.finish()
+        _transcriptEventsContinuation.finish()
     }
 
     // MARK: - Public API — split (FR-32, project-design §15.3.2)
@@ -624,6 +727,30 @@ public final class RecordingSession: @unchecked Sendable {
             }
         }
 
+        // 4.5. plan-004 R-LT-5: when transcription is active, rotate
+        // the sidecar onto the new audio URL so the in-flight transcript
+        // follows the rotated audio file. The manager closes the
+        // outgoing writer, opens a fresh one at the derived sibling
+        // path, and resets its segment indexing. Failures here are
+        // logged but do NOT roll back the audio rotation — the new
+        // audio segment is already accepting frames and the partial
+        // sidecar is on disk.
+        let mgrSnapshot: TranscriptionManager? = serialQueue.sync {
+            self._transcriptionManager
+        }
+        if let mgr = mgrSnapshot {
+            do {
+                try await mgr.rotateSidecar(
+                    toAudioURL: nextOutput,
+                    format: options.transcriptionFormat
+                )
+            } catch {
+                logger.error(
+                    "split: transcription sidecar rotation failed: \(error.localizedDescription)"
+                )
+            }
+        }
+
         // 5. Emit `.recording` after the swap settles. The state
         // machine is back at the steady state.
         emitState(.recording)
@@ -640,10 +767,13 @@ public final class RecordingSession: @unchecked Sendable {
 
     /// Emit `.failed(error)` and finish the stream. Used on every
     /// throwing exit path of `run()` so the consumer sees terminal
-    /// failure and the consumer `Task` does not leak (R-28).
+    /// failure and the consumer `Task` does not leak (R-28). Also
+    /// finishes the transcript-events stream so UI consumers' `for
+    /// await` loops exit cleanly.
     private func failAndFinishStream(with error: Error) {
         emitState(.failed(macrecify(error)))
         _stateContinuation.finish()
+        _transcriptEventsContinuation.finish()
     }
 
     /// Coerce an arbitrary `Error` into a `MacrecError` for embedding
@@ -847,5 +977,391 @@ public final class RecordingSession: @unchecked Sendable {
         }
         serialQueue.sync { self._terminalErrorPollTimer = t }
         t.resume()
+    }
+
+    // MARK: - Private — transcription pipeline (plan-004 Phase G)
+
+    /// Resolve the `TranscriptionProvider` for the current
+    /// `RecordingOptions` either via the injected test factory or the
+    /// shared production `TranscriptionProviderFactory.build`. Coerces
+    /// non-`MacrecError` thrown values to `MacrecError.unknown(...)`.
+    private func resolveTranscriptionProvider() throws -> any TranscriptionProvider {
+        let providerLogger = LoggerFactory.make("macrec.transcription.provider")
+        if let factory = transcriptionProviderFactory {
+            do {
+                return try factory(options)
+            } catch let macrecError as MacrecError {
+                throw macrecError
+            } catch {
+                throw MacrecError.unknown(error.localizedDescription)
+            }
+        }
+        let input = TranscriptionProviderFactoryInput(
+            providerId: options.transcriptionProviderId ?? "none",
+            apiKey: options.transcriptionApiKey,
+            modelId: options.transcriptionModelId,
+            languageHints: options.transcriptionLanguageHints,
+            logger: providerLogger,
+            keyExpiresAt: options.transcriptionKeyExpiresAt
+        )
+        do {
+            return try TranscriptionProviderFactory.build(input)
+        } catch let macrecError as MacrecError {
+            throw macrecError
+        } catch {
+            throw MacrecError.unknown(error.localizedDescription)
+        }
+    }
+
+    /// Install the live transcription pipeline if
+    /// `options.transcriptionProviderId` selects a real provider. When
+    /// transcription is disabled, this is a no-op and the recording
+    /// path is byte-identical to pre-Phase-G behavior (NFR-17 /
+    /// AC-LT-2).
+    ///
+    /// On success, populates the three pieces of state:
+    ///   * `_transcriptionManager`
+    ///   * `_transcriptionTapToken` (installed on `aligner.addLiveTap`)
+    ///   * `_transcriptionForwarderTask` (manager events → public stream)
+    ///
+    /// The sidecar writer lives inside the `TranscriptionManager` (it
+    /// owns the per-format writer for the lifetime of the recording
+    /// segment and rotates it on `split(nextOutput:)` via
+    /// `TranscriptionManager.rotateSidecar`).
+    ///
+    /// Throws on missing API key, unknown provider, non-writable
+    /// sidecar path, or downsampler init failure. Per the project
+    /// "no fallback" rule, any of these errors aborts `run()` and
+    /// surfaces back to the CLI / UI caller.
+    private func setUpTranscriptionPipelineIfNeeded(
+        aligner: HostClockAligner
+    ) async throws {
+        let providerId = options.transcriptionProviderId ?? "none"
+        let normalized = providerId.lowercased()
+        guard !normalized.isEmpty, normalized != "none", normalized != "noop" else {
+            // Transcription disabled — nothing to do, recording path
+            // is unchanged.
+            return
+        }
+
+        // Per FR / configuration-guide rule: warn if the API key is in
+        // its last 7 days of validity. The manager still runs; this is
+        // a heads-up on stderr.
+        if let expiresAt = options.transcriptionKeyExpiresAt {
+            let interval = expiresAt.timeIntervalSinceNow
+            if interval <= 7 * 24 * 3600 && interval > 0 {
+                let days = Int(ceil(interval / 86_400))
+                logger.warning(
+                    "transcription API key for provider '\(normalized)' expires in \(days) day(s)"
+                )
+            }
+        }
+
+        // Resolve provider — may throw `transcriptionApiKeyMissing`
+        // or `transcriptionConfigConflict` (unknown id). We let those
+        // bubble.
+        let provider = try resolveTranscriptionProvider()
+
+        // Plan-005 Phase G — speech-permission preflight. Apple's
+        // on-device `SpeechAnalyzer` requires Speech Recognition TCC
+        // grant; we trigger the prompt (if .notDetermined) and throw
+        // `transcriptionPermissionDenied(provider: "apple")` (exit 77)
+        // on any non-authorized terminal state. Done BEFORE the
+        // manager / sidecar / aligner-tap are wired so a denial leaves
+        // no half-built pipeline behind.
+        if provider.id == "apple" {
+            if #available(macOS 26.0, *) {
+                try await SpeechPermission.ensureGranted()
+            }
+        }
+
+        // Build the downsampler configured for the aligner's output
+        // (Float32 / 48 kHz / stereo by default; the constructor
+        // refuses anything else and we propagate the error verbatim).
+        guard let inputFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: Double(options.sampleRate),
+            channels: 2,
+            interleaved: false
+        ) else {
+            throw MacrecError.unknown(
+                "failed to construct aligner output format for transcription downsampler"
+            )
+        }
+        let downsampler: AudioDownsampler
+        do {
+            downsampler = try AudioDownsampler(
+                inputFormat: inputFormat,
+                logger: LoggerFactory.make("macrec.transcription.downsampler")
+            )
+        } catch {
+            throw MacrecError.unknown(
+                "transcription downsampler init failed: \(error.localizedDescription)"
+            )
+        }
+
+        // Resolve the per-recording transcription source. The
+        // `TranscriptionManager` natively supports `.both` (it spawns
+        // one `SourceBuffer` per active source tag), so we forward
+        // every value through unchanged.
+        let trSource: TranscriptionSource = options.transcriptionSource
+
+        // Build the sidecar writer. Sidecar URL is derived from the
+        // audio output URL (the part token is already in the stem if
+        // any), so multi-segment recordings naturally produce
+        // `.partNN.transcript.<ext>` siblings via SidecarPathBuilder.
+        let sidecarURL = SidecarPathBuilder.sidecarURL(
+            forRecording: options.output,
+            format: options.transcriptionFormat,
+            partNumber: nil,
+            sourceTag: nil
+        )
+        // Plan-005 Phase F: derive the sidecar policy from the
+        // provider's declared modes. Streaming providers persist only
+        // `.segmentFinalized`; batch providers persist
+        // `.segmentAppended` + `.segmentUpdated` via id-keyed in-place
+        // rewrite. The policy is fixed at writer construction; the
+        // streaming pipeline rebuilds the writer with the streaming
+        // policy on `rotateSidecar(...)` so this initial choice is the
+        // single source of truth for the per-mode dispatch.
+        let sidecarPolicy: SidecarPolicy =
+            provider.supportedModes.contains(.streaming) ? .streaming : .batch
+        let sidecar: TranscriptSidecarWriter
+        do {
+            sidecar = try TranscriptSidecarWriter(
+                outputPath: sidecarURL,
+                format: options.transcriptionFormat,
+                policy: sidecarPolicy
+            )
+        } catch let macrecError as MacrecError {
+            throw macrecError
+        } catch {
+            // Per project rule "no fallback": surface the path issue
+            // as a configuration error so the CLI exits with the
+            // standard exit code. Recording does not start when the
+            // sidecar cannot be opened.
+            throw MacrecError.ioError(
+                "transcription sidecar open failed at \(sidecarURL.path): \(error.localizedDescription)"
+            )
+        }
+
+        // Build the manager. The `TranscriptionOptions` carries the
+        // resolved provider id (`provider.id`) so the manager logs and
+        // privacy-disclosure carry the canonical wire form (e.g.
+        // `"gemini"` rather than the deprecated `"gemini-live"`).
+        let trOptions = TranscriptionOptions(
+            providerId: provider.id,
+            apiKey: options.transcriptionApiKey,
+            modelId: options.transcriptionModelId,
+            languageHints: options.transcriptionLanguageHints,
+            customSystemInstruction: nil,
+            keyExpiresAt: options.transcriptionKeyExpiresAt
+        )
+        let manager = TranscriptionManager(
+            provider: provider,
+            source: trSource,
+            options: trOptions,
+            downsampler: downsampler,
+            sidecarWriter: sidecar,
+            logger: LoggerFactory.make("macrec.transcription.manager")
+        )
+
+        // `start()` returns the stream the forwarder will drain. The
+        // call is `await` because `TranscriptionManager` is an actor.
+        let managerEvents = await manager.start()
+
+        // Spawn the forwarder task: drains manager events and
+        // republishes them onto the public events stream consumed by
+        // the UI. Sidecar persistence is owned inside the manager
+        // (Phase E), so the forwarder no longer touches it.
+        let publicContinuation = self._transcriptEventsContinuation
+        let forwarderLogger = self.logger
+        let forwarder = Task {
+            forwarderLogger.info("transcript forwarder: starting drain of manager events stream")
+            var seen = 0
+            for await event in managerEvents {
+                if Task.isCancelled { break }
+                seen += 1
+                forwarderLogger.info("transcript forwarder: republishing event #\(seen) \(String(describing: event).prefix(60))")
+                publicContinuation.yield(event)
+            }
+            forwarderLogger.info("transcript forwarder: manager events stream ended after \(seen) events")
+            // Manager events finished — the public stream is
+            // intentionally NOT finished here. The session's run-loop
+            // owns the stream's lifecycle (so a transient provider
+            // failure does not exit the UI's `for await` loop early).
+        }
+
+        // Install the live tap on the aligner. The closure is
+        // synchronous — it forwards into the manager's `nonisolated`
+        // ingest helper which itself spawns a fire-and-forget Task
+        // hopping onto the actor's executor.
+        //
+        // `.mixed` deserves the long comment: previously this case
+        // fell through to `manager.ingestFrame(frame, from: .system)`,
+        // which made `TranscriptionManager.ingestFrame` read
+        // `frame.systemBuffer` and DROP `frame.micBuffer` entirely.
+        // That made `.mixed` silently equivalent to `.system` for
+        // transcription even though the audio file was correctly
+        // mixed by `M4ARecorder` via `BufferSummer.sum(...)`. The
+        // observable defect was: recording contains both the user's
+        // mic and the system audio, but the transcript sidecar only
+        // contains the system side (e.g. the other Teams participants
+        // but not the user). Fix: sum the two sub-buffers here using
+        // the same `BufferSummer` the recorder uses, then synthesise
+        // a single-buffer `AlignedFrame` that the manager picks up
+        // through its existing `.system` branch. This keeps the
+        // manager's API surface unchanged.
+        let token = aligner.addLiveTap { [weak manager] frame in
+            guard let manager else { return }
+            switch trSource {
+            case .system:
+                Task { await manager.ingestFrame(frame, from: .system) }
+            case .mic:
+                Task { await manager.ingestFrame(frame, from: .microphone) }
+            case .mixed:
+                // `BufferSummer.sum(_:_:)` is nil-tolerant: nil+nil
+                // returns nil, side+nil returns the side untouched,
+                // both-present returns the clamped Float-add. `try?`
+                // collapses any DSP-level failure into "fall back to
+                // whichever side is available" — the same defensive
+                // posture the recorder takes inside `buildMixed`.
+                let mixed = (try? BufferSummer.sum(
+                    frame.systemBuffer,
+                    frame.micBuffer
+                )) ?? frame.systemBuffer ?? frame.micBuffer
+                guard let mixed else { return }
+                let mixedFrame = AlignedFrame(
+                    pts: frame.pts,
+                    duration: frame.duration,
+                    systemBuffer: mixed,
+                    micBuffer: nil
+                )
+                Task { await manager.ingestFrame(mixedFrame, from: .system) }
+            case .both:
+                Task { await manager.ingestFrame(frame, from: .system) }
+                Task { await manager.ingestFrame(frame, from: .microphone) }
+            }
+        }
+
+        serialQueue.sync {
+            self._transcriptionManager = manager
+            self._transcriptionForwarderTask = forwarder
+            self._transcriptionTapToken = token
+        }
+
+        logger.info(
+            "transcription pipeline ready (provider=\(provider.id), source=\(trSource.rawValue), format=\(options.transcriptionFormat.rawValue), sidecar=\(sidecarURL.lastPathComponent))"
+        )
+    }
+
+    /// Hard upper bound on `tearDownTranscriptionPipelineIfNeeded`.
+    /// Provider sessions whose internal `finish()` blocks beyond this
+    /// budget are abandoned so the recording-stop sequence can always
+    /// reach `emitState(.stopped)`. Five seconds matches
+    /// `TranscriptionManager.stopDrainSeconds` for the rest-batch path
+    /// — the streaming pipeline previously had no bound at all.
+    public static let transcriptionTeardownTimeoutSeconds: Double = 5.0
+
+    /// Run `body` with a hard time budget. If `body` does not return
+    /// within `seconds`, this function returns anyway, a warning is
+    /// logged, and the abandoned task is **leaked** (it keeps running
+    /// in the background until its non-cancellable inner call returns
+    /// on its own).
+    ///
+    /// The earlier `withTaskGroup` implementation was a noop because
+    /// `withTaskGroup` waits for every child task to finish before
+    /// exiting — even after `cancelAll()`. `Task.cancel()` only sets
+    /// a flag; both `analyzer.finalizeAndFinishThroughEndOfInput()`
+    /// (Apple Speech) and URLSession's blocking call paths (Gemini
+    /// REST under network failure) ignore it. So we need a pattern
+    /// that does not await the body task at all once the timer wins.
+    ///
+    /// `withCheckedContinuation` + two detached tasks racing to
+    /// resume the continuation is exactly that pattern: whichever
+    /// resumes first unblocks the caller; the loser is no longer
+    /// awaited.
+    private func withTranscriptionTeardownTimeout(
+        seconds: Double,
+        _ body: @Sendable @escaping () async -> Void
+    ) async {
+        let didFinish: Bool = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            let lock = NSLock()
+            // Single-shot resume guard — `CheckedContinuation` traps
+            // on double-resume.
+            nonisolated(unsafe) var resumed = false
+            let resume: @Sendable (Bool) -> Void = { value in
+                lock.lock(); defer { lock.unlock() }
+                guard !resumed else { return }
+                resumed = true
+                cont.resume(returning: value)
+            }
+            Task.detached {
+                await body()
+                resume(true)
+            }
+            Task.detached {
+                let nanos = UInt64(seconds * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: nanos)
+                resume(false)
+            }
+        }
+        if !didFinish {
+            logger.warning(
+                "transcription teardown exceeded \(seconds)s budget; abandoning to keep stop sequence responsive"
+            )
+        }
+    }
+
+    /// Tear the live transcription pipeline down. Idempotent — safe to
+    /// call from every error/cleanup path. Order:
+    ///
+    ///   1. Remove the aligner tap (no more frames flow into the
+    ///      manager).
+    ///   2. Stop the manager (final-drains the per-source buffers,
+    ///      waits up to `TranscriptionManager.stopDrainSeconds` for
+    ///      outstanding provider calls, closes the sidecar, finishes
+    ///      its events stream).
+    ///   3. Await the forwarder task (so the last events make it to
+    ///      the public `transcriptEvents` stream).
+    private func tearDownTranscriptionPipelineIfNeeded(
+        aligner: HostClockAligner
+    ) async {
+        // Snapshot under serialQueue and clear so subsequent calls
+        // are no-ops.
+        let manager: TranscriptionManager?
+        let token: HostClockAligner.TapToken?
+        let forwarder: Task<Void, Never>?
+        (manager, token, forwarder) = serialQueue.sync {
+            let m = self._transcriptionManager
+            let t = self._transcriptionTapToken
+            let f = self._transcriptionForwarderTask
+            self._transcriptionManager = nil
+            self._transcriptionTapToken = nil
+            self._transcriptionForwarderTask = nil
+            return (m, t, f)
+        }
+
+        guard manager != nil || token != nil else {
+            return
+        }
+
+        // 1. Detach the tap so no more frames flow into the manager.
+        if let token {
+            aligner.removeLiveTap(token)
+        }
+
+        // 2. Stop the manager — final-drains buffers, awaits in-flight
+        // provider calls (bounded), closes the sidecar, finishes the
+        // events stream.
+        if let manager {
+            await manager.stop()
+        }
+
+        // 3. Await the forwarder so the last events reach the public
+        // stream subscribers.
+        if let forwarder {
+            _ = await forwarder.value
+        }
     }
 }

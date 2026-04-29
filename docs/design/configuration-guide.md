@@ -35,11 +35,14 @@ source, `macrec` exits with `MacrecError.missingRequiredConfig` (exit 78,
 
 ### Expiring parameters
 
-`macrec` has **no parameters that expire** (no PAT keys, OAuth tokens, or
-API credentials). The CLAUDE.md "expiration date" provision therefore does
-not apply. Should a future revision add a credential (e.g. for a cloud
-upload destination), an `<X>_EXPIRES_AT` ISO-8601 companion variable should
-be introduced at that time.
+Plan-003 introduced the first credential subject to expiration —
+`GOOGLE_API_KEY` for Gemini transcription. The CLAUDE.md
+configuration-guide rule for expiring credentials applies: a companion
+variable `MACREC_TRANSCRIBE_KEY_EXPIRES_AT` (§2.22) captures the ISO-8601
+expiry date so `macrec` can warn the user proactively. See §2.21 and
+§2.22 for the full pair. Future credentials (e.g. additional providers
+like `OPENAI_API_KEY`) should follow the same pattern: pair the secret
+with an `<X>_EXPIRES_AT` ISO-8601 companion.
 
 ---
 
@@ -232,6 +235,182 @@ prefers PCM.
 
 ---
 
+## 2.bis Live transcription (plan-003 / plan-004 / plan-005)
+
+The variables in §2.16 .. §2.22 were added by plan-003 to drive the
+live-transcription side-channel (FR-45 .. FR-58, FR-AS-1 .. FR-AS-12,
+project-design §LT-5 + §AS). All seven keys resolve through the same
+four-tier chain documented in §1 and apply equally to the `macrec` CLI
+and the `macrec-ui` menu-bar app (with the user `.env` tier scoped to
+`~/.tool-agents/macrec/.env` for the CLI and
+`~/.tool-agents/macrec-ui/.env` for the UI). Setting
+`MACREC_TRANSCRIBE=none` makes every other key in this section a no-op
+— note that plan-005 (2026-04-28) flipped the default from `none` to
+`apple`, so users who want the legacy "no transcription" behaviour must
+set `MACREC_TRANSCRIBE=none` explicitly.
+
+### 2.16 `MACREC_TRANSCRIBE` — live-transcription provider selector
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| CLI flag               | `--transcribe <provider>`                                          |
+| Env-var name           | `MACREC_TRANSCRIBE`                                                |
+| Type                   | enum string                                                        |
+| Default                | `apple` (changed from `none` in plan-005)                          |
+| Allowed values         | `none`, `apple` (default — NEW, on-device via `SpeechAnalyzer`, plan-005), `gemini` (REST-batch via Google Gemini), `gemini-live` (deprecated alias for `gemini` — accepted for one release with a `.notice` log line). |
+| Recommended storage    | user `.env` for a personal default; CLI flag for per-recording opt-in |
+| Notes                  | With `none`, no API keys are read, no network connections are opened, no sidecar files are written (AC-LT-1). Setting `gemini` (or its deprecated alias) with no API key configured raises `MacrecError.transcriptionApiKeyMissing` (exit 78) BEFORE any audio capture begins (AC-LT-4). The `apple` provider runs entirely on-device (no API key) but requires the user to grant Speech Recognition in System Settings → Privacy & Security on first run (FR-AS-8). Per plan-004 the detach + transcribe combination is now valid (the REST architecture has no terminal-output dependency); `MacrecError.transcriptionDetachUnsupported` is removed. |
+
+> **Default flipped to `apple` in plan-005 (2026-04-28).** To restore the
+> legacy "no transcription by default" behavior, set
+> `MACREC_TRANSCRIBE=none` in your `.env`. The flip is justified because
+> the new `apple` provider is on-device, has no per-call cost, requires
+> no API key, and produces ≤ 250 ms first-partial latency on macOS 26.
+
+How to obtain it: pick a provider from the table; `gemini` requires
+a Google AI Studio API key (see §2.21); `apple` requires only that the
+user grants the one-time `NSSpeechRecognitionUsageDescription` TCC
+prompt (no key, no network).
+
+> **Naming note.** Plan-003 §4 Phase C originally used the longer name
+> `MACREC_TRANSCRIBE_PROVIDER`. The as-built implementation adopted the
+> shorter `MACREC_TRANSCRIBE` (per the user-prompt direction at Phase H);
+> project-design §LT-5.2 records the rationale. `MACREC_TRANSCRIBE` is
+> the canonical name; `MACREC_TRANSCRIBE_PROVIDER` is **not** read by
+> the resolver.
+
+> **Provider-name migration (plan-004).** Plan-003 used the value
+> `gemini-live` to identify the WebSocket Live API provider. Plan-004
+> replaces that pipeline with a REST-batch provider whose canonical
+> value is `gemini`. The resolver accepts `gemini-live` as a
+> deprecated alias for one release (logs a `.notice`-level
+> deprecation warning, then resolves to `gemini`). New `.env` files
+> and CLI invocations should use `gemini`.
+
+### 2.17 `MACREC_TRANSCRIBE_SOURCE` — transcription audio source
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| CLI flag               | `--transcribe-source <source>`                                     |
+| Env-var name           | `MACREC_TRANSCRIBE_SOURCE`                                         |
+| Type                   | enum string                                                        |
+| Default                | `mixed`                                                            |
+| Allowed values         | `system` (system audio only), `mic` (microphone only), `mixed` (post-`BufferSummer` summed signal), `both` (two parallel streams, labelled by source) |
+| Recommended storage    | user `.env` (consistent per workflow)                              |
+| Notes                  | independent of the recording's `--layout`. v1 ships a single transcription driver; `both` outside a `split`-layout recording falls back to `mixed` (see `Issues - Pending Items.md` for the v2 follow-up). |
+
+### 2.18 `MACREC_TRANSCRIBE_FORMAT` — sidecar transcript format
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| CLI flag               | `--transcribe-format <fmt>`                                        |
+| Env-var name           | `MACREC_TRANSCRIBE_FORMAT`                                         |
+| Type                   | enum string                                                        |
+| Default                | `jsonl`                                                            |
+| Allowed values         | `jsonl` (one JSON object per `TranscriptEvent`; richest), `txt` (plain final-only text, no timestamps), `srt` (SubRip cues), `vtt` (WebVTT cues) |
+| Recommended storage    | user `.env` for a personal default; CLI flag per recording          |
+| Notes                  | `srt` and `vtt` only emit `final` events; partials are dropped. The JSONL header line records run-time metrics (FR-58). See project-design §LT-7 for the on-disk schemas. |
+
+### 2.19 `MACREC_TRANSCRIBE_MODEL` — provider model id override
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| CLI flag               | `--transcribe-model <id>`                                          |
+| Env-var name           | `MACREC_TRANSCRIBE_MODEL`                                          |
+| Type                   | string (provider-specific)                                         |
+| Default                | `gemini-3-flash-preview` (the documented Google REST audio model per <https://ai.google.dev/gemini-api/docs/audio>) |
+| Allowed values         | for `gemini`: `gemini-3-flash-preview` (default), `gemini-3.1-flash-live-preview` (Live-API SKU — returns HTTP 404 on REST; kept in the allow-list only for backward-compat configs), `gemini-2.5-flash`, `gemini-2.5-pro`, `gemini-2.0-flash`. Values outside the list log a warning at start and are sent through. |
+| Recommended storage    | user `.env` only when overriding the default; otherwise leave unset |
+| Notes                  | The plan-004 brainstorming session (2026-04-28) initially pinned `gemini-3.1-flash-live-preview` as the default per user direction. PEND-LT-6 was empirically resolved 2026-04-28 — that model id is the Live (WebSocket) API SKU and returns HTTP 404 on `:generateContent`. The default was switched to `gemini-3-flash-preview`, the model id Google's official REST audio examples use. If you see HTTP 4xx errors with a non-default model, fall back to `gemini-3-flash-preview`. |
+
+### 2.20 `MACREC_TRANSCRIBE_LANGUAGE` — spoken-language hint
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| CLI flag               | `--transcribe-language <bcp-47-list>`                              |
+| Env-var name           | `MACREC_TRANSCRIBE_LANGUAGE`                                       |
+| Type                   | comma-separated BCP-47 language list (e.g. `en-US` or `en-US,el-GR`) |
+| Default                | unset — provider auto-detect                                       |
+| Allowed values         | one or more BCP-47 strings the provider accepts (e.g. `en-US`, `el-GR`, `fr-FR`, `en-US,el-GR`) |
+| Recommended storage    | user `.env`                                                        |
+| Notes                  | For `apple`, multiple values activate parallel recognizers — one per locale, picking the higher-confidence final per utterance (FR-AS-5, FR-AS-7). For `gemini`, only the first value is used as a hint. v1 does not validate against the provider's supported list (apple raises `transcriptionConfigConflict` exit 64 at start time on unsupported locale per FR-AS-9; gemini silently auto-detects). Translation (target-language selection) is explicitly out of scope for v1 — refined-request §Out of scope. |
+
+### 2.21 `GOOGLE_API_KEY` — Gemini API key
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| CLI flag               | _(none — by design)_                                               |
+| Env-var name           | `GOOGLE_API_KEY` (vendor-canonical name per CLAUDE.md tool-conventions) |
+| Type                   | API key string                                                     |
+| Default                | unset                                                              |
+| Allowed values         | any valid Google AI Studio API key                                 |
+| Recommended storage    | `~/.tool-agents/macrec/.env` (mode `0600`) for the CLI and `~/.tool-agents/macrec-ui/.env` (mode `0600`) for the UI |
+| Notes                  | resolved only when `MACREC_TRANSCRIBE=gemini` (or the deprecated alias `gemini-live`). **Missing key with provider != `none` raises `MacrecError.transcriptionApiKeyMissing` (exit 78) — no audio file is created.** No `--google-api-key` CLI flag exists; keys are never accepted on the command line (avoids leakage into shell history and `ps` output). Pair with `MACREC_TRANSCRIBE_KEY_EXPIRES_AT` (§2.22) for proactive expiry warnings. |
+
+How to obtain it:
+
+1. Visit <https://aistudio.google.com/app/apikey>.
+2. Sign in with a Google account.
+3. Click **Create API key** (optionally inside an existing GCP project).
+4. Copy the key.
+5. Append it to `~/.tool-agents/macrec/.env` (and / or
+   `~/.tool-agents/macrec-ui/.env`) as `GOOGLE_API_KEY=…`. Verify the
+   file is mode `0600` (`chmod 0600 ~/.tool-agents/macrec/.env`).
+
+> **Privacy reminder.** Enabling Gemini transcription causes the
+> captured audio to be uploaded to Google's servers (see
+> `docs/tools/macrec.md` → "Live transcription"). Review your
+> organisation's data-handling policy before enabling on calls
+> containing confidential content.
+
+### 2.22 `MACREC_TRANSCRIBE_KEY_EXPIRES_AT` — proactive expiry warning
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| CLI flag               | `--transcribe-key-expires-at <iso-8601>`                            |
+| Env-var name           | `MACREC_TRANSCRIBE_KEY_EXPIRES_AT`                                 |
+| Type                   | ISO-8601 date string (e.g. `2026-12-31` or `2026-12-31T00:00:00Z`) |
+| Default                | unset — no warning emitted                                         |
+| Allowed values         | any parseable ISO-8601 instant                                     |
+| Recommended storage    | next to `GOOGLE_API_KEY` in the same `.env` file (so the pair is updated together) |
+| Notes                  | introduced per the CLAUDE.md configuration-guide rule for expiring credentials. When set, the resolver compares the value against `Date()` at recording start: |
+
+Behaviour:
+
+- If the configured expiry is **already in the past**, an `info`-level
+  log line is emitted (`Your GOOGLE_API_KEY expired on <date>; recording
+  will start but transcription may fail`). Recording is **NOT** blocked
+  — the user may have rotated the key without updating the `.env` file.
+- If the configured expiry is within the next **7 days**, an
+  `info`-level log line is emitted as a soft renewal reminder (`Your
+  GOOGLE_API_KEY expires on <date>; consider renewing soon`).
+- If the configured expiry is more than 7 days out, no log line is
+  emitted.
+
+The 7-day window is fixed in v1; future revisions may make it
+configurable via `MACREC_TRANSCRIBE_KEY_EXPIRY_WARN_DAYS`.
+
+> **Operational tip.** If your provider rotates keys on a fixed cadence
+> (e.g. quarterly), set `MACREC_TRANSCRIBE_KEY_EXPIRES_AT` to the
+> rotation date when you paste the new key. The 7-day warning then
+> nudges you ahead of the actual expiry.
+
+### Resolution chain reminder for §2.16–§2.22
+
+Every key in §2.16 .. §2.22 follows the same four-tier resolution
+documented in §1 (lowest → highest priority):
+
+```
+shell env → ~/.tool-agents/<tool>/.env → ./.env → CLI flag
+```
+
+Higher tiers override lower ones on a per-key basis. `<tool>` is
+`macrec` for the CLI and `macrec-ui` for the UI. `GOOGLE_API_KEY` is
+NOT accepted via CLI flag — its highest-priority tier is the local
+`./.env`.
+
+---
+
 ## 3. Recommended storage strategy
 
 | Variable             | Suggested tier              | Rationale                                                         |
@@ -251,6 +430,13 @@ prefers PCM.
 | `MACREC_PID_FILE`    | user `.env`                 | only override for multi-recording setups                           |
 | `MACREC_LOG_FILE`    | user `.env`                 | rarely changed                                                     |
 | `MACREC_STOP_TIMEOUT`| user `.env`                 | preference per user                                                |
+| `MACREC_TRANSCRIBE`  | user `.env` or CLI          | personal default; CLI for per-recording opt-in                     |
+| `MACREC_TRANSCRIBE_SOURCE` | user `.env`           | consistent per workflow                                            |
+| `MACREC_TRANSCRIBE_FORMAT` | user `.env`           | consistent per workflow                                            |
+| `MACREC_TRANSCRIBE_MODEL`  | user `.env` (when overriding the pinned default) | only if Phase I smoke test demands fallback model       |
+| `MACREC_TRANSCRIBE_LANGUAGE` | user `.env`         | constant per user                                                  |
+| `GOOGLE_API_KEY`     | user `.env` (mode `0600`)   | secret — never CLI, never shell history                            |
+| `MACREC_TRANSCRIBE_KEY_EXPIRES_AT` | user `.env` (next to `GOOGLE_API_KEY`) | rotated together with the key                       |
 
 ---
 
@@ -317,6 +503,9 @@ Common failure modes and their stderr cues:
 | `No active macrec recording found (PID file at … does not exist).`                      | `stop` invoked without a prior `start --detach`                  | start one first; or check that `--pid-file` matches what `start` used.                           |
 | `Stale PID file at … referenced PID … which is no longer running. The file has been removed.` | previous detached recording crashed without cleanup              | safe to start a new recording immediately.                                                       |
 | `macrec process … did not exit within …s of SIGTERM.`                                   | finalization is slow or hung                                     | wait, then `ps -p <pid>`; if hung, `kill -KILL <pid>` (loses the recording).                     |
+| `transcription api key missing for provider 'gemini-live': checked GOOGLE_API_KEY in …`  | `--transcribe gemini-live` (or `MACREC_TRANSCRIBE=gemini-live`) without `GOOGLE_API_KEY` set anywhere in the chain | obtain a key at <https://aistudio.google.com/app/apikey> and add `GOOGLE_API_KEY=…` to `~/.tool-agents/macrec/.env` (mode `0600`); see §2.21. |
+| `--detach is incompatible with --transcribe <provider != none>`                          | combined `--detach` + a non-`none` provider                       | run the recording in foreground (drop `--detach`) or set `--transcribe none`. Detach-mode transcription is excluded in v1 (OQ-LT-5). |
+| `Your GOOGLE_API_KEY expired on YYYY-MM-DD; recording will start but transcription may fail` | `MACREC_TRANSCRIBE_KEY_EXPIRES_AT` is in the past                | renew the key at <https://aistudio.google.com/app/apikey>, update `GOOGLE_API_KEY`, and bump `MACREC_TRANSCRIBE_KEY_EXPIRES_AT`. See §2.22. |
 
 For configuration-precedence puzzles specifically, the
 `ConfigResolverTests` suite (`Tests/MacrecCoreTests/ConfigResolverTests.swift`)

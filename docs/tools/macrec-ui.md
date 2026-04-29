@@ -9,8 +9,13 @@
         toolbar surfaces an elapsed-time read-out, the current output file
         name (editable), format / layout / output-folder / microphone
         pickers, a permission-status indicator, and per-source level
-        meters for the system-audio submix and the microphone. Targets
-        macOS 14 (Sonoma) or later and ships as a separate SwiftPM
+        meters for the system-audio submix and the microphone. The popover
+        also exposes opt-in live transcription (Google Gemini in v1,
+        with `None` as the default) including a transcription source picker,
+        a sidecar-format picker, an inline live-transcript panel, a one-time
+        privacy-disclosure dialog, and a per-recording cost / latency
+        summary. Targets macOS 14 (Sonoma) or later and ships as a separate
+        SwiftPM
         executable target (`macrec-ui`) under its own bundle id
         `com.local.macrec-ui` so its TCC grants are independent of the
         CLI's. There are no CLI arguments in v1 — the binary launches the
@@ -96,10 +101,22 @@
            the first time `SCStream` is configured for system-audio
            capture).
 
-        Both prompts are bound to the `com.local.macrec-ui` bundle id
-        (the UI's identity), which is **separate** from the CLI's
-        `com.local.macrec` bundle id. Granting either permission to
-        the CLI does **not** carry over to the UI (R-23) — this
+        A **third prompt — Speech Recognition access** — appears the
+        first time the user opts into the Apple provider via the Live
+        transcription picker (which is the v1.5+ default), or on first
+        Start with the picker still set to Apple. The
+        `NSSpeechRecognitionUsageDescription` string is embedded in
+        the UI's Info.plist. Denying this prompt — or revoking the
+        grant later in System Settings → Privacy & Security → Speech
+        Recognition — surfaces inline as
+        `MacrecError.speechRecognitionPermissionDenied` (exit 77,
+        `EX_NOPERM`) when Start is pressed; the recording itself is
+        not started so no audio file is created.
+
+        All three prompts are bound to the `com.local.macrec-ui`
+        bundle id (the UI's identity), which is **separate** from the
+        CLI's `com.local.macrec` bundle id. Granting any permission
+        to the CLI does **not** carry over to the UI (R-23) — this
         isolation is intentional, lets each tool be revoked
         independently, and is a deliberate consequence of FR-42's
         in-process design.
@@ -190,6 +207,141 @@
         `AVAudioPCMBuffer` so they never block the audio capture
         queues (NFR-11). Active any time at least one capture source
         is delivering buffers.
+
+        ### Live transcription picker (FR-49)
+
+        Dropdown labelled **"Live transcription"** with one entry per
+        registered provider:
+
+        - **Apple Speech (on-device)** *(default on first launch as of
+          v1.5 / plan-005)* — Apple SpeechAnalyzer running on-device.
+          Requires macOS 26+ and the **Speech Recognition** TCC grant
+          (see Permissions section below); no API key, no network. This
+          replaces `None` as the default; users who prefer the
+          true-no-op behaviour can still select **None**.
+        - **None** — no transcription work happens, no permissions are
+          requested, no network connections are opened (AC-LT-1).
+        - **Gemini** — Google Gemini REST batch API (plan-004). Requires
+          `GOOGLE_API_KEY` (see "Configuration" below). The picker label
+          was `Gemini Live` in plan-003; it was renamed to **Gemini**
+          in plan-004 when the WebSocket architecture was replaced by
+          REST batch. Existing `~/Library/Preferences/com.local.macrec-ui.plist`
+          values of `gemini-live` continue to work — the
+          `ConfigResolver` accepts them as a deprecated alias and logs a
+          one-time deprecation notice.
+
+        Persisted across launches in `UserDefaults` under
+        `com.macrec.ui.transcribeProvider` (FR-54). Disabled while
+        recording (AC-LT-19). When set to a provider whose API key is
+        missing from the resolved config chain, the dropdown displays a
+        red **"Key not configured"** badge; clicking the badge opens an
+        inline help popover that names the env var (`GOOGLE_API_KEY`)
+        and the recommended path (`~/.tool-agents/macrec-ui/.env`). The
+        Start button remains enabled — pressing Start in this state
+        surfaces `MacrecError.transcriptionApiKeyMissing` inline without
+        crashing the recording (AC-LT-8).
+
+        Live transcription is also supported in the CLI's `--detach`
+        background mode (parity with the foreground UI path). The
+        plan-003-era `transcriptionDetachUnsupported` cross-check was
+        removed by plan-004 Phase G.1; see
+        [docs/tools/macrec.md](macrec.md) → "Detach mode is compatible
+        with `--transcribe`" for details.
+
+        ### Transcription source picker (FR-47)
+
+        Dropdown labelled **"Source"** that selects which audio feeds
+        the transcription provider:
+
+        - **system** — system audio submix only.
+        - **mic** — microphone only.
+        - **mixed** *(default)* — post-`BufferSummer` summed signal.
+        - **both** — two parallel streams labelled by source. v1
+          falls back to `mixed` for non-split layouts (see
+          [docs/tools/macrec.md](macrec.md) → "Live transcription").
+
+        Persisted under `com.macrec.ui.transcribeSource`. Independent of
+        the recording's Layout picker. Disabled while recording. Hidden
+        when the Live-transcription picker is set to `None`.
+
+        ### Transcript format picker (FR-51)
+
+        Dropdown labelled **"Format"** for the sidecar transcript file.
+        Allowed values: `jsonl` *(default)*, `txt`, `srt`, `vtt`.
+        Persisted under `com.macrec.ui.transcriptFormat`. Hidden when
+        the Live-transcription picker is `None`.
+
+        ### Live transcript panel (FR-52)
+
+        A scrollable panel rendered between the level meters and the
+        elapsed-time indicator. Fixed maximum height ~120 pt
+        (locked by OQ-LT-3 — separate-window mode is a v2 follow-up).
+
+        - **Partial events** appear in *italic-secondary* style and are
+          replaced in place as the provider emits revisions.
+        - **Final / settled events** commit in *plain-primary* style
+          (italic dropped, full-opacity foreground colour) so users can
+          visually distinguish settled text from in-flight partials at a
+          glance.
+        - **Language chip.** When a settled segment carries a
+          non-`nil` `language` field (Apple SpeechAnalyzer emits one
+          per recognised locale; Gemini does not), a small uppercase
+          BCP-47 chip is rendered next to the segment (e.g. `EN`,
+          `EL`). Useful for confirming dual-locale parallel
+          recognition is splitting languages correctly.
+        - The panel **auto-scrolls** to the bottom on each event unless
+          the user has scrolled away, in which case a **"Jump to live"**
+          affordance appears at the bottom-right.
+        - Closing the popover does **not** stop transcription, only its
+          rendering. On reopen, the most-recent finals (last ~50 entries
+          retained, drop-oldest beyond) are visible.
+        - The panel is hidden when the Live-transcription picker is
+          `None` (no panel space wasted in the no-transcription
+          configuration).
+
+        ### Privacy disclosure dialog (FR-53)
+
+        The first time the user picks any non-`None` provider on a
+        given app install, a modal sheet appears explaining:
+
+        > *"The audio captured during this recording will be sent to a
+        > third-party API (`<provider name>`) for transcription. The
+        > raw PCM audio leaves this Mac while the provider is active.
+        > No PII metadata (filename, microphone name, host name) is
+        > transmitted."*
+
+        The sheet has **Continue** and **Cancel** buttons plus a
+        **"Don't show again on this Mac"** checkbox. Confirming
+        suppresses the dialog for subsequent launches; the disclosure
+        text remains discoverable as a tooltip on the Live-transcription
+        picker. Cancelling reverts the picker to `None` (AC-LT-9).
+
+        ### Cost / latency display
+
+        Below the transcript panel, a single-line read-out shows the
+        running session metrics from `TranscriptionManager` (plan-004
+        REST-batch architecture):
+
+        ```
+        17 chunks · 42 s billable · 0 errors · 410 ms last RTT
+        ```
+
+        - `chunks`        — number of 2.5 s WAV chunks POSTed so far.
+        - `billable`      — cumulative seconds of audio sent (drives
+                            cost estimates).
+        - `errors`        — non-fatal request failures (HTTP 5xx,
+                            transient network errors). Recording
+                            continuity is **never** affected.
+        - `last RTT`      — round-trip time of the most recent successful
+                            chunk POST.
+
+        Updated at 1 Hz while a recording is active. The same numbers
+        are emitted on the events stream at session end and printed to
+        the post-stop log (FR-58). The plan-003 JSONL sidecar header
+        line is no longer written — metrics surface via the
+        `TranscriptionMetrics` value type instead. After Stop, the
+        post-stop saved-files disclosure also lists the transcript
+        sidecar path alongside each `.partNN` audio file (FR-57).
 
         ### Elapsed-time indicator (FR-40)
 
@@ -290,11 +442,57 @@
         `partNN` files on disk; only the in-flight segment is at
         risk (AC-UI-13).
 
+        ## Privacy & cost
+
+        Live transcription sends the captured audio over the network to
+        a third-party provider. The UI exposes three controls to make
+        this explicit:
+
+        ### What data leaves the machine
+
+        When the Live-transcription picker is set to anything other than
+        `None`, the **raw PCM audio** corresponding to the selected
+        Source picker (`mic`, `system`, `mixed`, or both) is downsampled
+        to 16 kHz mono PCM16, packaged as 2.5 s WAV chunks, and POSTed
+        over HTTPS to the provider's REST endpoint (plan-004 architecture;
+        see `docs/tools/macrec.md` → "Bandwidth"). Per NFR-20, **no PII
+        metadata is sent** — filename, mic device name, host name, and
+        user name are stripped from the wire payload. The default
+        `None` setting keeps every byte local; the engine never opens a
+        network connection in that configuration.
+
+        ### How costs are estimated
+
+        Each provider charges per minute (or per token) of audio sent.
+        The popover's cost / latency display surfaces the live
+        `billableSeconds` counter (cumulative seconds of audio POSTed);
+        multiply by the provider's published per-second rate (Gemini:
+        see Google AI Studio pricing) for an approximate per-recording
+        cost. v1 ships a per-recording counter only — a multi-recording
+        aggregator dashboard is a v2 follow-up.
+
+        ### How the disclosure works
+
+        The first time a user picks a non-`None` provider on a fresh
+        `~/Library/Preferences/com.local.macrec-ui.plist`, the modal
+        privacy sheet (FR-53, AC-LT-9) appears. Confirming records the
+        acknowledgement under
+        `com.macrec.ui.transcribePrivacyAcknowledged`; the sheet does
+        not appear on subsequent launches. The disclosure text remains
+        accessible at any time as a tooltip on the Live-transcription
+        picker. Resetting acknowledgement (e.g. for a fresh demo) is
+        done by deleting that one defaults key:
+
+        ```sh
+        defaults delete com.local.macrec-ui com.macrec.ui.transcribePrivacyAcknowledged
+        ```
+
         ## Configuration
 
-        `macrec-ui` reads exactly **one** environment variable. UI
-        state (selected format, layout, mic UID, output folder
-        bookmark) is stored in `UserDefaults` under the
+        `macrec-ui` reads transcription configuration through the same
+        four-tier chain the CLI uses (see "Resolution chain" below).
+        Recording-engine UI state (selected format, layout, mic UID,
+        output folder bookmark) is stored in `UserDefaults` under the
         `com.local.macrec-ui` bundle id and is **not** part of the
         env-var configuration chain — it is UI state, not
         configuration.
@@ -309,18 +507,36 @@
         3. **Local `.env`** — `./.env` in the current working directory.
         4. **CLI flags** — *n/a in v1* (`macrec-ui` accepts no command-line arguments).
 
-        ### Environment variable
+        ### Environment variables
 
-        | Variable               | Purpose                                                                                                                                                                                                       | Allowed values            | Default              |
-        |------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------|----------------------|
-        | `MACREC_UI_LOG_LEVEL`  | Diagnostic log verbosity (NFR-16). Controls only logging — not behaviour. Treating an unset value as `info` is a logging-only convenience and is **not** a runtime-config fallback in the no-fallback-rule sense. | `info`, `debug`, `trace` | `info` (when unset)  |
+        | Variable                            | Purpose                                                                                                                                                                                                       | Allowed values                          | Default               |
+        |-------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------|-----------------------|
+        | `MACREC_UI_LOG_LEVEL`               | Diagnostic log verbosity (NFR-16). Controls only logging — not behaviour. Treating an unset value as `info` is a logging-only convenience and is **not** a runtime-config fallback in the no-fallback-rule sense. | `info`, `debug`, `trace`               | `info` (when unset)   |
+        | `MACREC_TRANSCRIBE`                 | Default live-transcription provider (FR-49). Read at launch to pre-select the picker; the picker still wins per-session. | `none`, `gemini` (canonical), `gemini-live` (deprecated alias; lowered to `gemini`) | `none`                |
+        | `MACREC_TRANSCRIBE_SOURCE`          | Default audio source for transcription (FR-47).                                                                  | `system`, `mic`, `mixed`, `both`        | `mixed`               |
+        | `MACREC_TRANSCRIBE_FORMAT`          | Default sidecar transcript format (FR-51).                                                                       | `jsonl`, `txt`, `srt`, `vtt`            | `jsonl`               |
+        | `MACREC_TRANSCRIBE_MODEL`           | Provider-specific model id override (project-design §LT-5.2).                                                    | provider-specific (e.g. `gemini-3-flash-preview`) | provider's pinned default |
+        | `MACREC_TRANSCRIBE_LANGUAGE`        | BCP-47 spoken-language hint passed to the provider.                                                              | BCP-47 string (e.g. `en-US`)            | provider auto-detect  |
+        | `MACREC_TRANSCRIBE_KEY_EXPIRES_AT`  | Optional ISO-8601 date marking when `GOOGLE_API_KEY` (or other provider key) expires. If past, a warning is logged at start; recording is NOT blocked. | ISO-8601 date string                    | unset                 |
+        | `GOOGLE_API_KEY`                    | Vendor-canonical API key for Gemini. Required when `MACREC_TRANSCRIBE=gemini` (or its deprecated alias `gemini-live`, or the picker is set to Gemini). Resolved BEFORE the recording opens; missing key fails fast with `transcriptionApiKeyMissing`. Obtain at <https://aistudio.google.com/app/apikey>. | API key string | unset (recording uses `None` fallback) |
 
-        Note: per the project's "no fallback values" rule (CLAUDE.md
-        → Structure & Conventions), missing **runtime** configuration
-        must raise an exception. `MACREC_UI_LOG_LEVEL` is an
-        explicitly carved-out exception because it does not affect
-        recording behaviour. This is documented in the seeded
-        `~/.tool-agents/macrec-ui/.env`.
+        Notes:
+
+        - Per the project's "no fallback values" rule (CLAUDE.md →
+          Structure & Conventions), missing **runtime** configuration
+          must raise an exception. `MACREC_UI_LOG_LEVEL` is an
+          explicitly carved-out exception because it does not affect
+          recording behaviour. This is documented in the seeded
+          `~/.tool-agents/macrec-ui/.env`.
+        - The transcription env vars listed above are the same keys
+          documented for the CLI in
+          [docs/design/configuration-guide.md](../design/configuration-guide.md)
+          §2.16–§2.22; both tools share the four-tier resolution chain
+          (with the user-`.env` tier scoped to
+          `~/.tool-agents/macrec-ui/.env` for the UI).
+        - Recommended location for `GOOGLE_API_KEY` is
+          `~/.tool-agents/macrec-ui/.env` (mode `0600`). Do **not**
+          paste API keys into shell history or `.zshrc`.
 
         ### `@AppStorage` UserDefaults keys
 
@@ -337,6 +553,10 @@
         | `com.macrec.ui.format`       | Last-selected output format raw value (`m4a` / `wav` / `caf`).                                   |
         | `com.macrec.ui.layout`       | Last-selected track layout raw value (`mixed` / `split` / `stereo-split`).                       |
         | `com.macrec.ui.micUID`       | Stable UID of the last-selected microphone device. Empty (or sentinel `__default__`) → system default input. |
+        | `com.macrec.ui.transcribeProvider`           | Last-selected live-transcription provider raw value (`none` / `gemini`; legacy `gemini-live` values from plan-003 installs continue to work — the resolver lowers them to `gemini`). Default `none` (FR-54). |
+        | `com.macrec.ui.transcribeSource`             | Last-selected transcription source raw value (`system` / `mic` / `mixed` / `both`). Default `mixed` (FR-54). |
+        | `com.macrec.ui.transcriptFormat`             | Last-selected sidecar transcript format raw value (`jsonl` / `txt` / `srt` / `vtt`). Default `jsonl` (FR-54). |
+        | `com.macrec.ui.transcribePrivacyAcknowledged` | One-time acknowledgement flag for the privacy disclosure dialog (FR-53). Boolean. Default `false`. |
 
         These keys are managed via SwiftUI's `@AppStorage` property
         wrapper inside the popover views; they are written
@@ -565,6 +785,11 @@
         - [docs/design/plan-002-toolbar-ui.md](../design/plan-002-toolbar-ui.md)
           — phased implementation plan for the menu-bar app
           (Phases 0 / A / B / C / D / E / F / G / H / I / J / K).
+        - [docs/design/plan-003-live-transcription.md](../design/plan-003-live-transcription.md)
+          — phased implementation plan for the live-transcription
+          subsystem (Phases 0 / A / B / C / D / E / F / G / H / I).
+        - [docs/design/refined-request-live-transcription.md](../design/refined-request-live-transcription.md)
+          — live-transcription requirements (FR-45..FR-58, NFR-17..NFR-21).
         - [docs/design/project-design.md](../design/project-design.md)
           §15 — full UI architecture (state machine, popover
           layout, permission gating, level metering, settings

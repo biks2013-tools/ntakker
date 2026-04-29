@@ -4320,3 +4320,1380 @@ Cross-reference of each AC-UI-* to the design section that satisfies it:
 
 All twelve locked decisions are anchored in this design.
 
+---
+
+## Live Transcription Subsystem (Plan-003)
+
+> **Superseded sections.** §LT-10 / §LT-10.1 / §LT-10.2 (WebSocket
+> session lifecycle), §LT-10.1 + §LT-12 (reconnect state machine),
+> §LT-5.5 step 8 (detach cross-check), §LT-0 row D-LT-2 (30 ms wire
+> chunking), and §LT-7.2 / §LT-9.1 (header/footer rewrite) are
+> superseded by plan-004 (REST batch architecture).
+> See `docs/design/plan-004-rest-batch-transcription.md`.
+
+> **Added 2026-04-26 (Phase 5 — Designer)**. Owns the technical design for the
+> opt-in, model-pluggable live transcription side-channel introduced by
+> `plan-003-live-transcription.md`. Builds directly on:
+>
+> 1. `docs/design/refined-request-live-transcription.md` (FR-45..FR-58, NFR-17..NFR-21, AC-LT-1..AC-LT-25, A-LT-1..A-LT-10).
+> 2. `docs/design/plan-003-live-transcription.md` (Phases 0..I, file manifest, AC coverage matrix, parallelization map, locks in §2.3).
+> 3. `docs/reference/investigation-live-transcription.md` (Option-1 recommendation: Gemini Live via direct `URLSessionWebSocketTask`).
+> 4. `docs/research/gemini-live-wire-schema.md` (CRITICAL: `responseModalities: ["AUDIO"]` + `inputAudioTranscription: {}` — `["TEXT"]` is rejected on `gemini-3.1-flash-live-preview`).
+> 5. `docs/research/audio-downsample-conversion.md` (drop-in `AudioDownsampler`).
+> 6. `docs/research/websocket-asyncstream-pattern.md` (`WebSocketSession` actor, reconnection state machine).
+> 7. `docs/reference/codebase-scan-live-transcription.md` (integration points and the `withOutput(_:)` latent bug).
+>
+> This section is **strictly additive**. With `--transcribe none` (the default)
+> every existing AC-1..AC-20 (plan-001) and AC-UI-1..AC-UI-18 (plan-002) MUST
+> continue to pass; nothing in §§1–15 changes.
+
+### LT-0. Discrepancies Surfaced Against Plan-003
+
+These are flagged at the top so the user can decide whether to revise the plan
+or change the design. The design proceeds on the recorded resolution; if the
+resolution is wrong, only the affected sub-section needs revisiting.
+
+| # | Discrepancy | Source | Resolution adopted by this design |
+|---|---|---|---|
+| **D-LT-1** | Plan-003 §4 Phase A says `TranscriptionPCMChunk` carries `pcmData: Data` (already-downsampled bytes), and §0.3 says the bounded stream is `AsyncStream<TranscriptionPCMChunk>`. The investigation §Recommendation pt. 9 says `AsyncStream<TranscriptionPCMChunk>` with `bufferingNewest(64)` ≈ 60 KB → **the chunk is post-downsampler PCM16-16k bytes**. | Plan-003 §0.3, §4 Phase A; Investigation pt. 9 | **Adopt: bounded stream carries POST-downsampler `TranscriptionPCMChunk` (PCM16-16k-mono `Data`).** The downsampler runs synchronously inside the tap producer, before the bounded yield. Rationale: smaller payload (~3 200 B per 100 ms vs. ~38 400 B for Float32-stereo-48k), simpler provider contract (every provider gets the same shape), aligns with NFR-19 budget calculation in plan-003. **Consequence**: no separate `AsyncStream<AlignedFrame>` exists. The tap closure copies bytes off the `AlignedFrame`, the producer Task runs the downsampler, and the bounded stream is `AsyncStream<TranscriptionPCMChunk>`. See §LT-6. |
+| **D-LT-2** | Plan-003 §4 Phase F describes splitting each ~100 ms downsampled chunk into ~3 × 30 ms chunks before WebSocket send, but §0.3 says the bounded stream's element is "the chunk". | Plan-003 §0.3, §4 Phase F | **Adopt: the bounded stream's element is the 100 ms chunk** (one yield per `AlignedFrame`); the **provider** (Gemini) is responsible for splitting on send. Rationale: keeps the bounded stream's chunk count == aligner-window count (deterministic for tests), and concentrates Gemini-specific cadence concerns inside `GeminiLiveTranscriptionProvider`. Other providers (OpenAI Realtime needs 24 kHz; Deepgram accepts arbitrary cadence) can choose their own send cadence without renegotiating the upstream contract. |
+| **D-LT-3** | Refined request prototypes the protocol as `start(audio:) async throws -> AsyncStream<TranscriptEvent>` + `stop()`. Plan-003 §4 Phase A and investigation pt. 10 use a single `run(audio:options:) -> AsyncStream<TranscriptEvent>` whose lifetime is the calling Task's lifetime — cancellation = stop. | Refined-request §Provider abstraction example; Plan-003; Investigation pt. 10 | **Adopt: single `run(audio:options:) -> AsyncStream<TranscriptEvent>`** (plan/investigation shape). The original `start()`/`stop()` from the user's prompt is preserved as a logical contract: starting a recording starts the run task; stopping it cancels the task. The protocol's `Sendable` conformance and the test-fakes' determinism are easier with a single function. The user's prompt-prescribed shape is documented as an alternative in this section so the designer can revisit if requested, but the implementation follows the plan. |
+| **D-LT-4** | Plan-003 §4 Phase F says the API key flows in via the WebSocket URL query parameter (`?key=...`); the user's prompt for this design said "shell env → `~/.tool-agents/macrec/.env` → local `.env` → CLI flags (highest priority)". | Plan-003 §4 Phase F (URL); Codebase scan §3 (resolver chain) | **Adopt both** — they are different layers. **Resolution** of the value uses the four-tier chain (codebase scan §3, design §LT-5). **Wire transport** of the resolved value uses the URL query parameter per Gemini's API-key client convention (§LT-9). The two are independent. |
+| **D-LT-5** | The user's prompt for this design defined the `TranscriptionProvider` shape with `providerId: TranscriptionProviderId` (typed enum). Plan-003 §4 Phase A defines `providerId: String` (verbatim from investigation pt. 10). | Plan-003 §4 Phase A; Investigation pt. 10 | **Adopt: `providerId: String`** (plan/investigation shape) on the protocol. The typed `TranscriptionProviderId` enum exists separately and is used at parse / configuration time (`TranscriptionProviderId.parse(_:)`). The protocol's string-typed `providerId` lets future external providers (a hypothetical user-supplied dynamic loader) ship without modifying the enum. The matching enum is the canonical one for resolved configuration. |
+| **D-LT-6** | The user's prompt requests a `TranscriptionError` type. Plan-003 §4 Phase A puts the error category inside `MacrecError` and uses `String` reasons inside `TranscriptEvent.error`. | Plan-003 §4 Phase A; Codebase scan §4.5 | **Adopt: no separate `TranscriptionError` type.** The CLI / configuration-time errors live on `MacrecError` (matches the project's no-fallback / locked-exit-code contract). Provider-runtime errors flow through `TranscriptEvent.error(reason: String, isFatal: Bool)` per plan-003. Adding a parallel error enum would diverge from the existing locked-stack. |
+| **D-LT-7** | The user's prompt mentions exit codes "consult the codebase scan §5". The locked exit-code table is in **§9.5** of this very design (codebase scan §4.5 references it). | Project-design §9.5; Codebase scan §4.5 | **Adopt: §9.5 of this document is authoritative.** The new `MacrecError` cases map to the existing `EX_CONFIG` (78), `EX_USAGE` (64), `EX_SOFTWARE` (70) buckets — no new exit code numbers are introduced. See §LT-4. |
+| **D-LT-8** | Plan-003 §4 Phase F escalation ESC-LT-2 sets `maxAttempts = 8`; the research-doc default is 12. | Plan-003 §0.2 ESC-LT-2 | **Adopt: `maxAttempts = 8`** per ESC-LT-2 default. Codified in `WebSocketSessionTypes.swift`. |
+| **D-LT-9** | The user's prompt for this design says the bounded stream may be either `AsyncStream<AlignedFrame>` OR `AsyncStream<Data>` after downsampling — "pick one and document why". | Design prompt | **Adopt: `AsyncStream<TranscriptionPCMChunk>` post-downsampler.** Per D-LT-1 above. |
+
+If any of D-LT-1..D-LT-9 are wrong, the corresponding sub-section in this
+design is the only thing that needs to change; the rest of the architecture is
+independent.
+
+### LT-1. Component Diagram (Runtime Topology)
+
+The transcription subsystem is a **read-only side-channel** off the existing
+audio pipeline. Every arrow is labeled (lossless ↔ lossy, sync ↔ async). The
+recorder pipeline (§§1.1, 2.11) is **completely unchanged** — its only
+contribution is exposing taps that the new `TranscriptionDriver` reads.
+
+```
+                                  RECORDER (unchanged from §1.1, lossless to disk)
+ ┌─────────────────────────┐
+ │ SCKitSystemAudioSource  │──sync,lossless──┐
+ │   transcriptionTap      │                 │
+ └─────────────────────────┘                 │
+ ┌─────────────────────────┐                 ▼
+ │ AVMicrophoneSource      │──sync,lossless──┤  BufferSummer ──► HostClockAligner ──► Recorder ──► .m4a/.wav/.caf
+ │   transcriptionTap      │                 │  (mixed mode)         │                      (existing — UNCHANGED)
+ └─────────────────────────┘                 │                       │
+                                             │                       │ AlignedFrame
+                                             │                       │ (every 100 ms)
+                                             │                       │
+   ┌─────────────────────────────────────────┴───────────────────────┴───────────────┐
+   │ TAP DECISION (RecordingOptions.transcriptionSource)                              │
+   │  .system  → SCKit.transcriptionTap   (CaptureBuffer)                             │
+   │  .mic     → AVMic.transcriptionTap   (CaptureBuffer)                             │
+   │  .mixed   → RecordingSession.transcriptionTap (AlignedFrame ── BufferSummer'd)   │
+   │  .both    → both per-source taps run in parallel; two driver instances           │
+   └─────────────────────────┬────────────────────────────────────────────────────────┘
+                             │
+                             │  (1) sync closure on macrec.aligner.serial
+                             │      (or macrec.capture.system / .mic for per-source taps)
+                             │      MUST NOT await; copies frame ref + tag, returns
+                             ▼
+                   ┌────────────────────────────────────────┐
+                   │ TranscriptionDriver (actor)            │
+                   │                                        │
+                   │   tap producer Task (one per driver):  │
+                   │     1. extract Float32 PCM from frame  │
+                   │     2. run AudioDownsampler            │   ◄── lossless (per-frame)
+                   │        Float32-48k-stereo →            │
+                   │        PCM16-16k-mono Data             │
+                   │     3. yield TranscriptionPCMChunk     │   ── lossy if consumer slow:
+                   │        into bounded stream             │      bufferingNewest(64)
+                   │                                        │      drops oldest at cap
+                   └─────────────────┬──────────────────────┘
+                                     │ AsyncStream<TranscriptionPCMChunk>
+                                     │ bufferingNewest(N=64)  ── drops counted as droppedFrameCount
+                                     ▼
+                   ┌────────────────────────────────────────┐
+                   │ TranscriptionProvider (protocol)       │
+                   │                                        │
+                   │   v1 concrete: GeminiLiveTranscription │
+                   │   - WebSocketSession actor             │
+                   │   - 100→30 ms chunk split + base64     │
+                   │   - reconnection state machine         │
+                   │     (maxAttempts=8, NWPathMonitor)     │
+                   │   - sliding window + sessionResumption │
+                   └─────────────────┬──────────────────────┘
+                                     │ AsyncStream<TranscriptEvent>
+                                     │ bufferingNewest(32)  (events; ~5 KB cap)
+                                     ▼
+                   ┌────────────────────────────────────────┐
+                   │ TranscriptionDriver demultiplex        │
+                   │   updates metrics                      │
+                   │   yields onto eventContinuation        │
+                   └─────┬──────────────────────────┬───────┘
+                         │                          │
+              (a) sync,best-effort         (b) async,best-effort
+                         ▼                          ▼
+        ┌──────────────────────────────┐   ┌──────────────────────────┐
+        │ TranscriptSidecarWriter      │   │ RecordingController      │
+        │ (actor, jsonl/srt/vtt/txt)   │   │ (UI: @MainActor          │
+        │  -> .transcript.jsonl etc.   │   │  @Observable)            │
+        │  rotates with split()        │   │  -> TranscriptPanel      │
+        │  errors LOGGED, not raised   │   │  -> metrics display      │
+        └──────────────────────────────┘   └──────────────────────────┘
+                         │                          │
+                         │ persistence              │ best-effort UI
+                         │ (best-effort)            │ (drops on slow consumer
+                         │ errors do NOT            │  via bufferingNewest;
+                         │ fail recording)          │  no recording impact)
+                         ▼                          ▼
+              recording-….transcript.jsonl     menu-bar popover
+```
+
+**Arrow legend**:
+
+- **lossless / sync**: tap closure path from source → `transcriptionTap?` invocation. The tap MUST not block, but it cannot drop a frame that arrives — every frame the pipeline produces is offered to the tap exactly once. (FR-46, NFR-17.)
+- **lossy / async**: the bounded `AsyncStream<TranscriptionPCMChunk>` between the tap producer and the provider. `.bufferingNewest(64)` drops the oldest queued chunk if the consumer (provider's WebSocket) stalls. Drops are counted but cause **zero recording impact**. (FR-46, AC-LT-11.)
+- **lossy / async (events)**: the `AsyncStream<TranscriptEvent>` between the provider and the driver / UI. `.bufferingNewest(32)` drops the oldest pending event if the UI stalls. Sidecar consumes from a separate cloned stream so disk persistence is not affected by UI stalls.
+- **best-effort persistence**: `TranscriptSidecarWriter` errors are logged and counted; they do NOT propagate up as recording errors. The audio file remains the primary artefact. (FR-57, NFR-17.)
+
+**Synchronous → asynchronous boundary**: The tap closure (`(AlignedFrame) -> Void` or `(CaptureBuffer) -> Void`) IS the sync/async boundary. Inside it: a single `nonisolated` call to `TranscriptionDriver.enqueueRaw(_:)`, which itself only `continuation.yield(rawFrameWrapper)` into a **second** internal stream owned by the producer Task; that Task does the downsample asynchronously and yields the resulting `TranscriptionPCMChunk` into the bounded outward stream. The closure itself never `await`s and never allocates beyond a small wrapper struct. (See §LT-6 for the contract details.)
+
+**`RecordingOptions.transcriptionSource` decision point**: Driven at `RecordingSession.start()` time. For `.system` / `.mic`, the driver subscribes only to the corresponding per-source tap (`SCKitSystemAudioSource.transcriptionTap` / `AVMicrophoneSource.transcriptionTap`). For `.mixed`, the driver subscribes to `RecordingSession.transcriptionTap` (the post-aligner, post-summer tap). For `.both`, **two driver instances** are created (one bound to system tap, one bound to mic tap), each writing to its own sidecar with the source label. The decision point is wired in `RecordingSession.init` — once chosen, it does not change for the life of the recording.
+
+### LT-2. Module Organization
+
+All transcription code lives under one of three locations. The placement is
+deliberate; each rule has a rationale tied to dependency direction or test
+reach.
+
+#### LT-2.1 `Sources/MacrecCore/Transcription/`
+
+The protocol layer, transport actor, downsampler, driver, sidecar writer, and
+all three providers (NoOp, Fake, Gemini). Lives in `MacrecCore` because:
+
+- The CLI (`macrec`) needs the same code as the UI (`macrec-ui`).
+- `MacrecUIKit` cannot depend on `Tests/`, so `FakeTranscriptionProvider` MUST live in production code (CR-LT-9 in plan-003 §5.3).
+- No SwiftUI / AppKit references exist here; the module stays pure-domain.
+
+**Files (verbatim from plan-003 §9 file manifest, all new):**
+
+| File | Role | Phase |
+|---|---|---|
+| `TranscriptionProvider.swift` | Provider protocol contract (§LT-3.1). | A |
+| `TranscriptionPCMChunk.swift` | Sendable value type carrying post-downsample PCM16-16k bytes + source tag + host time. | A |
+| `TranscriptEvent.swift` | Sendable enum: `partial`, `final`, `error`, `sessionEnded`, `providerStateChange` (§LT-3.2). | A |
+| `TranscriptionAudioFormat.swift` | Sendable struct `(sampleRate, bitDepth, channelCount, byteOrder)`. Used by providers to advertise their required input format. | A |
+| `TranscriptionOptions.swift` | Sendable struct passed into `provider.run(...)` — provider id, source, format, apiKey, modelId, keyExpiresAt. | A |
+| `TranscriptionProviderId.swift` | Sendable enum (`none`, `geminiLive`, `openaiRealtime`/placeholder, `deepgram`/placeholder, `assemblyAI`/placeholder) + `parse(_:)`. | A |
+| `TranscriptionSource.swift` | Sendable enum (`system`, `microphone`, `mixed`, `both`) + `parse(_:)`. | A |
+| `TranscriptFormat.swift` | Sendable enum (`jsonl`, `txt`, `srt`, `vtt`) + `parse(_:)`. | A |
+| `SourceTag.swift` (alias of existing `CaptureSourceTag`) | Re-export for clarity in the transcription namespace; the existing enum at `Capture/CaptureBuffer.swift:21` is reused unchanged. | A (no new file needed if the existing enum is already `public`) |
+| `SessionEndReason.swift` | Sendable enum: `normalClose`, `userStopped`, `maxDurationReached`, `unrecoverableError(_:)`, `providerSessionExhausted`. | A |
+| `NoOpTranscriptionProvider.swift` | True no-op: receives audio, immediately finishes the events stream. Used when `.transcriptionProvider == .none`. | A |
+| `FakeTranscriptionProvider.swift` | **Lives in production code (not Tests/)**, marked `public`, accepts an injected script of `TranscriptScriptStep`s; deterministic. Plan-003 §4 Phase A R-Phase A.2. | A |
+| `AudioDownsampler.swift` | Verbatim drop-in from `docs/research/audio-downsample-conversion.md` §"Drop-In AudioDownsampler Swift Class". Float32-48k-stereo → PCM16-16k-mono via `AVAudioConverter`. | B |
+| `AudioDownsamplerError.swift` | Error enum (per project's one-symbol-per-file convention in `Errors/`). | B |
+| `TranscriptionDriver.swift` | `actor TranscriptionDriver`. Owns the downsampler instance, the bounded stream's continuation, the provider Task, the metrics, and the optional `TranscriptSink`. (§LT-6.) | B |
+| `SyntheticAudioFixture.swift` | Test infra (still in `Sources/` to be reachable by the UI test target). Produces `AVAudioPCMBuffer` fixtures — silence, 1 kHz sine, speech-like burst. | B |
+| `TranscriptHeader.swift` | Sendable Codable struct for jsonl header (`schema`, `provider`, `model`, `audioPath`, counts). | D |
+| `TranscriptSink.swift` | Protocol abstracting sidecar consumption (`consume(_:)`, `finalize()`). | D |
+| `TranscriptSidecarNamer.swift` | Pure helper: derives sidecar URL from audio URL + format + optional layout source tag. | D |
+| `TranscriptSidecarWriter.swift` | `actor TranscriptSidecarWriter`. Implements `TranscriptSink`. jsonl is open-truncate-write; srt/vtt buffer in memory until `finalize()`. (§LT-9.) | D |
+| `WebSocketTransport.swift` | Protocol abstracting `URLSessionWebSocketTask` for testability (research §"WebSocketTransport Protocol"). | E |
+| `LiveWebSocketTransport.swift` | `final class … : WebSocketTransport, @unchecked Sendable`. Wraps a real `URLSessionWebSocketTask`. | E |
+| `WebSocketSession.swift` | `actor WebSocketSession`. Runs receive-loop, heartbeat, reconnection state machine, `NWPathMonitor`. Public `events: AsyncStream<ServerEvent>`. (§LT-8.) | E |
+| `WebSocketSessionTypes.swift` | `ServerEvent`, `WebSocketState`, `WebSocketSessionError`, `WebSocketSessionConfig` (with `maxAttempts = 8`). | E |
+| `GeminiLiveTypes.swift` | All Codable types from `docs/research/gemini-live-wire-schema.md` §10 verbatim. | F |
+| `GeminiLiveTranscriptionProvider.swift` | Concrete `TranscriptionProvider`. (§LT-10.) | F |
+| `TranscriptionProviderFactory.swift` (renamed from plan-003's `GeminiLiveProviderRegistry.swift` — see naming note below) | Factory `make(_:options) -> any TranscriptionProvider`. | F |
+
+**Naming note**: plan-003 §4 Phase F uses the file name `GeminiLiveProviderRegistry.swift`. Per project convention (one-symbol-per-file, the file name matches the public type name), the file is renamed in this design to `TranscriptionProviderFactory.swift` since the actual public symbol is `enum TranscriptionProviderFactory`. This is a non-substantive rename surfaced here for the implementation phase.
+
+#### LT-2.2 `Sources/MacrecUIKit/`
+
+UI domain layer (already exists, plan-002). Extended with:
+
+- **`RecordingController.swift` modifications** — add `transcriptEvents`, `currentPartial`, `transcriptionState`, `transcriptionMissingKey`, `transcriptionMetrics` `@Observable` properties; subscribe to the `TranscriptionDriver.events` stream during `start()`.
+- **`SessionCoordinator.swift` modifications** — wire sidecar rotation hook on segment-completion; emit a separator-marker event into `transcriptEvents` so the UI panel renders the segment boundary.
+
+No new files in `MacrecUIKit/` for v1 — the controller and coordinator extensions are in-place edits. Rationale: the UI **state** belongs to the controller; new observable properties are additive to the existing `@Observable` class.
+
+#### LT-2.3 `Sources/macrec-ui/Views/`
+
+SwiftUI views for the popover. New files (plan-003 §9):
+
+| File | Role |
+|---|---|
+| `TranscriptionPicker.swift` | Mirror of `FormatPicker.swift` (codebase scan §4.3). Drives `@AppStorage("com.macrec.ui.transcribeProvider")`. Shows `TranscriptionMissingKeyBadge` overlay when the resolved key is `nil`. |
+| `TranscriptionSourcePicker.swift` | Same shape; `@AppStorage("com.macrec.ui.transcribeSource")`. Visible only when `provider != .none`. |
+| `TranscriptFormatPicker.swift` | Same shape; `@AppStorage("com.macrec.ui.transcriptFormat")`. Visible only when `provider != .none`. |
+| `TranscriptionMissingKeyBadge.swift` | Tiny SwiftUI view: red dot + tap-to-show popover naming the env var and `~/.tool-agents/macrec-ui/.env` path. |
+| `TranscriptPanel.swift` | `ScrollView` rendering finals (normal style) + the live partial (muted style). Auto-scroll-to-bottom unless user has scrolled up; "Jump to live" overlay button. Fixed max-height 120 pt. |
+| `TranscriptionPrivacyAlert.swift` | `.alert(...)` modifier, fired when user picks non-`None` provider AND `@AppStorage("com.macrec.ui.transcribePrivacyAccepted") == false`. |
+
+Modifications:
+
+- **`RootView.swift`** — adds the three pickers (collapsed under a `DisclosureGroup` "Live transcription"), the panel below level meters, and the privacy alert modifier.
+- **`Views/SavedToDisclosure.swift`** — extended to list each transcript sidecar path alongside the audio path on the post-stop disclosure (FR-57).
+
+#### LT-2.4 Why this layout
+
+- **`MacrecCore/Transcription/`** is the single namespace any non-UI consumer imports. The CLI's `StartCommand` only needs `TranscriptionProviderId.parse(_:)` from this namespace; everything else flows through `RecordingOptions`.
+- **`MacrecUIKit/`** sees the driver's `events` stream as an `AsyncStream<TranscriptEvent>` and never reaches into the provider directly.
+- **`Sources/macrec-ui/Views/`** sees only `RecordingController`'s `@Observable` properties — strict layering.
+
+This maps cleanly onto the existing module map (codebase scan §2): no new package targets, no new SwiftPM dependencies, and the existing `Package.swift` is untouched (plan-003 §10).
+
+### LT-3. Protocol Design
+
+#### LT-3.1 `TranscriptionProvider`
+
+```swift
+// Sources/MacrecCore/Transcription/TranscriptionProvider.swift
+
+import Foundation
+
+/// A streaming audio-in / text-out service abstraction.
+///
+/// Concrete providers in v1: `NoOpTranscriptionProvider` (true no-op),
+/// `FakeTranscriptionProvider` (deterministic, test-driven),
+/// `GeminiLiveTranscriptionProvider` (Google Gemini 3.1 Flash Live).
+///
+/// **Lifecycle**: A single call to `run(audio:options:)` is the entire session.
+/// Cancellation of the calling Task is the stop signal; the provider's
+/// `AsyncStream<TranscriptEvent>` finishes after a clean shutdown.
+///
+/// **Reconnection**: Transparent across reconnects — the returned events
+/// stream stays open through transient WebSocket drops; only a fatal /
+/// session-ended condition finishes the stream. (See `TranscriptEvent.providerStateChange`.)
+public protocol TranscriptionProvider: Sendable {
+
+    /// Wire-protocol identifier (e.g. `"gemini-live"`, `"noop"`).
+    /// String-typed for forward compatibility — see D-LT-5.
+    var providerId: String { get }
+
+    /// Human-readable label used by the UI picker.
+    var displayName: String { get }
+
+    /// The env-var name the resolver looks up for this provider's API key.
+    /// `nil` for providers that need no key (NoOp, Fake).
+    var requiredApiKey: String? { get }
+
+    /// The audio format this provider expects on the wire.
+    /// Drives the `TranscriptionDriver`'s downsampler configuration.
+    var requiredAudioFormat: TranscriptionAudioFormat { get }
+
+    /// Run a session.
+    ///
+    /// - Parameters:
+    ///   - audio: A bounded `AsyncStream` of post-downsampler PCM chunks
+    ///            (already in `requiredAudioFormat`). Provider must consume
+    ///            promptly; backpressure here is mitigated upstream by
+    ///            `bufferingNewest(64)` and never blocks the recorder.
+    ///   - options: Resolved transcription configuration (api key, model id,
+    ///              source tag for labeling, etc.).
+    /// - Returns: An `AsyncStream<TranscriptEvent>` that finishes when the
+    ///            session ends (clean stop, fatal error, or task cancellation).
+    func run(
+        audio: AsyncStream<TranscriptionPCMChunk>,
+        options: TranscriptionOptions
+    ) -> AsyncStream<TranscriptEvent>
+}
+```
+
+Notes on the shape:
+
+- Single `run(...)` instead of `start(...)` + `stop()`. **D-LT-3 records the rationale**. The user-prompt's `start/stop` shape is logically equivalent: starting a recording starts the run task; stopping it cancels the task. `Sendable` conformance and test-fakes' determinism are easier with a single function.
+- `providerId: String` (not `TranscriptionProviderId` enum) — **D-LT-5 records the rationale**. The matching enum exists separately and is used at parse / configuration time.
+- The audio stream is `AsyncStream<TranscriptionPCMChunk>` (post-downsampler) per D-LT-1 / D-LT-9.
+- Cancellation is the stop signal. The provider must observe `Task.isCancelled` and respond by closing its WebSocket with `.normalClosure` (1000) and finishing the events stream.
+
+#### LT-3.2 `TranscriptEvent` and supporting types
+
+```swift
+// Sources/MacrecCore/Transcription/TranscriptEvent.swift
+
+import Foundation
+
+/// One event emitted by a `TranscriptionProvider` during a session.
+public enum TranscriptEvent: Sendable, Codable, Equatable {
+
+    /// Interim hypothesis. May be replaced by a subsequent partial or
+    /// committed by a `final`.
+    case partial(text: String,
+                 source: SourceTag,
+                 timestamp: TimeInterval)
+
+    /// Committed transcript segment. `startedAt` and `endedAt` are session-relative
+    /// seconds (driver-clock domain). `confidence` is provider-supplied if available.
+    case final(text: String,
+               source: SourceTag,
+               startedAt: TimeInterval,
+               endedAt: TimeInterval,
+               confidence: Double?)
+
+    /// Provider state change for UI affordances. `connected == false` while
+    /// the provider is reconnecting. The events stream STAYS OPEN across
+    /// transient disconnects — this event is the only signal the consumer
+    /// has of a brief gap.
+    case providerStateChange(connected: Bool, retryAttempt: Int)
+
+    /// Non-recording-fatal provider error (network blip, idle timeout,
+    /// non-fatal close code). When `isFatal == true`, the events stream
+    /// will finish shortly after this event.
+    case error(reason: String, isFatal: Bool)
+
+    /// Session ended. After this event, the events stream finishes. The
+    /// recording is unaffected.
+    case sessionEnded(reason: SessionEndReason)
+}
+
+/// Why a session ended. Surfaces in the post-stop disclosure.
+public enum SessionEndReason: String, Sendable, Codable, Equatable {
+    case normalClose
+    case userStopped
+    case maxDurationReached
+    case providerSessionExhausted   // Reconnect attempts exhausted (3 fails / 60 s)
+    case unrecoverableError
+}
+
+/// Transcription source label used to mark which audio stream a given
+/// transcript came from (so the UI / sidecar can render it correctly).
+/// This is an alias of the existing `CaptureSourceTag` for the
+/// transcription namespace; do NOT introduce a parallel enum.
+public typealias SourceTag = CaptureSourceTag
+```
+
+```swift
+// Sources/MacrecCore/Transcription/TranscriptionPCMChunk.swift
+
+import Foundation
+
+/// One chunk of post-downsampler PCM data, ready for the provider's wire.
+///
+/// All chunks within a session share the same `sampleRate` / `channelCount`
+/// (the provider's `requiredAudioFormat`). `pcmData` is interleaved
+/// little-endian PCM16 in v1 (the only format any v1 provider requires).
+public struct TranscriptionPCMChunk: Sendable, Equatable {
+    public let pcmData: Data
+    public let sampleRate: Int
+    public let channelCount: Int
+    public let source: SourceTag
+    public let hostTime: UInt64       // mach_absolute_time at chunk start
+    public let durationSeconds: Double // chunk duration (~0.1 s for aligner-driven flow)
+}
+```
+
+```swift
+// Sources/MacrecCore/Transcription/TranscriptionAudioFormat.swift
+
+import Foundation
+
+public struct TranscriptionAudioFormat: Sendable, Equatable {
+    public let sampleRate: Int      // 16000 for Gemini Live
+    public let bitDepth: Int        // 16
+    public let channelCount: Int    // 1
+    public let byteOrder: ByteOrder // .little
+
+    public enum ByteOrder: Sendable, Equatable { case little, big }
+
+    public static let pcm16le16k1ch = TranscriptionAudioFormat(
+        sampleRate: 16000, bitDepth: 16, channelCount: 1, byteOrder: .little
+    )
+}
+```
+
+```swift
+// Sources/MacrecCore/Transcription/TranscriptionOptions.swift
+
+import Foundation
+
+public struct TranscriptionOptions: Sendable, Equatable {
+    public let provider: TranscriptionProviderId
+    public let source: TranscriptionSource
+    public let format: TranscriptFormat
+    public let apiKey: String?            // nil for NoOp / Fake; non-nil for Gemini (resolver enforces)
+    public let modelId: String?           // nil = use provider's pinned default
+    public let keyExpiresAt: Date?        // optional ISO-8601 expiry warning
+}
+```
+
+```swift
+// Sources/MacrecCore/Transcription/TranscriptionProviderId.swift
+
+public enum TranscriptionProviderId: String, Sendable, Equatable, CaseIterable, Codable {
+    case none = "none"
+    case geminiLive = "gemini-live"
+    case openaiRealtime = "openai-realtime"   // placeholder for v2
+    case deepgram = "deepgram"                // placeholder for v2
+    case assemblyAI = "assembly-ai"           // placeholder for v2
+
+    /// Throws `MacrecError.transcriptionInvalidProvider` on bad input.
+    public static func parse(_ raw: String) throws -> Self {
+        guard let id = Self(rawValue: raw) else {
+            throw MacrecError.transcriptionInvalidProvider(
+                raw: raw,
+                registered: Self.allCases.map(\.rawValue)
+            )
+        }
+        return id
+    }
+}
+```
+
+(Same shape — not repeated — for `TranscriptionSource` and `TranscriptFormat`.)
+
+#### LT-3.3 `FakeTranscriptionProvider` shape
+
+`FakeTranscriptionProvider` lives in `Sources/MacrecCore/Transcription/`
+(NOT under `Tests/`) so the UI test target can use it without circular
+dependencies. It is deterministic: an injected script of
+`TranscriptScriptStep` values drives the events stream.
+
+```swift
+public enum TranscriptScriptStep: Sendable {
+    case partial(text: String, after: Duration)
+    case final(text: String, after: Duration, confidence: Double? = nil)
+    case error(reason: String, after: Duration, isFatal: Bool)
+    case providerStateChange(connected: Bool, retryAttempt: Int, after: Duration)
+    case disconnect(after: Duration)   // Simulates a transient drop (state machine reconnect).
+    case hang(after: Duration)         // Simulates a stalled provider (drives bounded-queue drop tests).
+}
+
+public final class FakeTranscriptionProvider: TranscriptionProvider {
+    public let providerId = "fake"
+    public let displayName = "Fake (test-only)"
+    public let requiredApiKey: String? = nil
+    public let requiredAudioFormat = TranscriptionAudioFormat.pcm16le16k1ch
+
+    private let script: [TranscriptScriptStep]
+    /// Atomic counter incremented on every consumed audio chunk. Tests assert.
+    public let consumedChunkCount = AtomicInt(0)
+
+    public init(script: [TranscriptScriptStep]) { self.script = script }
+
+    public func run(
+        audio: AsyncStream<TranscriptionPCMChunk>,
+        options: TranscriptionOptions
+    ) -> AsyncStream<TranscriptEvent> { /* … emits scripted events on a separate Task … */ }
+}
+```
+
+The fake satisfies the protocol with no networking, no `await` outside the
+emit Task, and no source-of-truth ambiguity — the script is the single point
+of behavioral control.
+
+### LT-4. Error Model
+
+The transcription subsystem extends `MacrecError` (per the locked-stack
+policy in §2.1 and §9.5 of this design). **No new exit codes are introduced**;
+each new case maps onto the existing buckets.
+
+| New `MacrecError` case | Exit code (existing bucket) | When raised |
+|---|---|---|
+| `transcriptionApiKeyMissing(provider: String, key: String, sourcesChecked: [String])` | **78** (`EX_CONFIG`, joins the `missingRequiredConfig` bucket) | Resolver can't find the API key for a non-`None` provider in any of the four chain tiers. Raised inside `ConfigResolver.resolve(...)` BEFORE `RecordingSession` is constructed. AC-LT-4. |
+| `transcriptionInvalidProvider(raw: String, registered: [String])` | **64** (`EX_USAGE`, joins the `invalidConfigValue` bucket) | `TranscriptionProviderId.parse(_:)` rejects an unrecognized provider name (CLI flag or env var). AC-LT-17. |
+| `transcriptionInvalidSource(raw: String, registered: [String])` | **64** (`EX_USAGE`, joins the `invalidConfigValue` bucket) | `TranscriptionSource.parse(_:)` rejects an unrecognized source name. Plan-003 R-Phase C.2. |
+| `transcriptionInvalidFormat(raw: String, registered: [String])` | **64** (`EX_USAGE`) | `TranscriptFormat.parse(_:)` rejects an unrecognized sidecar format. |
+| `transcriptionDetachUnsupported` | **64** (`EX_USAGE`) | `--detach` combined with `--transcribe <provider != none>`. Per OQ-LT-5: detach-mode transcription is excluded from v1. |
+| `transcriptionConfigConflict(reason: String)` | **64** (`EX_USAGE`) | Generic configuration-conflict bucket. v1 example: `--transcribe gemini-live --transcribe-source mic --mic none` (asks to transcribe a microphone that's been disabled). The reason string is human-readable. |
+| `transcriptionProviderUnavailable(provider: String, reason: String)` | **70** (`EX_SOFTWARE`, joins the runtime-failure bucket) | Reserved — used when a future provider's configuration is fundamentally broken at session-start time (e.g. invalid endpoint, malformed model id passed to a strict provider). For Gemini in v1, this is mostly unused (key-missing is `transcriptionApiKeyMissing`; runtime errors flow through `TranscriptEvent.error`). |
+| `transcriptionSessionFailed(provider: String, reason: String)` | **non-fatal** — `MacrecError.exitCode` returns the **existing exit code path** based on whether the recording itself succeeded. The transcription failure is logged but does NOT stop the recording. NFR-17. |
+
+**Cross-check against §9.5 (locked exit-code table)**: every code 64 / 70 /
+78 is already in the table. The new cases are appended to the existing rows
+with no new column / row. The §9.5 row text will be updated by Phase H to
+list the new symbols, but the structure of the table and the locked codes
+themselves do NOT change.
+
+**`description` and `remediation` strings**: per `MacrecError`'s file-header
+contract (codebase scan §4.5), every new case carries:
+
+- `transcriptionApiKeyMissing`: description names the provider and the env-var; remediation cites both `~/.tool-agents/macrec/.env` (for CLI) and `~/.tool-agents/macrec-ui/.env` (for UI), per CR-LT-5.
+- `transcriptionInvalidProvider`/`Source`/`Format`: description includes the rejected raw value and the comma-separated list of registered values.
+- `transcriptionDetachUnsupported`: description states the constraint explicitly; remediation says "remove `--detach` or set `--transcribe none`".
+- `transcriptionConfigConflict`: description echoes the `reason:` field; remediation suggests the closest valid configuration.
+
+### LT-5. Configuration Surface
+
+The new env-var keys, CLI flags, and `RecordingOptions` properties.
+
+#### LT-5.1 Resolution chain (unchanged from §5.1, restated for the new keys)
+
+The four-tier resolution order in `ConfigResolver.resolve(cliOverrides:)`:
+
+```
+shellEnv  →  ~/.tool-agents/<tool>/.env  →  ./.env  →  CLI flags
+(lowest)                                                     (highest)
+```
+
+Every new key resolves through this exact same `value(_:)` closure
+(`ConfigResolver.swift:88`). No fallback is allowed — a non-`None` provider
+without a key throws `MacrecError.transcriptionApiKeyMissing` (§LT-4).
+
+#### LT-5.2 New env-var keys
+
+| Env var | Type | Default | Resolves into | Notes |
+|---|---|---|---|---|
+| `MACREC_TRANSCRIBE` | `none \| gemini-live` | `none` | `RecordingOptions.transcriptionProvider` | The on/off switch for the entire feature. |
+| `MACREC_TRANSCRIBE_SOURCE` | `system \| mic \| mixed \| both` | `mixed` | `RecordingOptions.transcriptionSource` | Independent of `--layout`. |
+| `MACREC_TRANSCRIBE_FORMAT` | `jsonl \| txt \| srt \| vtt` | `jsonl` | `RecordingOptions.transcriptionFormat` | Sidecar format only. |
+| `MACREC_TRANSCRIBE_OUTPUT` | path string | nil (auto-derived) | `RecordingOptions.transcriptionOutputPath` | Override the sidecar location. By default, derived from the audio output URL by `TranscriptSidecarNamer` (§LT-9). |
+| `MACREC_TRANSCRIBE_MODEL` | provider-specific | nil (use provider's pinned default) | `RecordingOptions.transcriptionModelId` | E.g. `gemini-3.1-flash-live-preview` (default for `geminiLive`); user can override to `gemini-live-2.5-flash-native-audio` if 3.1 fails empirically (ESC-LT-1). |
+| `MACREC_TRANSCRIBE_KEY_EXPIRES_AT` | ISO-8601 date string | nil | `RecordingOptions.transcriptionKeyExpiresAt` | Optional. If past, log a warning at start; do not block. Per CLAUDE.md configuration-guide rule for expiring credentials. |
+| `GOOGLE_API_KEY` | API key | nil | `RecordingOptions.transcriptionApiKey` | **Vendor-canonical name** per CLAUDE.md tool-conventions. Resolved only when `provider == .geminiLive`. |
+
+**Naming rationale**: the user-prompt-suggested names were `MACREC_TRANSCRIBE`,
+`MACREC_TRANSCRIBE_SOURCE`, `MACREC_TRANSCRIBE_FORMAT`, with
+`MACREC_TRANSCRIBE_KEY_EXPIRES_AT`. Plan-003 §4 Phase C uses
+`MACREC_TRANSCRIBE_PROVIDER` and `MACREC_TRANSCRIPT_FORMAT`
+(and `MACREC_TRANSCRIPT_OUTPUT`). **This design adopts the user-prompt's
+shorter `MACREC_TRANSCRIBE*` family** for consistency (`MACREC_TRANSCRIBE`,
+`MACREC_TRANSCRIBE_SOURCE`, `MACREC_TRANSCRIBE_FORMAT`,
+`MACREC_TRANSCRIBE_OUTPUT`, `MACREC_TRANSCRIBE_MODEL`,
+`MACREC_TRANSCRIBE_KEY_EXPIRES_AT`). Plan-003 §4 Phase C is updated by Phase
+H docs to use the same names. This is a non-substantive rename surfaced here
+for the implementation phase. (Recorded as a discrepancy resolution.)
+
+#### LT-5.3 New CLI flags
+
+Flags on `macrec start`:
+
+```
+--transcribe <none|gemini-live>
+--transcribe-source <system|mic|mixed|both>
+--transcribe-format <jsonl|txt|srt|vtt>
+--transcribe-output <path>
+--transcribe-model <model-id>
+--transcribe-key-expires-at <iso-8601>
+```
+
+Each flag corresponds to one env-var key in §LT-5.2 (highest-priority tier of
+the chain). `--help` text is emitted by `ArgumentParser` from each `@Option`'s
+`help:` string.
+
+#### LT-5.4 New `RecordingOptions` stored properties
+
+```swift
+let transcriptionProvider: TranscriptionProviderId    // default: .none
+let transcriptionSource: TranscriptionSource          // default: .mixed
+let transcriptionFormat: TranscriptFormat             // default: .jsonl
+let transcriptionApiKey: String?                      // nil unless provider needs one and resolver found it
+let transcriptionModelId: String?                     // nil = use provider's pinned default
+let transcriptionOutputPath: URL?                     // nil = derive from audio output basename
+let transcriptionKeyExpiresAt: Date?                  // nil = no expiry warning
+```
+
+**Critical**: `RecordingOptions.withOutput(_:)` (`RecordingOptions.swift:185`)
+must be updated to copy the seven new fields (codebase scan §5; plan-003
+R-Top2). Without this fix, every pause/resume rotation silently loses
+transcription options. This is a CR-LT-2 code-review checklist item.
+
+#### LT-5.5 Resolver behavior
+
+In `ConfigResolver.resolve(cliOverrides:)` the new logic is:
+
+1. Resolve `transcribe` → `RecordingOptions.transcriptionProvider` (default `.none`).
+2. **If provider == `.none`**: skip steps 3–7. The recording is identical to
+   pre-plan-003 (AC-LT-16).
+3. Resolve `transcribe-source` (default `.mixed`).
+4. Resolve `transcribe-format` (default `.jsonl`).
+5. Resolve `transcribe-model` (default nil; provider supplies its own).
+6. Resolve the provider-specific API key (Gemini: `GOOGLE_API_KEY`).
+   **If nil → throw `MacrecError.transcriptionApiKeyMissing`**.
+7. Resolve `transcribe-key-expires-at` (optional). If past, emit a warning
+   log line; do not block.
+8. Cross-check: if `--detach` is true AND provider != `.none`, throw
+   `MacrecError.transcriptionDetachUnsupported`.
+9. Cross-check: if `transcribe-source == .mic` AND `mic == none` (no mic
+   selected), throw `MacrecError.transcriptionConfigConflict(reason: ...)`.
+
+Each cross-check is an explicit early-exit before `RecordingSession` is
+constructed (AC-LT-4 — no audio file is created when configuration is
+invalid).
+
+### LT-6. Audio Tap Contract
+
+The audio tap is the most safety-critical surface in the design — a wrong
+move here breaks NFR-17 (recording integrity isolation). The contract below
+is binding and CR-LT-1 enforces it at code-review time.
+
+#### LT-6.1 Where the tap is installed
+
+Three new tap properties are added (codebase scan §4.1):
+
+```swift
+// SCKitSystemAudioSource.swift  (alongside existing levelTap on line 178)
+public var transcriptionTap: ((CaptureBuffer) -> Void)?
+
+// AVMicrophoneSource.swift  (mirror)
+public var transcriptionTap: ((CaptureBuffer) -> Void)?
+
+// RecordingSession.swift  (post-aligner; alongside existing levelTap concept)
+public var transcriptionTap: ((AlignedFrame) -> Void)?
+```
+
+The first two fire on `macrec.capture.system` / `macrec.capture.mic`
+respectively, immediately AFTER the existing `levelTap` (sources: line
+339-345 in SCKit; analogous in AVMic). The third fires on
+`macrec.aligner.serial`, immediately AFTER the recorder's write call (so a
+crash in the tap can never starve the recorder).
+
+#### LT-6.2 Tap closure signature and constraints
+
+```swift
+public typealias TranscriptionTapAligned = @Sendable (AlignedFrame) -> Void
+public typealias TranscriptionTapSource  = @Sendable (CaptureBuffer)  -> Void
+```
+
+**Binding rules**, enforced by code review (CR-LT-1):
+
+1. **Synchronous.** No `await`, no `async let`, no `Task.sleep`, no `try await`.
+2. **No allocation > 1 KB.** Wrapping the buffer in a small `Sendable` struct is fine; deep-copying a 38 400 B PCM buffer is NOT — the producer Task does that.
+3. **No I/O.** No file handles, no network, no `Logger.log` (logging is async-deferred).
+4. **No actor hops that suspend.** The closure may call `nonisolated` functions on the `TranscriptionDriver`, but they must themselves be synchronous. (See §LT-6.3.)
+5. **Idempotent under repeated install/uninstall.** The capture sources mutate `transcriptionTap` from `nil` to a closure once at `RecordingSession.start` and back to `nil` once at `RecordingSession.requestStop`. No intermediate replacement.
+
+#### LT-6.3 The producer Task — sync ↔ async boundary
+
+The driver exposes one `nonisolated` synchronous method that the tap closure
+calls:
+
+```swift
+extension TranscriptionDriver {
+    /// Synchronous, non-blocking. Posts the raw frame onto an internal stream
+    /// for the producer Task to downsample asynchronously.
+    /// SAFE TO CALL FROM ANY QUEUE.
+    nonisolated public func enqueueRawAligned(_ frame: AlignedFrame) {
+        rawContinuation.yield(.aligned(frame))
+        // No await, no actor hop. Returns in O(1).
+    }
+
+    nonisolated public func enqueueRawSource(_ buffer: CaptureBuffer) {
+        rawContinuation.yield(.source(buffer))
+    }
+}
+```
+
+`rawContinuation` writes into a **separate** internal `AsyncStream<RawTapInput>`
+held by the producer Task. The producer Task is the only consumer of this
+stream; it runs the `AudioDownsampler` synchronously per frame and yields the
+result onto the bounded outward `AsyncStream<TranscriptionPCMChunk>`. The two
+streams have different lifecycles:
+
+- **Inner raw stream**: unbounded buffer for ~one frame at a time (the producer drains immediately). If the producer ever stalls (downsampler crash), the unbounded buffer grows; this is the only place where unbounded growth would matter. Mitigated by setting the inner stream's policy to `bufferingNewest(8)` — at 8 × 100 ms × 38 400 B ≈ 300 KB worst case before drops, and the producer never realistically stalls (the downsampler is < 1 ms per frame per `audio-downsample-conversion.md` §"Performance Notes").
+- **Outer bounded stream**: `bufferingNewest(64)` per investigation pt. 9. At PCM16-mono-16k post-downsample, 64 × 100 ms × 3 200 B ≈ 200 KB. **Three orders of magnitude under NFR-19's 8 MB ceiling.**
+
+#### LT-6.4 Buffer size N — concrete rationale
+
+| Stream | Element | Capacity | Memory footprint at cap | Source |
+|---|---|---|---|---|
+| Inner raw stream (driver-internal) | `RawTapInput` (frame ref) | `bufferingNewest(8)` | ~300 KB worst case (Float32-stereo-48k × 8) | This design (§LT-6.3) |
+| Outer bounded stream (driver → provider) | `TranscriptionPCMChunk` | `bufferingNewest(64)` | ~200 KB worst case (PCM16-mono-16k × 64) | Investigation pt. 9; plan-003 §0.3, §2.3 |
+| Provider events (provider → driver) | `TranscriptEvent` | `bufferingNewest(32)` | ~5 KB worst case | Plan-003 §0.3 |
+| UI panel events (driver → controller) | `TranscriptEvent` | `bufferingNewest(64)` | ~10 KB worst case | This design (UI is the slowest consumer; doubled vs provider events to give MainActor breathing room) |
+| `transcriptEvents` array on controller | `TranscriptEvent` | 1000 entries (drop oldest) | ~150 KB | Plan-003 §4 Phase G |
+
+Total worst-case memory across all transcription buffers: ≈ 700 KB —
+**~1 % of NFR-19's 8 MB ceiling**. The cap holds with comfortable margin
+even under a hostile fake provider (AC-LT-11).
+
+#### LT-6.5 Tap removal contract
+
+| Trigger | Tap behavior |
+|---|---|
+| Recording stops cleanly (`requestStop()`) | Tap properties set to `nil` AFTER the driver finishes draining. The tap closure stops being invoked the instant `nil` is assigned (the dispatch queue serializes both reads and writes). |
+| Transcription disabled mid-recording (UI toggle, future v2 feature) | NOT supported in v1. The provider picker is locked while `state` is recording (AC-LT-19). Plan-003 §6 R-29. |
+| Recorder errors out (writer fail, scstream silent stop) | Driver receives a `RecordingSession` error signal; cancels the provider Task; closes the sidecar; tap is uninstalled in `requestStop()`'s teardown path. The recording-level error is the one surfaced to the user. NFR-17. |
+| Pause/resume rotation | Tap STAYS installed (codebase scan §4.1; plan-003 §4 Phase D). The driver's `rotateSidecar(toAudioURL:)` rotates the sidecar but does not touch the tap. |
+| `RecordingSession.deinit` | Tap closures hold a weak reference to the driver to prevent retain cycles. If the session is deallocated, the closures become no-ops. |
+
+### LT-7. Sidecar File Naming and Format
+
+#### LT-7.1 Naming rules (FR-51)
+
+| Audio output | `--transcribe-source` | Sidecar(s) |
+|---|---|---|
+| `recording-2026-04-26-22-30-00.m4a` | `system` / `mic` / `mixed` | `recording-2026-04-26-22-30-00.transcript.<ext>` |
+| `recording-2026-04-26-22-30-00.part01.m4a` | `system` / `mic` / `mixed` | `recording-2026-04-26-22-30-00.part01.transcript.<ext>` |
+| `recording-2026-04-26-22-30-00.part02.m4a` | … | `recording-2026-04-26-22-30-00.part02.transcript.<ext>` |
+| `recording-2026-04-26-22-30-00.system.m4a` + `.mic.m4a` (split-layout) | `mixed` | one sidecar (`…transcript.<ext>` next to the basename); reflects the post-summer transcription stream |
+| `recording-2026-04-26-22-30-00.system.m4a` + `.mic.m4a` (split-layout) | `system` | one sidecar `recording-….system.transcript.<ext>` |
+| `recording-2026-04-26-22-30-00.system.m4a` + `.mic.m4a` (split-layout) | `mic` | one sidecar `recording-….mic.transcript.<ext>` |
+| `recording-2026-04-26-22-30-00.system.m4a` + `.mic.m4a` (split-layout) | `both` | two sidecars: `recording-….system.transcript.<ext>` AND `recording-….mic.transcript.<ext>` |
+
+`<ext>` is one of `jsonl`, `txt`, `srt`, `vtt`.
+
+`TranscriptSidecarNamer.sidecarURL(forAudio:layoutSourceTag:format:)` is the
+single source of truth and is unit-tested exhaustively (plan-003 §4 Phase D).
+
+#### LT-7.2 JSONL line schema (default)
+
+Each sidecar starts with a header line:
+
+```jsonc
+{
+  "schema": "macrec.transcript.v1",
+  "provider": "gemini-live",
+  "model": "gemini-3.1-flash-live-preview",
+  "audioPath": "/Users/.../recording-2026-04-26-22-30-00.m4a",
+  "startedAt": "2026-04-26T22:30:00.000Z",
+  "endedAt": null,
+  "secondsStreamed": 0.0,
+  "partialCount": 0,
+  "finalCount": 0,
+  "droppedFrames": 0
+}
+```
+
+The header line is **rewritten in place** (truncate-then-write at offset 0)
+on every metric update and at session end. To keep subsequent appends from
+having to recompute offsets, the encoded header is **padded to a fixed
+512-byte boundary** (whitespace inside the JSON, trailing space before the
+`\n`). Documented in `TranscriptSidecarWriter.swift`. (Plan-003 R-Phase D.2.)
+
+Each subsequent line is one JSON object per `TranscriptEvent`:
+
+```jsonc
+{ "t": "partial",  "ts": 12.345,                 "text": "hello wo",     "source": "mixed" }
+{ "t": "partial",  "ts": 12.892,                 "text": "hello world",  "source": "mixed" }
+{ "t": "final",    "ts": 12.345, "endTs": 13.456,"text": "hello world.", "source": "mixed", "conf": 0.93 }
+{ "t": "state",    "ts": 30.000, "connected": false, "retryAttempt": 1 }
+{ "t": "state",    "ts": 31.420, "connected": true,  "retryAttempt": 1 }
+{ "t": "error",    "ts": 30.000, "reason": "transient network drop", "isFatal": false }
+{ "t": "ended",    "ts": 60.000, "reason": "userStopped" }
+```
+
+| Field | Type | Allowed values |
+|---|---|---|
+| `t` | string | `"partial"`, `"final"`, `"state"`, `"error"`, `"ended"` |
+| `ts` | number | session-relative seconds, double precision |
+| `endTs` | number | only on `"final"` |
+| `text` | string | only on `"partial"` and `"final"` |
+| `source` | string | `"system"`, `"mic"`, `"mixed"` (only on `partial`/`final`) |
+| `conf` | number\|null | only on `"final"` |
+| `connected` | bool | only on `"state"` |
+| `retryAttempt` | int | only on `"state"` |
+| `reason` | string | only on `"error"` and `"ended"` |
+| `isFatal` | bool | only on `"error"` |
+
+The schema is versioned via the header's `schema: "macrec.transcript.v1"`
+field. Future v2 changes (e.g. speaker-id) increment to `v2`.
+
+#### LT-7.3 SRT format
+
+Standard SubRip cue numbering, `hh:mm:ss,fff` timestamps. Only emit on
+`.final` events; partials are dropped. Cues are buffered in memory; the file
+is written on `finalize()` (since SRT requires complete cue ordering and
+sequence numbering).
+
+```
+1
+00:00:12,345 --> 00:00:13,456
+hello world.
+
+2
+00:00:14,000 --> 00:00:15,200
+the quick brown fox.
+```
+
+Golden-file fixtures (`Tests/MacrecCoreTests/Fixtures/expected.srt`) lock the
+exact format.
+
+#### LT-7.4 VTT format
+
+WebVTT header + cues with `.` (not `,`) decimal separator; otherwise same as
+SRT. Only `.final` events; in-memory until `finalize()`.
+
+```
+WEBVTT
+
+00:00:12.345 --> 00:00:13.456
+hello world.
+
+00:00:14.000 --> 00:00:15.200
+the quick brown fox.
+```
+
+Golden-file fixture lives next to the SRT one.
+
+#### LT-7.5 TXT format
+
+Append-only, one line per `.final` event, no metadata. Partials and other
+event types are dropped entirely.
+
+```
+hello world.
+the quick brown fox.
+```
+
+### LT-8. UI Design (`macrec-ui`)
+
+#### LT-8.1 Popover layout
+
+The popover is rendered by `RootView.swift`. The new layout (codebase scan §4.3):
+
+```
+┌──────────────────────────────────────────┐
+│  Macrec — [recording timer + state]      │
+│ ────────────────────────────────────────  │
+│  Output folder:  [FolderPicker]          │
+│  Filename basename: [TextField]          │
+│  Format:        [FormatPicker]           │
+│  Layout:        [LayoutPicker]           │
+│  Microphone:    [MicrophonePicker]       │
+│ ────────────────────────────────────────  │
+│  ▶ Live transcription (DisclosureGroup)  │  ← NEW (LT-2.3)
+│      Provider:  [TranscriptionPicker]    │      collapsed by default when provider == .none
+│      Source:    [TranscriptionSource…]   │      visible only when provider != .none
+│      Format:    [TranscriptFormatPicker] │      visible only when provider != .none
+│ ────────────────────────────────────────  │
+│  Levels:    [LevelMeterView]             │
+│ ────────────────────────────────────────  │
+│  [TranscriptPanel]   (visible when       │  ← NEW (LT-2.3)
+│   provider != .none, max-height 120 pt)  │
+│  └── [JumpToLive overlay]                │
+│ ────────────────────────────────────────  │
+│  [ControlBar: Start / Pause / Stop]      │
+│ ────────────────────────────────────────  │
+│  [SavedToDisclosure]                     │  ← post-stop; also lists transcript files
+│ ────────────────────────────────────────  │
+│  [TranscriptionMetrics]                  │  ← post-stop only; tooltip mode below
+└──────────────────────────────────────────┘
+```
+
+**Position rationale**:
+
+- Pickers go inside a `DisclosureGroup` so the popover doesn't grow vertically when the feature is disabled (default).
+- Within the disclosure: provider first (drives visibility of the other two), then source (functional ordering), then format (output-only).
+- The transcript panel goes **below the level meters** (FR-52), so the visual flow is "what's happening now" → "what's being said now".
+- The transcript panel is hidden entirely when `provider == .none` — preserving the existing v1 visual budget for users who don't transcribe.
+
+#### LT-8.2 Privacy disclosure (FR-53, AC-LT-9)
+
+Triggered by:
+```swift
+@AppStorage("com.macrec.ui.transcribePrivacyAccepted") var accepted = false
+```
+
+When the user picks any non-`None` provider AND `accepted == false`, an
+`.alert(...)` modifier presents:
+
+> **Live transcription sends audio to a third-party API**
+>
+> If you enable live transcription, the audio captured during this recording
+> will be streamed to a third-party API (`<provider name>`) for transcription.
+> The transcript is also written to a sidecar file next to your recording.
+>
+> No filename, microphone name, host name, or user name is sent — only the
+> raw audio bytes and a `system`/`mic`/`mixed` label.
+>
+> [Cancel]   [I understand — Continue]
+
+- **Cancel**: resets the picker to `None`. No flag flip.
+- **Continue**: sets `accepted = true`. Subsequent sessions skip the alert.
+
+The disclosure remains discoverable via the picker's tooltip (`?` info icon
+next to the provider name): "About third-party transcription…" — shows the
+same body text in a popover, with a button "Reset disclosure" that flips the
+flag back to `false`.
+
+#### LT-8.3 No-key state (AC-LT-8)
+
+`RecordingController.transcriptionMissingKey: Bool` is `true` when:
+```
+options.transcriptionProvider != .none
+AND options.transcriptionApiKey == nil
+```
+
+When `true`, `TranscriptionPicker` overlays a `TranscriptionMissingKeyBadge`
+(red dot in the corner of the picker control). Clicking the badge opens an
+inline help popover:
+
+> **API key not configured**
+>
+> To use Gemini Live, set `GOOGLE_API_KEY` in:
+>   `~/.tool-agents/macrec-ui/.env`
+>
+> [Copy path]   [Open ~/.tool-agents/macrec-ui/.env]
+
+The picker itself is **not** disabled when the key is missing — that would
+hide a fixable misconfiguration. Pressing Start with the missing-key state
+surfaces the same `transcriptionApiKeyMissing` error inline (in the
+existing `ErrorBanner`, codebase scan §4.9), without crashing the recording.
+
+#### LT-8.4 Cost / latency display (FR-58, AC-LT-14)
+
+Two surfaces:
+
+1. **Inline tooltip on the panel header** during recording — updates every
+   1 s — shows: `streamed: 12.3 s · 4 finals · 11 partials · 0 dropped`.
+2. **`SavedToDisclosure`** post-stop — adds a "Transcription summary" sub-row:
+   `42 finals · 119 partials · 0 dropped · 380 s streamed · 1 reconnect(s)`.
+
+Refresh rate: 1 Hz during recording (driven by a tiny `TimerPublisher` that
+fires every second on the main run loop). No refresh needed post-stop —
+the value is final.
+
+#### LT-8.5 View-model bindings
+
+| `@Published`/`@Observable` property on `RecordingController` | Drives |
+|---|---|
+| `transcriptionState: TranscriptionState` (`.idle`/`.active`/`.paused`/`.error(message)`) | `TranscriptPanel` background tint; `ErrorBanner` content. |
+| `transcriptEvents: [TranscriptEvent]` (capped at 1000 finals; controller dedupes/promotes partials) | `TranscriptPanel`'s scroll content. |
+| `currentPartial: String?` | `TranscriptPanel`'s muted-style trailing line. |
+| `transcriptionMissingKey: Bool` | `TranscriptionMissingKeyBadge` visibility. |
+| `transcriptionMetrics: TranscriptHeader?` | Inline tooltip during; `SavedToDisclosure` row post-stop. |
+| `transcriptionState == .paused` (via state-change events) | Panel header shows a "Reconnecting…" pill. |
+
+The controller subscribes to the driver's `events: AsyncStream<TranscriptEvent>`
+in the `start(...)` flow. Each event:
+
+- `.partial(text, ...)` → `currentPartial = text`. (No append to events list.)
+- `.final(text, ...)` → `currentPartial = nil`; append the event to `transcriptEvents`. Drop-oldest when at cap.
+- `.providerStateChange(connected: false, ...)` → `transcriptionState = .paused`.
+- `.providerStateChange(connected: true, ...)` → `transcriptionState = .active`.
+- `.error(reason, isFatal: false)` → log; do not change `transcriptionState`.
+- `.error(reason, isFatal: true)` → `transcriptionState = .error(reason)`. Show in `ErrorBanner`.
+- `.sessionEnded(reason)` → `transcriptionState = .idle`; populate `transcriptionMetrics`.
+
+### LT-9. Persistence Layer (`TranscriptSidecarWriter`)
+
+#### LT-9.1 Shape
+
+```swift
+public actor TranscriptSidecarWriter: TranscriptSink {
+
+    public init(audioOutputURL: URL,
+                format: TranscriptFormat,
+                headerMetadata: TranscriptHeader) throws {
+        // Derives sidecar URL via TranscriptSidecarNamer.
+        // Opens FileHandle for r+w (truncate+write for jsonl, write for srt/vtt/txt).
+        // Throws on non-writable path. NO FALLBACK.
+    }
+
+    public func consume(_ event: TranscriptEvent) async {
+        // Appends per format. Errors logged at .warning; never raised.
+        // Updates in-memory metrics for the next header rewrite.
+    }
+
+    public func rotateSidecar(toAudioURL nextAudioURL: URL) async throws {
+        // 1. finalize() the current handle (flush, close, srt/vtt write).
+        // 2. Re-derive the next sidecar URL via TranscriptSidecarNamer.
+        // 3. Open the next handle with a freshly-stamped TranscriptHeader.
+    }
+
+    public func finalize() async throws {
+        // Flush. For srt/vtt: write the buffered cues. Close the handle.
+        // For jsonl: rewrite the header one last time with final counts.
+    }
+
+    public func metricsSnapshot() async -> TranscriptHeader {
+        // Used by the controller's post-stop summary row.
+    }
+}
+```
+
+#### LT-9.2 Threading
+
+Actor-isolated, so all method calls serialize through the actor's executor.
+The `consume(_:)` method is `async` but the call site (the driver) `await`s
+it — back-pressure here is bounded by the upstream
+`bufferingNewest(32)` events stream. If the writer ever stalls, events are
+dropped at the upstream cap, NOT at the writer (the writer never blocks the
+driver's read loop).
+
+`consume(_:)` errors (e.g. disk full mid-write) are logged at `.warning` and
+the writer transitions to a `.broken` state — no further `consume(_:)` calls
+do anything. The driver continues to consume the events stream, still
+re-emits to the UI, and the recording is unaffected. (Best-effort
+persistence; NFR-17.)
+
+#### LT-9.3 Behavior on segment rotation
+
+Driven by `RecordingSession.split(nextOutput:)` (line 573) and by
+`SessionCoordinator`'s pause/resume flow (`MacrecUIKit/SessionCoordinator.swift:266` /
+`:294`). The driver's `rotateSidecar(toAudioURL:)` finalizes the current
+sidecar and opens the next. Atomicity: the existing sidecar is guaranteed
+to be flushed and closed before the new one is opened — no overlap, no
+data loss across the rotation point.
+
+In the UI, a synthetic separator `TranscriptEvent` is appended to the
+controller's `transcriptEvents` array at rotation time, rendered as a
+horizontal-rule separator with the next part's index — AC-LT-20.
+
+### LT-10. WebSocket Layer & Gemini Provider
+
+#### LT-10.1 `WebSocketSession` actor (Phase E)
+
+`Sources/MacrecCore/Transcription/WebSocketSession.swift` is a verbatim drop-in
+from `docs/research/websocket-asyncstream-pattern.md` §"Complete Implementation".
+Public surface:
+
+```swift
+public actor WebSocketSession {
+    public init(url: URL, config: WebSocketSessionConfig, transportFactory: …)
+    public var events: AsyncStream<ServerEvent> { get }   // open across reconnects
+    public func start() async
+    public func send(_ message: URLSessionWebSocketTask.Message) async throws
+    public func cancel() async   // graceful close with .normalClosure
+}
+```
+
+`config.maxAttempts = 8` per ESC-LT-2 / D-LT-8. Heartbeat 15 s. NWPathMonitor
+restarts the backoff timer on connectivity-restored. The `events` stream is
+created **once** at actor init and stays open across every transient
+reconnect — only fatal exhaustion finishes it.
+
+Hazards 1-8 from research §"Race Conditions and Leaked Tasks" are handled
+inside the actor's implementation; tests in `WebSocketSessionTests` cover
+each one (plan-003 §4 Phase E).
+
+#### LT-10.2 `GeminiLiveTranscriptionProvider` (Phase F)
+
+```swift
+public final class GeminiLiveTranscriptionProvider: TranscriptionProvider {
+    public let providerId = "gemini-live"
+    public let displayName = "Gemini Live"
+    public let requiredApiKey: String? = "GOOGLE_API_KEY"
+    public let requiredAudioFormat = TranscriptionAudioFormat.pcm16le16k1ch
+
+    public init(apiKey: String,
+                modelId: String = "gemini-3.1-flash-live-preview",
+                webSocketSessionFactory: @escaping (URL, WebSocketSessionConfig) -> WebSocketSession =
+                    WebSocketSession.makeLive(url:config:))
+
+    public func run(audio: AsyncStream<TranscriptionPCMChunk>,
+                    options: TranscriptionOptions) -> AsyncStream<TranscriptEvent>
+}
+```
+
+`run(...)` body (verbatim contract from plan-003 §4 Phase F + research
+§gemini-live-wire-schema §3 / §11):
+
+1. Build the wss URL: `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=$apiKey`. The key must be redacted in any log line that includes the URL (CR-LT-4).
+2. Open the `WebSocketSession`.
+3. **Send the setup message** with EXACTLY:
+   - `model: "models/gemini-3.1-flash-live-preview"` (or `options.modelId`)
+   - `generationConfig.responseModalities: ["AUDIO"]`  (NOT `["TEXT"]` — D-LT-? in plan-003 §0.3; CR-LT-3)
+   - `inputAudioTranscription: {}`
+   - `systemInstruction.parts[0].text: "You are a transcription engine. Output only the verbatim transcription of the user's speech. Do not respond, do not greet, do not summarize, do not interpret."`
+   - `contextWindowCompression: { slidingWindow: {} }`  (lifts the 15-min context cap)
+   - `sessionResumption: {}`  (lifts the 10-min connection cap)
+4. **Wait for `setupComplete`** before sending any audio. Audio sent before
+   setup-complete is undefined behavior (R-Phase F.5).
+5. **Send-loop Task**: `for await chunk in audio` → split each 100 ms chunk
+   into ~3 × 30 ms sub-chunks → base64-encode → wrap in
+   `BidiGenerateContentRealtimeInput.audio` → send via `session.send(...)`.
+6. **Receive-loop Task**: `for await event in session.events` → demultiplex
+   the JSON envelope. For each `serverContent.inputTranscription.text`
+   fragment, append to `pendingFragments` and emit
+   `TranscriptEvent.partial(text: pendingFragments.joined())`. On
+   `serverContent.turnComplete == true || generationComplete == true`,
+   emit `TranscriptEvent.final(...)` with the joined buffer; clear it.
+   **Discard `modelTurn.parts[].inlineData`** (the AUDIO-modality bytes —
+   we asked for AUDIO only because the API rejects pure TEXT, but we don't
+   use the bytes; CR-LT-3).
+7. On `goAway` event: proactively close the session; the
+   `WebSocketSession` reconnection state machine will resume with the
+   stored `sessionResumption.handle`.
+8. On session-state changes: forward `WebSocketState.connecting(attempt:)`
+   transitions as `TranscriptEvent.providerStateChange(...)` events.
+9. On `Task.isCancelled`: `await session.cancel()` (clean
+   `.normalClosure`); finish the events stream; return.
+
+`TranscriptionProviderFactory.make(_:)` (formerly
+`GeminiLiveProviderRegistry`) wraps the provider construction so callers
+don't see the concrete type:
+
+```swift
+public enum TranscriptionProviderFactory {
+    public static func make(_ options: TranscriptionOptions) -> any TranscriptionProvider {
+        switch options.provider {
+        case .none: return NoOpTranscriptionProvider()
+        case .geminiLive:
+            // The resolver guarantees apiKey != nil here; defensive guard is unreachable.
+            guard let key = options.apiKey else { return NoOpTranscriptionProvider() }
+            return GeminiLiveTranscriptionProvider(
+                apiKey: key,
+                modelId: options.modelId ?? "gemini-3.1-flash-live-preview"
+            )
+        case .openaiRealtime, .deepgram, .assemblyAI:
+            // v2 placeholders.
+            return NoOpTranscriptionProvider()
+        }
+    }
+}
+```
+
+### LT-11. Threading & Isolation Strategy
+
+| Component | Owner / executor | Key constraints |
+|---|---|---|
+| `SCKitSystemAudioSource.transcriptionTap?(_:)` invocation | `macrec.capture.system` (existing serial DispatchQueue) | Closure must be sync, must not block, must not allocate > 1 KB. Mutated only via property setter from the recorder's start path on the main thread. |
+| `AVMicrophoneSource.transcriptionTap?(_:)` invocation | `macrec.capture.mic` | Same as above. |
+| `RecordingSession.transcriptionTap?(_:)` invocation | `macrec.aligner.serial` | Same as above. |
+| `TranscriptionDriver` | `actor` — own executor | Public API is `async`. The two `enqueueRaw*(_:)` methods are `nonisolated`, synchronous, safe-to-call-from-any-queue. |
+| Inner raw-input stream (driver-internal) producer Task | `Task { [weak self] in ... }` spawned by the driver during `start(...)`; runs on cooperative thread pool | Drains the inner stream synchronously; runs `AudioDownsampler` (synchronous, ~1 ms/frame); yields onto the bounded outward stream. |
+| `AudioDownsampler` | Held by the driver; not an actor (it's stateful but always called from the producer Task) | Single-threaded by construction. **Filter state preserved across chunks** (R-Top4). |
+| Outward bounded `AsyncStream<TranscriptionPCMChunk>` | Created by driver at `start(...)`; consumed by provider's `run(...)` Task | `bufferingNewest(64)`. Drops counted via the driver's metric; NO recording impact. |
+| `TranscriptionProvider.run(audio:options:)` | Task spawned by the driver; cancelled at stop | Provider implementation must not rely on actor isolation. Cancellation = stop. |
+| `WebSocketSession` | `actor` — own executor | Hazards 1-8 in research §"Race Conditions" mitigated by the actor's serial executor + careful child Task management. |
+| `WebSocketSession.events` `AsyncStream<ServerEvent>` | Open at actor init; finishes only on fatal exhaustion or user cancel | Stays open across transient reconnects (research §"AsyncStream Lifetime Across Reconnections"). |
+| `TranscriptSidecarWriter` | `actor` — own executor | All `consume(_:)` calls serialized. Errors logged, never raised to the driver. |
+| `RecordingController` (UI) | `@MainActor @Observable` | Subscribes to `driver.events` via a `Task { @MainActor in for await … }` loop spawned in `start()`. All UI mutations on main. |
+| `SessionCoordinator` | `actor` (existing) — own executor | Fires the `rotateSidecar(toAudioURL:)` call on the driver via `await` during pause/resume. |
+
+**Sendable conformance**: every value type crossing actor boundaries is
+`Sendable`. The protocol itself is `Sendable`. Closures stored on capture
+sources are `@Sendable`. The `@unchecked Sendable` on
+`LiveWebSocketTransport` (research §3) is documented at the declaration
+site (CR-LT-? — covered by the existing review).
+
+**Critical**: the producer Task that drains the tap → downsampler →
+provider input runs on a **single, dedicated child Task** spawned by the
+driver in `start(provider:options:)`. It does NOT run on
+`macrec.aligner.serial`. The synchronous tap closure does no work beyond
+yielding the raw frame ref onto the inner stream — guaranteeing the
+aligner's queue is never blocked by transcription work.
+
+### LT-12. Failure Modes and Recovery
+
+| Failure | Detection | Driver behavior | Recording impact | UI surface |
+|---|---|---|---|---|
+| Network blip mid-recording (transient drop) | `WebSocketSession` reconnection state machine; `URLError.notConnectedToInternet`. | Session stays in `.reconnecting`; events stream STAYS OPEN. Provider emits `.providerStateChange(connected: false, retryAttempt: N)`. | **None** (NFR-17). | Panel header shows "Reconnecting… (attempt N)". |
+| Reconnect succeeds | `WebSocketSession` enters `.connected`. | Provider re-sends setup with stored `sessionResumption.handle`; resumes audio send. Emits `.providerStateChange(connected: true, retryAttempt: N)`. Audio between drop and resume is dropped at the bounded queue (counted in `droppedFrameCount`). | **None.** | Panel header returns to normal; transcript continues. |
+| Reconnect exhausts (3 fails / 60 s OR `maxAttempts == 8` reached) | `WebSocketSession` enters `.paused`. | Provider emits `.error(reason: "transcription paused — exhausted reconnects", isFatal: false)` then `.sessionEnded(reason: .providerSessionExhausted)`. The events stream finishes. Driver closes the sidecar's session-end record; recording continues. | **None.** | `transcriptionState = .error("paused for this recording")`; panel shows "Transcription stopped — recording continues." |
+| API key invalid (server sends 1008 close) | Receive loop catches close code 1008; `WebSocketSession` enters `.failed(.authentication)`. | Provider emits `.error(reason: "authentication failed", isFatal: true)` then `.sessionEnded(reason: .unrecoverableError)`. | **None.** | `ErrorBanner` shows "Transcription auth failed — set GOOGLE_API_KEY"; recording continues to completion. |
+| Audio backpressure (UI consumer stalled) | Bounded events stream's `bufferingNewest(64)` drops oldest event. | No driver action; the dropped event is lost to the UI. The sidecar consumes from a **separate** stream and is unaffected. | **None.** | UI may briefly miss a partial; the next final still arrives. |
+| User toggles transcription off mid-recording | Not supported in v1 (picker locked while recording, AC-LT-19). | n/a | n/a | n/a |
+| Recorder errors out (writer fail, scstream silent stop) | `RecordingSession` raises `MacrecError.writerFailedToStart` (or similar). | The teardown path cancels the provider's Task; the driver `await`s the events stream's natural finish (with a 5 s timeout); `finalize()`s the sidecar; uninstalls the tap. The transcription error is **secondary** — only the recording error is surfaced. | **Recording error surfaces.** | `ErrorBanner` shows the recording error; transcript panel becomes inactive. |
+| Disk full mid-write | Writer's `consume(_:)` catches `Errno.ENOSPC`. | Writer transitions to `.broken`; logs `.warning`; subsequent events are still emitted to the UI but not persisted. | **None.** | No specific UI event; the error is logged. (Optional: add a one-shot toast in v2.) |
+| Provider task crashes (Swift fatal error) | Task's structured concurrency surfaces the crash. | The driver's `await` on the task throws or returns; the events stream finishes. The driver re-emits `.error(isFatal: true)` to the controller. | **None.** | `ErrorBanner` shows "Transcription crashed"; recording continues. |
+
+The unifying principle: **NFR-17 holds in every failure mode**. The
+recording is the primary artefact; transcription is a side-channel; every
+failure path eventually yields control back to the recording's normal stop
+flow.
+
+### LT-13. Test Architecture
+
+The design enables the test suite by ensuring each major component has:
+
+- A **substitution point** for tests (factory or initializer injection).
+- A **deterministic alternative** that requires no network, no TCC, and no audio device.
+
+| Component | Substitution | Deterministic alt | Lives in |
+|---|---|---|---|
+| `TranscriptionProvider` | Constructor injection on `TranscriptionDriver`; provider is never constructed inside the driver. | `FakeTranscriptionProvider(script:)` | `Sources/MacrecCore/Transcription/` (NOT Tests/) |
+| `WebSocketTransport` | Factory parameter on `WebSocketSession.init` (research §3 + plan-003 §4 Phase E) | `FakeWebSocketTransport` | `Tests/MacrecCoreTests/Transcription/` (test-only is OK here — only `WebSocketSessionTests` need it) |
+| `AudioDownsampler` | Direct construction; tests build `AVAudioPCMBuffer` from sine-wave generators (`SyntheticAudioFixture`). | n/a (the downsampler IS the SUT) | `Sources/MacrecCore/Transcription/AudioDownsampler.swift`; fixture is `SyntheticAudioFixture.swift` |
+| `TranscriptSidecarWriter` | Constructor takes `outputPath: URL`; tests pass a temp directory URL. | n/a | `Sources/MacrecCore/Transcription/` |
+| `TranscriptSink` (protocol) | Protocol injection on the driver | In-memory `TranscriptSink` impl in tests | mixed |
+| `RecordingSession.transcriptionProvider` | New optional initializer parameter (plan-003 §4 Phase C); tests inject `FakeTranscriptionProvider`. | (uses the fake) | n/a |
+| `RecordingController.driver` | Injectable via `RecordingController` initializer (existing pattern from plan-002) | (uses the fake driver) | n/a |
+| `GeminiLiveTranscriptionProvider` | Constructor takes a `webSocketSessionFactory:` closure; tests pass a closure that returns a `WebSocketSession` whose transport is the fake. | (mocked session) | n/a |
+| Real-network smoke test | Gated on `GOOGLE_API_KEY` env var presence; `@Suite(.disabled(if: ...))` | (skipped when no key) | `GeminiLiveLiveSmokeTest.swift` |
+
+Per the existing project test convention (codebase scan §3 / §4.7), tests
+that need TCC grants run as shell scripts in `test_scripts/`; tests that
+inject fakes run under `swift test`. The transcription suite follows the
+same dichotomy — every unit / integration test under `swift test` uses
+fakes; the live smoke test is a shell-driven, env-var-gated path.
+
+### LT-14. Implementation Order Rationale
+
+The plan-003 parallelization map (§5.1) is restated here in design terms.
+Each phase corresponds to a specific contract being locked.
+
+```
+Phase 0   ─► Functional registry (FR-45..FR-58, NFR-17..NFR-21) is the contract everyone reads.
+   │
+   ├──── Phase A ────┐    Protocol contract + value types + NoOp + Fake.
+   │                 │    ⇒ Every other phase can compile + test against the protocol.
+   │                 │    ⇒ Independent of E (different file set, different concerns).
+   │
+   ├──── Phase E ────┤    WebSocket transport + reconnection state machine.
+   │                 │    ⇒ Provider-agnostic. Reusable by every future provider.
+   │                 │    ⇒ Independent of A.
+   │                 │
+   ├──── Phase B ────┤    Audio tap installation + downsampler + driver.
+   │   (after A)     │    ⇒ Validates AC-LT-2/3/11 against fakes BEFORE any network code lands.
+   │                 │
+   ├──── Phase C ────┤    Configuration plumbing + RecordingOptions.withOutput fix.
+   │   (after A)     │    ⇒ Independent of B (different file set; can run in parallel).
+   │                 │    ⇒ Plugs the latent bug from codebase scan §5 (R-Top2).
+   │                 │
+   ├──── Phase D ────┤    Sidecar persistence (writer, namer, formats, rotation).
+   │   (after A+C)   │    ⇒ Validates AC-LT-5/6/13/14 — disk side of the side-channel.
+   │                 │
+   ├──── Phase F ────┤    Concrete Gemini provider on top of E.
+   │   (after A+E)   │    ⇒ The only network code in the project until this point.
+   │                 │    ⇒ Validates the wire schema against golden strings.
+   │                 │
+   ├──── Phase G ────┤    UI integration in macrec-ui.
+   │   (after D+F)   │    ⇒ But most of G can start in Wave 2 against the fakes from A.
+   │                 │
+   ├──── Phase H ────┤    Documentation update.
+   │   (after G)     │    ⇒ Mechanical updates after behavior is locked.
+   │
+   └──── Phase I ─── Manual smoke test against a real Gemini key.
+```
+
+Dependency direction matches interface direction: each phase's tests use
+only the interfaces of phases that have already merged. This is the
+**single most important architectural property** for parallel coders to
+respect — Phase G coders pulling in `GeminiLiveTranscriptionProvider` (Phase
+F) directly would defeat the protocol abstraction; instead, they pull in
+`FakeTranscriptionProvider` (Phase A) and only switch in Phase I (manual
+smoke).
+
+### LT-15. Out of Scope and v2 Deferrals
+
+Explicitly NOT designed in this section (logged for `Issues - Pending Items.md`):
+
+- **Detach-mode transcription.** v1 disallows `--detach --transcribe gemini-live` (returns exit 64). Daemonised recorders have no foreground context to render partials. v2 may add sidecar-only detach transcription. (R-27.)
+- **On-device / offline transcription.** Apple `SFSpeechRecognizer`, WhisperKit. Out of scope per refined-request §Out of scope. (R-28.)
+- **Retroactive transcription.** Re-transcribing a finished `.m4a` — out of scope. (Refined-request §Out of scope.)
+- **Translation.** Audio-in / text-out in a different language — out of scope.
+- **Speaker diarization beyond `system`/`mic` tags.** Speaker-A / Speaker-B inside the system audio submix is a v2 problem. (R-28-adjacent.)
+- **Separate transcript window.** Inline panel only in v1 (OQ-LT-3 / R-29).
+- **Provider expansion (OpenAI Realtime, Deepgram, AssemblyAI).** The protocol admits all three; v1 ships only Gemini. (R-30.)
+- **Cost / billing dashboards across recordings.** v1 surfaces per-recording metrics only. (FR-58.)
+- **In-app transcript editing.** No editor; users can edit the sidecar files manually. (Refined-request §Out of scope.)
+- **`com.apple.security.network.client` entitlement.** Not needed unless `macrec` is later sandboxed. Logged as R-31 candidate. (Plan-003 §10.)
+
+### LT-16. Cross-Check
+
+#### LT-16.1 AC-LT-* coverage (every refined-request criterion)
+
+| AC | Component(s) addressing it | Section(s) |
+|---|---|---|
+| AC-LT-1 (None is a true no-op) | `NoOpTranscriptionProvider`; `RecordingOptions.transcriptionProvider == .none` short-circuits resolver | LT-3.1, LT-5.5 |
+| AC-LT-2 (recording integrity unaffected by transcription presence) | Tap closure synchronous; bounded queue; separate Task for downsample | LT-6.2, LT-6.3, LT-11 |
+| AC-LT-3 (recording integrity unaffected by transcription failure) | Hanging fake → bounded-queue drops; provider crash → driver isolation | LT-6.4, LT-12 |
+| AC-LT-4 (recording integrity unaffected by missing API key — fail-fast) | `ConfigResolver.resolve` throws BEFORE `RecordingSession` is constructed | LT-4, LT-5.5 |
+| AC-LT-5 (sidecar naming follows segmentation) | `TranscriptSidecarNamer.sidecarURL(...)` exhaustive cases | LT-7.1 |
+| AC-LT-6 (sidecar formats are valid) | jsonl / srt / vtt / txt formats locked + golden fixtures | LT-7.2..LT-7.5 |
+| AC-LT-7 (live UI panel shows partials, then commits finals) | `TranscriptPanel` + controller's `currentPartial` / `transcriptEvents` mutation | LT-8.1, LT-8.5 |
+| AC-LT-8 (UI surfaces missing-key state) | `TranscriptionMissingKeyBadge` + `transcriptionMissingKey: Bool` | LT-8.3 |
+| AC-LT-9 (privacy disclosure on first opt-in) | `TranscriptionPrivacyAlert` + `@AppStorage("…transcribePrivacyAccepted")` | LT-8.2 |
+| AC-LT-10 (reconnect on transient failure) | `WebSocketSession` reconnection state machine | LT-10.1, LT-12 |
+| AC-LT-11 (bounded queue drops, never blocks) | `bufferingNewest(64)` with documented drop counter | LT-6.4 |
+| AC-LT-12 (source selection routes correctly) | Tap-decision-point in `RecordingSession.start` | LT-1, LT-6.1 |
+| AC-LT-13 (clean shutdown drains finals) | Driver's `stop(drainTimeout:)` 5 s bound + writer's `finalize()` | LT-9.1, LT-12 |
+| AC-LT-14 (cost metrics emitted) | `TranscriptHeader` + post-stop UI surface | LT-7.2, LT-8.4 |
+| AC-LT-15 (`macrec start --help` lists all new flags) | `@Option` declarations in `StartCommand` | LT-5.3 |
+| AC-LT-16 (`--transcribe none` is the default; zero behavior change) | Default `.none` short-circuit; pre-existing AC-1..AC-20 unchanged | LT-5.4, LT-5.5 |
+| AC-LT-17 (invalid provider name → exit 64) | `TranscriptionProviderId.parse` throws `transcriptionInvalidProvider` | LT-3.2, LT-4 |
+| AC-LT-18 (live transcription picker present in popover) | `TranscriptionPicker` + DisclosureGroup | LT-8.1 |
+| AC-LT-19 (picker disabled while recording) | Same `isLocked` computed pattern as `FormatPicker` | LT-8.1 |
+| AC-LT-20 (transcript panel survives Pause/Resume across segments) | Sidecar rotation + synthetic separator event | LT-8.5, LT-9.3 |
+| AC-LT-21 (`docs/tools/macrec.md` updated) | Phase H | (out of design scope; Phase H deliverable) |
+| AC-LT-22 (`docs/tools/macrec-ui.md` updated) | Phase H | same |
+| AC-LT-23 (`docs/design/configuration-guide.md` updated) | Phase H | same |
+| AC-LT-24 (`docs/design/project-functions.md` updated) | Phase 0 + Phase H | same |
+| AC-LT-25 (`Issues - Pending Items.md` updated) | Phase 0 + Phase H | same |
+
+**No AC-LT-* is unaddressed.**
+
+#### LT-16.2 Plan-003 file manifest cross-check
+
+Every file in plan-003 §9 (file manifest) appears in §LT-2 of this design
+with its purpose and signature. The **only difference** is one rename:
+
+- `GeminiLiveProviderRegistry.swift` → `TranscriptionProviderFactory.swift` (per project convention; LT-2.1 naming note).
+
+No new files are introduced by this design that are not in plan-003 §9.
+
+#### LT-16.3 FR / NFR cross-check
+
+Every FR-45..FR-58 and NFR-17..NFR-21 from `project-functions.md` (added by
+plan-003 Phase 0) is traceable to a section of this design:
+
+| FR/NFR | Component / section |
+|---|---|
+| FR-45 (provider abstraction) | LT-3.1 |
+| FR-46 (non-blocking tap) | LT-6 |
+| FR-47 (source selection) | LT-1, LT-5.4, LT-6.1 |
+| FR-48 (provider selection CLI) | LT-5.3, LT-5.5 |
+| FR-49 (provider selection UI) | LT-8.1, LT-8.3 |
+| FR-50 (transcript event model) | LT-3.2 |
+| FR-51 (transcript persistence) | LT-7, LT-9 |
+| FR-52 (live transcript display) | LT-8.1, LT-8.5 |
+| FR-53 (privacy disclosure) | LT-8.2 |
+| FR-54 (persisted UI defaults) | LT-8.1 (`@AppStorage` keys) |
+| FR-55 (API key configuration) | LT-5 |
+| FR-56 (watchdog / reconnect) | LT-10.1, LT-12 |
+| FR-57 (clean shutdown) | LT-9.1, LT-12 |
+| FR-58 (cost / volume metrics) | LT-7.2, LT-8.4, LT-9.1 |
+| NFR-17 (recording integrity isolation) | LT-1, LT-6, LT-11, LT-12 |
+| NFR-18 (latency budget) | LT-10.2 (chunk cadence + reconnect speed) |
+| NFR-19 (memory ceiling) | LT-6.4 (table) |
+| NFR-20 (privacy posture) | LT-10.2 (only PCM + source label sent) |
+| NFR-21 (provider extensibility) | LT-3.1 (protocol-only orchestration), LT-10.2 (factory) |
+
+**No FR or NFR is unaddressed.**
+
+### LT-17. Architectural Decisions Recorded (with rationale)
+
+| ADR-LT-# | Decision | Rationale |
+|---|---|---|
+| **ADR-LT-1** | Bounded stream's element is **post-downsampler** `TranscriptionPCMChunk`, not `AlignedFrame`. | Smaller payload (~3 200 B vs ~38 400 B per chunk); uniform contract for all providers; lines up with NFR-19 budget. (D-LT-1.) |
+| **ADR-LT-2** | The provider, not the driver, splits 100 ms chunks into ~30 ms wire chunks. | Different providers want different cadences (Gemini 30 ms, Deepgram arbitrary, OpenAI Realtime 24 kHz). Concentrates provider-specific concerns inside the provider. (D-LT-2.) |
+| **ADR-LT-3** | Single `run(audio:options:)` instead of `start()` + `stop()`. | Cancellation = stop; simpler to make Sendable; matches plan-003 §4 Phase A. (D-LT-3.) |
+| **ADR-LT-4** | `providerId: String` on the protocol, separate `TranscriptionProviderId` enum for parsing. | Forward compatibility: future external providers ship without modifying the enum. (D-LT-5.) |
+| **ADR-LT-5** | No separate `TranscriptionError` type; runtime errors flow through `TranscriptEvent.error(reason:isFatal:)`, configuration errors flow through `MacrecError`. | Avoids parallel error hierarchies; preserves locked exit-code table. (D-LT-6.) |
+| **ADR-LT-6** | All new `MacrecError` cases reuse existing exit codes 64/70/78. | §9.5 is the locked table; no new codes are introduced; the buckets fit cleanly. (D-LT-7, LT-4.) |
+| **ADR-LT-7** | Env var family is `MACREC_TRANSCRIBE*` (shorter, consistent with the user-prompt naming). | Cleanest naming convention; plan-003 §4 Phase C will be re-aligned by Phase H docs. (LT-5.2 naming rationale.) |
+| **ADR-LT-8** | `FakeTranscriptionProvider` is in `Sources/MacrecCore/Transcription/`, NOT `Tests/`. | The UI test target cannot import test code from MacrecCoreTests. (Plan-003 §4 Phase A R-Phase A.2; CR-LT-9.) |
+| **ADR-LT-9** | The driver wraps the tap with TWO streams (inner unbounded raw → producer Task → outer bounded post-downsampler). | The synchronous tap closure must not block the aligner's queue; downsampling runs on the producer Task; the bounded outward stream isolates the consumer. (LT-6.3.) |
+| **ADR-LT-10** | The `events` `AsyncStream<TranscriptEvent>` STAYS OPEN across transient reconnects; `providerStateChange` carries the connectivity signal. | Matches `WebSocketSession.events` lifetime contract from research §"AsyncStream Lifetime Across Reconnections". Consumer never has to recreate its subscription. (LT-3.2, LT-10.1.) |
+| **ADR-LT-11** | jsonl is the default sidecar format with a 512-byte-padded header that's rewritten on flush. | Richest information density; metrics in the header are kept current without offset bookkeeping; subsequent appends never need to re-seek. (LT-7.2; plan-003 R-Phase D.2.) |
+| **ADR-LT-12** | `TranscriptionProviderFactory` is the file name (renamed from plan-003's `GeminiLiveProviderRegistry`). | One-symbol-per-file convention; the public type is `TranscriptionProviderFactory`. (LT-2.1.) |
+| **ADR-LT-13** | The picker stays enabled (not disabled) when the API key is missing; pressing Start surfaces the error inline. | Disabling the picker hides a fixable misconfiguration; surfacing the error inline matches the no-fallback / informative-failure project posture. (LT-8.3.) |
+| **ADR-LT-14** | Live-transcription pickers go inside a `DisclosureGroup` collapsed by default. | Preserves the existing popover's vertical budget for users who don't transcribe. (LT-8.1.) |
+| **ADR-LT-15** | The driver's bounded outward stream has `bufferingNewest(64)`; the inner raw stream has `bufferingNewest(8)`; the events stream has `bufferingNewest(32)`; the UI panel cap has `bufferingNewest(64)` on the controller subscriber side and a 1000-entry array cap. | Concrete numbers chosen from research-doc and plan-003 §0.3 reconciliation; total worst-case ~700 KB << NFR-19's 8 MB ceiling. (LT-6.4.) |
+
+---
+
+> **End of Live Transcription Subsystem (Plan-003) section.** This section
+> is the binding technical design for Phases 6 (Coders) and onward; Phase 7
+> (Code Review) uses §LT-3.1, §LT-4, §LT-5, §LT-6, §LT-11 as the
+> conformance source-of-truth alongside `plan-003-live-transcription.md`'s
+> §5.3 checklist.
+
+---
+
+## §AS — Apple Speech Streaming Subsystem (plan-005)
+
+> **Added 2026-04-28 (plan-005 Phase 0 / Task 0.7).** This section anchors
+> the on-device, low-latency live-transcription provider introduced by
+> `plan-005-apple-speech-streaming.md`. It runs alongside (and is the new
+> default for) the REST-batch architecture established by §LT / plan-004.
+
+**AS-1 Architecture.** On-device streaming via `SpeechAnalyzer` (macOS 26+).
+One `AppleSpeechSession` per source tag; N parallel `SpeechAnalyzer`
+instances per session (one per locale).
+
+**AS-2 Pipeline-mode selection.** TranscriptionManager picks
+`StreamingTranscriptionPipeline` when
+`provider.supportedModes.contains(.streaming)` (apple); else
+`BatchTranscriptionPipeline` (gemini, noop, fake).
+
+**AS-3 Reconciliation.** Per-utterance: collect finals from all parallel
+analyzers within 150 ms window, pick highest confidence, tag winner's
+locale.
+
+**AS-4 Sidecar policy.** Streaming policy persists only on
+`.segmentFinalized` events. Batch policy (plan-004) unchanged.
+
+**AS-5 TCC.** Speech-permission preflight in
+`setUpTranscriptionPipelineIfNeeded` for apple provider.
+
+See plan-005-apple-speech-streaming.md §3–§7 for full contracts.
+

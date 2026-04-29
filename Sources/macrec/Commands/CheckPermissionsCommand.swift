@@ -2,17 +2,33 @@
 // Phase K finalization (AC-2), revised 2026-04-26 to actually trigger TCC
 // prompts when state is .notDetermined (was: print-only).
 //
+// Plan-005 Phase G adds an Apple Speech Recognition row alongside the
+// existing Microphone and Screen Recording rows. The Speech grant is
+// required when the (now default) Apple Speech transcription provider is
+// active; we surface and prompt for it here so users can pre-approve
+// every TCC capability via a single `macrec check-permissions` invocation.
+//
 // Behavior:
 //   - Bootstrap ~/.tool-agents/macrec/.
-//   - Read current state of both permissions.
+//   - Read current state of all three permissions.
 //   - If Microphone is .notDetermined → call requestAccess(for: .audio) and
 //     await the user's response. AVFoundation delivers the post-prompt state
 //     reliably in-process.
 //   - If Screen Recording is .notDetermined → call CGRequestScreenCaptureAccess
 //     to trigger the prompt; same-process re-read is unreliable per
 //     ScreenRecordingPermission.swift, so we tell the user to relaunch.
-//   - Print final status to stderr.
-//   - Exit 0 if both authorized, 77 (EX_NOPERM) otherwise.
+//   - If Speech Recognition is .notDetermined → call
+//     SFSpeechRecognizer.requestAuthorization and await the post-prompt
+//     state (delivered reliably in-process, like AVFoundation).
+//   - Print final status to stderr (mic + screen via PermissionGate;
+//     speech as a free-standing line because PermissionGate.Snapshot is
+//     locked by project-design.md §2.1 / §8 to the original two-field
+//     shape).
+//   - Exit 0 if mic + screen are both authorized, 77 (EX_NOPERM) otherwise.
+//     Speech Recognition is informational here — it is enforced at
+//     `RecordingSession` start time, not at `check-permissions` time, so
+//     a user without a Speech grant can still record audio and use the
+//     `MACREC_TRANSCRIBE=none` opt-out.
 
 import ArgumentParser
 import Foundation
@@ -74,6 +90,23 @@ public struct CheckPermissionsCommand: AsyncParsableCommand {
             finalMic = await MicrophonePermission.request()
         }
 
+        // SPEECH RECOGNITION — required by the Apple on-device transcription
+        // provider (plan-005 Phase G; default provider as of plan-005).
+        // Same shape as the mic flow: read, prompt on .notDetermined, await.
+        // Reported as a free-standing stderr line below (PermissionGate's
+        // snapshot type is locked to the original two-field schema by
+        // project-design.md §2.1 / §8).
+        var finalSpeech: SpeechPermission.State?
+        if #available(macOS 26.0, *) {
+            let initialSpeech = SpeechPermission.current()
+            if initialSpeech == .notDetermined {
+                logger.info("triggering Speech Recognition TCC prompt; awaiting user response")
+                finalSpeech = await SpeechPermission.request()
+            } else {
+                finalSpeech = initialSpeech
+            }
+        }
+
         // Print final status.
         let gate = PermissionGate(logger: logger)
         let finalSnapshot = PermissionGate.Snapshot(
@@ -83,6 +116,29 @@ public struct CheckPermissionsCommand: AsyncParsableCommand {
         await gate.printSnapshot(finalSnapshot,
                                  to: .standardError,
                                  screenPromptWasTriggered: screenPromptTriggered)
+
+        if let speech = finalSpeech {
+            let label: String = {
+                switch speech {
+                case .authorized:    return "authorized"
+                case .denied:        return "denied"
+                case .restricted:    return "restricted"
+                case .notDetermined: return "not determined"
+                }
+            }()
+            FileHandle.standardError.write(
+                Data("Speech Recognition: \(label)\n".utf8)
+            )
+            if speech == .denied {
+                FileHandle.standardError.write(Data(
+                    "  hint: Open System Settings > Privacy & Security > Speech Recognition and enable macrec, or set MACREC_TRANSCRIBE=none to disable transcription.\n".utf8
+                ))
+            } else if speech == .restricted {
+                FileHandle.standardError.write(Data(
+                    "  hint: Speech Recognition is restricted on this Mac (managed device); set MACREC_TRANSCRIBE=none to disable transcription.\n".utf8
+                ))
+            }
+        }
 
         if finalSnapshot.bothAuthorized {
             return

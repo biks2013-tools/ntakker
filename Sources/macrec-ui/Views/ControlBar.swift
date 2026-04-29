@@ -50,6 +50,27 @@ struct ControlBar: View {
     @AppStorage("com.macrec.ui.layout") private var layoutRaw: String = TrackLayout.mixed.rawValue
     @AppStorage("com.macrec.ui.micUID") private var micUID: String = ""
 
+    // Transcription persisted state (plan-003 Phase G; read here so the
+    // composed `RecordingOptions` carries the user's picker selection
+    // into `RecordingSession.setUpTranscriptionPipelineIfNeeded`).
+    // Default `"apple"` per plan-005 Phase H — Apple Speech is the
+    // on-device default; the user can opt back to "none" or to the
+    // Gemini cloud provider via `TranscriptionPicker`.
+    @AppStorage("com.macrec.ui.transcribeProvider")
+    private var transcribeProviderRaw: String = "apple"
+    @AppStorage("com.macrec.ui.transcribeSource")
+    private var transcribeSourceRaw: String = TranscriptionSource.mixed.rawValue
+    @AppStorage("com.macrec.ui.transcriptFormat")
+    private var transcriptFormatRaw: String = TranscriptFormat.jsonl.rawValue
+    // Language hints for the Apple Speech provider (and the
+    // first-hint-only prompt for Gemini). Persisted by
+    // `TranscriptionLanguagePicker`. Empty = engine falls back to
+    // `Locale.current` per `AppleSpeechTranscriptionProvider`.
+    @AppStorage("com.macrec.ui.transcribeLanguage")
+    private var transcribeLanguagePrimaryRaw: String = ""
+    @AppStorage("com.macrec.ui.transcribeLanguage2")
+    private var transcribeLanguageSecondaryRaw: String = ""
+
     private let logger = Logger(label: "macrec.ui.controlBar")
 
     var body: some View {
@@ -202,15 +223,79 @@ struct ControlBar: View {
             return micUID
         }()
 
+        // Transcription wiring (plan-003 Phase G — bug-fix R-LT-6).
+        // The `TranscriptionPicker` writes to @AppStorage but did not
+        // propagate to `RecordingOptions`; without this the recording
+        // ran with `transcriptionProviderId == nil` and the
+        // transcription pipeline was silently skipped.
+        let normalizedProvider = transcribeProviderRaw.lowercased()
+        let transcriptionEnabled = !normalizedProvider.isEmpty
+            && normalizedProvider != "none"
+            && normalizedProvider != "noop"
+        let resolvedProviderId: String? = transcriptionEnabled
+            ? normalizedProvider
+            : nil
+        let resolvedTranscriptionSource = TranscriptionSource(
+            rawValue: transcribeSourceRaw
+        ) ?? .mixed
+        let resolvedTranscriptionFormat = TranscriptFormat(
+            rawValue: transcriptFormatRaw
+        ) ?? .jsonl
+        // Resolve API key from the merged process environment. The
+        // AppDelegate startup already merges `~/.tool-agents/macrec-ui/.env`
+        // into ProcessInfo, so reading from there honours the
+        // documented env-var resolution chain. A nil here flips
+        // `RecordingController.transcriptionMissingKey` true and
+        // `RecordingSession` will throw `transcriptionApiKeyMissing`
+        // BEFORE the recorder starts (per project no-fallback rule).
+        // (plan-004 Phase H: provider id is now `"gemini"`; the
+        // resolver accepts `"gemini-live"` as a deprecated alias for
+        // any persisted UI state from the previous release.)
+        let resolvedTranscriptionApiKey: String? = transcriptionEnabled
+            ? ProcessInfo.processInfo.environment["GOOGLE_API_KEY"]
+                .flatMap { $0.isEmpty ? nil : $0 }
+            : nil
+
+        // Build the language-hints array from the two persisted slots
+        // (`TranscriptionLanguagePicker` writes to them). Empty primary
+        // OR transcription-disabled produces an empty array, which the
+        // engine treats as "use Locale.current" (per
+        // `AppleSpeechTranscriptionProvider.openStreamingSession`). The
+        // dedup is defensive — the picker already prevents the user
+        // from selecting the same locale twice, but persisted state
+        // from a previous build / external override could still smuggle
+        // a duplicate in.
+        let resolvedLanguageHints: [String] = {
+            guard transcriptionEnabled else { return [] }
+            var seen: Set<String> = []
+            var out: [String] = []
+            for raw in [transcribeLanguagePrimaryRaw, transcribeLanguageSecondaryRaw] {
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { continue }
+                if seen.insert(trimmed).inserted {
+                    out.append(trimmed)
+                }
+            }
+            return out
+        }()
+
         let options = RecordingOptions(
             output: outputURL,
             format: format,
             layout: layout,
-            micDevice: micDevice
+            micDevice: micDevice,
+            transcriptionProviderId: resolvedProviderId,
+            transcriptionSource: resolvedTranscriptionSource,
+            transcriptionFormat: resolvedTranscriptionFormat,
+            transcriptionApiKey: resolvedTranscriptionApiKey,
+            transcriptionLanguageHints: resolvedLanguageHints
         )
 
+        let languageHintsForLog = resolvedLanguageHints.isEmpty
+            ? "[]"
+            : resolvedLanguageHints.joined(separator: ",")
         logger.debug(
-            "starting recording: output=\(outputURL.path) format=\(format.rawValue) layout=\(layout.rawValue)"
+            "starting recording: output=\(outputURL.path) format=\(format.rawValue) layout=\(layout.rawValue) transcribe=\(resolvedProviderId ?? "none") source=\(resolvedTranscriptionSource.rawValue) sidecarFormat=\(resolvedTranscriptionFormat.rawValue) apiKeyPresent=\(resolvedTranscriptionApiKey != nil) languageHints=\(languageHintsForLog)"
         )
         controller.setOptions(options)
         controller.start()

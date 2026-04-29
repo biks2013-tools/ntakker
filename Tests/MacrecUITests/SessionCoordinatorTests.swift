@@ -24,6 +24,8 @@ import Testing
 final class MockRecordingSession: RecordingSessionLike, @unchecked Sendable {
     let stateStream: AsyncStream<SessionState>
     private let stateContinuation: AsyncStream<SessionState>.Continuation
+    let transcriptEvents: AsyncStream<TranscriptionEvent>
+    private let transcriptContinuation: AsyncStream<TranscriptionEvent>.Continuation
     private var stopRequested: Bool = false
 
     init() {
@@ -33,15 +35,23 @@ final class MockRecordingSession: RecordingSessionLike, @unchecked Sendable {
         )
         self.stateStream = pair.stream
         self.stateContinuation = pair.continuation
+        let trPair = AsyncStream.makeStream(
+            of: TranscriptionEvent.self,
+            bufferingPolicy: .bufferingNewest(64)
+        )
+        self.transcriptEvents = trPair.stream
+        self.transcriptContinuation = trPair.continuation
     }
 
     func emit(_ s: SessionState) {
         stateContinuation.yield(s)
         if case .stopped = s {
             stateContinuation.finish()
+            transcriptContinuation.finish()
         }
         if case .failed = s {
             stateContinuation.finish()
+            transcriptContinuation.finish()
         }
     }
 
@@ -166,6 +176,72 @@ struct SessionCoordinatorTests {
         try await coordinator.stop()
         let state = await coordinator.state
         #expect(state == SessionCoordinator.CoordinatorState.stopped)
+        await coordinator.teardown()
+    }
+
+    /// Regression: the ControlBar relies on receiving a
+    /// `.stateChanged(.stopped)` on `coordinator.events` after stop()
+    /// from `.recording` so the Start button reappears. Originally the
+    /// coordinator relied on the engine's own `.stopped` reaching the
+    /// UI through the `stateForwardTask`, but that forwarder is
+    /// cancelled inside `stopCurrentAndAwait()` as soon as the run-task
+    /// resolves; with a buffered AsyncStream, the cancellation race
+    /// could drop the buffered `.stopped` and leave the controller
+    /// parked in `.stopping` (no buttons visible). The fix synthesises
+    /// the transition explicitly — this test asserts the synthesised
+    /// emission lands on `events` regardless of the forwarder.
+    @Test("stop() from .recording emits .stateChanged(.stopped) on events")
+    func stopFromRecordingEmitsStoppedOnEvents() async throws {
+        let coordinator = SessionCoordinator(
+            baseOptions: baseOptions(),
+            logger: .init(label: "test"),
+            factory: { _ in MockRecordingSession() }
+        )
+
+        // Spawn the events collector BEFORE calling start() so we do not
+        // miss any early emissions. Collect into a thread-safe sink and
+        // exit when we see `.stateChanged(.stopped)` (or after teardown
+        // finishes the stream).
+        actor Sink {
+            var events: [SessionCoordinatorEvent] = []
+            func append(_ e: SessionCoordinatorEvent) { events.append(e) }
+            func snapshot() -> [SessionCoordinatorEvent] { events }
+        }
+        let sink = Sink()
+        let stream = coordinator.events
+        let collector = Task {
+            for await event in stream {
+                await sink.append(event)
+                if case .stateChanged(.stopped) = event { return }
+            }
+        }
+
+        try await coordinator.start()
+        try await coordinator.stop()
+
+        // Bounded wait — the synthesised emission is on the actor and
+        // should arrive promptly, but give the collector a chance to
+        // hop onto its task. Cancel + teardown the coordinator so the
+        // collector exits even on assertion failure.
+        let collectorWithTimeout = Task {
+            _ = await collector.value
+            return true
+        }
+        let timeout = Task { () -> Bool in
+            try? await Task.sleep(nanoseconds: 1_000_000_000) // 1s
+            collector.cancel()
+            return false
+        }
+        _ = await collectorWithTimeout.value
+        timeout.cancel()
+
+        let observed = await sink.snapshot()
+        let sawStopped = observed.contains { event in
+            if case .stateChanged(.stopped) = event { return true }
+            return false
+        }
+        #expect(sawStopped, "expected .stateChanged(.stopped) on events stream after stop(); got \(observed)")
+
         await coordinator.teardown()
     }
 

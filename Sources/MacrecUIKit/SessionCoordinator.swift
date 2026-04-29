@@ -57,6 +57,13 @@ public protocol RecordingSessionLike: AnyObject, Sendable {
     /// `RecordingSession.stateStream`.
     var stateStream: AsyncStream<SessionState> { get }
 
+    /// Observable transcript-events stream. Empty (immediately
+    /// finishing) when transcription is disabled. The coordinator
+    /// fans the stream out onto its `events` stream as
+    /// `.transcriptEvent(...)` per the design §LT-8.5 mapping.
+    /// (plan-003 Phase G).
+    var transcriptEvents: AsyncStream<TranscriptionEvent> { get }
+
     /// Run to completion. Throws on failure. On success, the stream
     /// terminates with `.stopped`.
     func run() async throws
@@ -92,6 +99,10 @@ public final class LiveRecordingSessionAdapter: RecordingSessionLike, @unchecked
 
     public var stateStream: AsyncStream<SessionState> {
         session.stateStream
+    }
+
+    public var transcriptEvents: AsyncStream<TranscriptionEvent> {
+        session.transcriptEvents
     }
 
     public func run() async throws {
@@ -185,6 +196,12 @@ public actor SessionCoordinator {
     /// re-emitting onto `events`. Cancelled on segment teardown so the
     /// next segment's forwarder starts cleanly.
     private var stateForwardTask: Task<Void, Never>?
+
+    /// Forwarder task consuming the active session's
+    /// `transcriptEvents` and re-emitting onto `events` as
+    /// `.transcriptEvent(...)`. One per segment; cancelled when the
+    /// segment tears down. (plan-003 Phase G)
+    private var transcriptForwardTask: Task<Void, Never>?
 
     private let logger: Logger
 
@@ -299,6 +316,10 @@ public actor SessionCoordinator {
         let next = seg + 1
         segmentCounter = next
         emit(.stateChanged(.resuming))
+        // Emit a segment-boundary marker for the transcript panel.
+        // AC-LT-20: the panel renders this as a horizontal-rule
+        // separator with the next part's index.
+        emit(.transcriptSegmentBoundary(label: String(format: "part%02d", next)))
         let url = SegmentNamer.next(after: firstSegmentURL, segment: next)
         try buildAndRun(segmentNumber: next, url: url)
     }
@@ -325,6 +346,10 @@ public actor SessionCoordinator {
         let next = seg + 1
         let url = SegmentNamer.next(after: firstSegmentURL, segment: next)
         try await current.split(nextOutput: url)
+        // Emit a segment-boundary marker for the transcript panel.
+        // AC-LT-20: the panel renders this as a horizontal-rule
+        // separator with the next part's index.
+        emit(.transcriptSegmentBoundary(label: String(format: "part%02d", next)))
         // The session's stateStream emits `.splitting` → `.recording`
         // already; we just track the new segment number.
         let bareCompletedURL = SegmentNamer.next(after: firstSegmentURL, segment: seg)
@@ -342,6 +367,23 @@ public actor SessionCoordinator {
     /// Stop the session entirely. From `.recording` it triggers the
     /// engine's stop path; from `.paused` it just transitions to
     /// `.stopped`.
+    ///
+    /// We explicitly emit `.stateChanged(.stopped)` after the engine's
+    /// run-task completes instead of relying on the `stateForwardTask`
+    /// to relay the engine's own `.stopped`. The forwarder is cancelled
+    /// inside `stopCurrentAndAwait()` as soon as `currentRunTask`
+    /// resolves, and since the engine yields `.stopping` / `.stopped`
+    /// into a buffered AsyncStream, a buffered tail can still be sitting
+    /// unread when the forwarder is cancelled — `Task.cancel()` on a
+    /// task awaiting an AsyncStream iterator returns `nil` from
+    /// `next()` and skips remaining buffered items. The result was the
+    /// controller staying parked in `.stopping`, which the ControlBar
+    /// matrix treats as a transient state with no buttons visible (UX
+    /// bug: Start/Stop disappear after Stop). Synthesising the
+    /// transition here mirrors what `pause()` already does and makes
+    /// the UI independent of the forwarder race. `applyState(.stopped)`
+    /// in the controller is idempotent, so a duplicate emission (if the
+    /// forwarder happened to win the race anyway) is harmless.
     public func stop() async throws {
         switch state {
         case .recording(let seg):
@@ -349,9 +391,8 @@ public actor SessionCoordinator {
             let lastFile = SegmentNamer.next(after: firstSegmentURL, segment: seg)
             await stopCurrentAndAwait()
             emit(.segmentCompleted(lastFile))
+            emit(.stateChanged(.stopped))
             state = .stopped
-            // Engine already emitted `.stopping` / `.stopped` via the
-            // forwarder; no synthesized state needed.
         case .paused:
             state = .stopped
             emit(.stateChanged(.stopped))
@@ -366,6 +407,8 @@ public actor SessionCoordinator {
     public func teardown() {
         stateForwardTask?.cancel()
         stateForwardTask = nil
+        transcriptForwardTask?.cancel()
+        transcriptForwardTask = nil
         currentRunTask?.cancel()
         currentRunTask = nil
         current = nil
@@ -397,12 +440,44 @@ public actor SessionCoordinator {
         current = session
         state = .recording(segment: segmentNumber)
         startStateForward(for: session)
+        startTranscriptForward(for: session)
         currentRunTask = Task { [weak self] in
             do {
                 try await session.run()
             } catch {
                 await self?.handleSessionFailure(error)
             }
+        }
+    }
+
+    /// Start a forwarder task that copies the session's
+    /// `transcriptEvents` stream onto our events stream as
+    /// `.transcriptEvent(...)`. Empty / immediately-finishing when
+    /// transcription is disabled (the upstream simply yields nothing
+    /// and finishes when the session's `run()` returns).
+    ///
+    /// Plan-004 Phase H: when the upstream event is a
+    /// `.metricsTick(metrics:)`, the coordinator additionally emits a
+    /// `.transcriptionMetrics(metrics)` event so metric-only
+    /// subscribers (status bar, footer view) do not have to unpack the
+    /// full `TranscriptionEvent` enum.
+    private func startTranscriptForward(for session: any RecordingSessionLike) {
+        let stream = session.transcriptEvents
+        let coordLogger = self.logger
+        transcriptForwardTask = Task { [weak self] in
+            coordLogger.info("coordinator transcript forward: starting drain of session.transcriptEvents")
+            var seen = 0
+            for await event in stream {
+                guard let self else { return }
+                if Task.isCancelled { return }
+                seen += 1
+                coordLogger.info("coordinator transcript forward: emitting event #\(seen) \(String(describing: event).prefix(60))")
+                self.emit(.transcriptEvent(event))
+                if case let .metricsTick(metrics) = event {
+                    self.emit(.transcriptionMetrics(metrics))
+                }
+            }
+            coordLogger.info("coordinator transcript forward: session.transcriptEvents ended after \(seen) events")
         }
     }
 
@@ -448,9 +523,11 @@ public actor SessionCoordinator {
         if let task = currentRunTask {
             _ = try? await task.value
         }
-        // Tear the forwarder down — its source stream has finished.
+        // Tear the forwarder(s) down — their source streams have finished.
         stateForwardTask?.cancel()
         stateForwardTask = nil
+        transcriptForwardTask?.cancel()
+        transcriptForwardTask = nil
         currentRunTask = nil
         self.current = nil
     }

@@ -8,9 +8,136 @@
 
 The risks below were captured during Phases 4–6 of the planning and
 implementation workflow (see `docs/design/plan-001-recording-tool.md`
-§6 risk register and `docs/design/plan-002-toolbar-ui.md` §5 risk
+§6 risk register, `docs/design/plan-002-toolbar-ui.md` §5 risk
+register, and `docs/design/plan-003-live-transcription.md` §6 risk
 register). They are tracked here so subsequent phases can flag
 residual exposure.
+
+### UI-PEND-1 — Start/Stop buttons disappear after pressing Stop (FIXED 2026-04-28)
+Reported by the user: after pressing Stop in the menu-bar popover, the
+ControlBar empties out — neither Start nor Stop is visible — leaving
+the user no way to start a new recording without restarting the app.
+Root cause: `SessionCoordinator.stop()` in the `.recording` branch
+relied on the engine's own `.stopped` reaching the UI via
+`stateForwardTask`, but `stopCurrentAndAwait()` cancels that forwarder
+as soon as `currentRunTask` resolves. Because the engine's
+`stateStream` is a buffered `AsyncStream`, the `.stopped` (and
+sometimes the preceding `.stopping`) could still be sitting in the
+buffer when the cancellation fires; `Task.cancel()` on a task awaiting
+an `AsyncStream` iterator returns `nil` from `next()` and skips the
+remaining buffered items. The controller therefore stayed parked in
+`.stopping`, and the ControlBar matrix
+(`Sources/macrec-ui/Views/ControlBar.swift:140-148`) treats every
+transient state as "no buttons visible" — hence the empty bar in the
+screenshot. Fix: synthesise `emit(.stateChanged(.stopped))` inside
+`SessionCoordinator.stop()` (`Sources/MacrecUIKit/SessionCoordinator.swift`)
+right after `stopCurrentAndAwait()` and `.segmentCompleted`, mirroring
+what `pause()` already does for `.paused`. The forwarder's relayed
+`.stopped` (when it wins the race) is harmlessly idempotent against
+`RecordingController.applyState(.stopped)`. Regression test added at
+`Tests/MacrecUITests/SessionCoordinatorTests.swift::stopFromRecordingEmitsStoppedOnEvents`
+that drains `coordinator.events` and asserts a `.stateChanged(.stopped)`
+arrives after `stop()` from `.recording`. Build clean. Closed.
+
+### LT-PEND-7 — `transcriptionSource == .mixed` silently dropped microphone audio (FIXED 2026-04-28)
+Reported by the user after they verified mic capture was working
+correctly via the new `mic_health` heartbeat (mic peak amplitude
+0.02–0.41 → real voice present in the recording), but the
+transcription sidecar contained only the system-audio side (other
+Microsoft Teams participants), not the user's own voice — even though
+the audio file was correctly mixed. Root cause:
+`Sources/MacrecCore/RecordingSession.swift::setUpTranscriptionPipelineIfNeeded`
+routed the `.mixed` case through
+`manager.ingestFrame(frame, from: .system)`, and
+`TranscriptionManager.ingestFrame(_:from:)` then read
+`frame.systemBuffer` exclusively, dropping `frame.micBuffer`. So
+`.mixed` was silently equivalent to `.system` for transcription —
+inconsistent with `M4ARecorder`, which correctly mixes both via
+`BufferSummer.sum(...)` for the audio file. Fix: in the addLiveTap
+closure, sum `frame.systemBuffer` + `frame.micBuffer` with the same
+`BufferSummer.sum(_:_:)` the recorder uses, then synthesise a
+single-buffer `AlignedFrame` and forward it to the manager via the
+existing `.system` branch (no manager API change). Verified: build of
+`macrec-ui` clean. User-side e2e: a fresh recording with the default
+`.mixed` source should now produce a sidecar containing the user's
+voice in addition to whatever was playing through the speakers.
+Closed.
+
+### PEND-LOG-1 — UI file backend silently absent at `~/.tool-agents/macrec-ui/macrec-ui.log` (Open — investigation, 2026-04-28)
+After the `.app` wrapper landed and TCC mic prompt was granted, the
+user reported that `~/.tool-agents/macrec-ui/macrec-ui.log` does not
+exist while OSLog (`log show --predicate 'subsystem ==
+"com.local.macrec-ui"'`) shows the full log stream as expected. The
+directory itself exists at mode `0700` (touched on launch by
+`ToolAgentsBootstrap.ensure`), so the directory bootstrap is fine;
+only the file-sink open path appears to be silently failing. The
+`bootstrapLogging()` flow falls through to OSLog-only on
+`FileLogSink.open` failure, writing only a stderr line that is
+invisible when the app is launched via `open` (stderr goes to
+launchd, not the console). Hypotheses: (a) `FileManager.createFile`
+returning false under a path quirk specific to launches via
+LaunchServices, (b) the `home` resolver returning a different URL
+when the process is started by `open` vs a CLI shell. Workaround for
+now: rely on `log show` for diagnostics. Owner: follow-up; estimate
+30 min once the user reports back whether the file appears after the
+`.mixed` transcription fix is in.
+
+### PEND-AS-1 — TCC re-prompt for Speech Recognition on every ad-hoc-signed rebuild (Low — DX, plan-005 §9.3, 2026-04-28)
+Same R-2 limitation applies to the new `NSSpeechRecognitionUsageDescription` permission: SPM-built CLI tools are ad-hoc-signed, so macOS invalidates the TCC grant on every rebuild and re-prompts the user. Documented in `docs/tools/macrec.md` parity with the existing R-2 mention. v2 `.app` packaging with a stable Developer-ID signature solves this. Owner: future packaging phase.
+
+### LT-PEND-5 — UI ControlBar did not propagate transcription @AppStorage to RecordingOptions (FIXED 2026-04-27)
+Reported by the user after Phase G shipped: launching macrec-ui,
+selecting `Gemini Live` in the picker, and starting a recording
+produced audio fine but **no live transcription appeared in the panel
+and no sidecar `.jsonl` was written**. Root cause: `Sources/macrec-ui/Views/ControlBar.swift`
+`startTapped()` composed `RecordingOptions` with only
+`output / format / layout / micDevice`, ignoring the
+`com.macrec.ui.transcribeProvider` / `transcribeSource` /
+`transcriptFormat` `@AppStorage` keys and never resolving
+`GOOGLE_API_KEY` from `ProcessInfo`. The result was that
+`transcriptionProviderId` was always `nil`, so
+`RecordingSession.setUpTranscriptionPipelineIfNeeded` short-circuited
+at the `guard` and recording proceeded with no transcription pipeline
+constructed — silently. The CLI path (`StartCommand.buildCLIOverrides`)
+was unaffected because it routes through `ConfigResolver`.
+
+Fix: extended `ControlBar` to read the three transcription `@AppStorage`
+keys (provider / source / format), to resolve `GOOGLE_API_KEY` from the
+merged process environment (the `AppDelegate` startup already merges
+`~/.tool-agents/macrec-ui/.env` into `ProcessInfo`, so the documented
+four-tier chain is honoured), and to pass all four into the
+`RecordingOptions` initializer. Verified: `swift build --product
+macrec-ui -c release` clean. Test recording with `Gemini Live` in the
+picker should now spin up the WebSocket and produce a sidecar. Closed.
+
+### LT-PEND-3 — `MACREC_TRANSCRIBE_PROVIDER` vs `MACREC_TRANSCRIBE` naming alignment (Low — DX / docs, plan-003 Phase H, 2026-04-26)
+Plan-003 §4 Phase C originally specified `MACREC_TRANSCRIBE_PROVIDER`
+and `MACREC_TRANSCRIPT_FORMAT`. Per the user-prompt direction at Phase
+H, the as-built env-var family adopted the shorter `MACREC_TRANSCRIBE`
+and `MACREC_TRANSCRIBE_FORMAT` for naming consistency
+(project-design §LT-5.2 records the rationale). Documentation
+(`docs/tools/macrec.md`, `docs/tools/macrec-ui.md`,
+`docs/design/configuration-guide.md`, `docs/design/project-functions.md`)
+has been updated to match the as-built names. **The plan-003 file
+itself was not retroactively rewritten** — its §4 Phase C narrative
+still references the original names. Open question for the user:
+update plan-003 to reflect the as-built names too, or keep it as a
+historical record and trust the doc reader to follow the "renamed at
+Phase H" notes? Default: leave plan-003 historical.
+
+### LT-PEND-4 — `MACREC_TRANSCRIBE_LANGUAGE` validation against provider supported list deferred (Low — DX, plan-003 Phase C, 2026-04-26)
+The `--transcribe-language` / `MACREC_TRANSCRIBE_LANGUAGE` value is
+passed to the provider as a hint without v1-time validation against
+the provider's published supported-languages list. An invalid BCP-47
+tag is silently ignored by the provider (auto-detect kicks in).
+Tracked as a v2 follow-up to surface a friendly error or a
+known-supported-languages dropdown in the UI. Owner: v2 backlog.
+
+### R-LT-3 (Phase 7 review) — `transcriptionApiKeyMissing` deferred from resolver to driver-start (Low — deviation from design, plan-003 Phase C, 2026-04-26)
+Project-design §LT-5.5 step 6 says: "Resolve the provider-specific API key … If nil → throw `MacrecError.transcriptionApiKeyMissing`." `ConfigResolver.resolve` instead returns `RecordingOptions` with `transcriptionApiKey = nil` and lets `RecordingSession.run` raise the exception inside `setUpTranscriptionPipelineIfNeeded` (which runs at Step 7.5, BEFORE `recorder.start()` at Step 8/9). AC-LT-4 ("no audio file is created") is therefore satisfied — the recorder never opens — but the failure boundary is one layer below the design's stated boundary.
+The `RecordingOptions.swift` source comment acknowledges and documents this as an intentional exception, but it is NOT recorded in the project-memory "Approved Exceptions" section per CLAUDE.md's rule on configuration-rule exceptions ("If I ask you to make an exception to the configuration setting rule, you must write this exception in the projects memory file, before you implement it").
+Resolution options: (a) move the check into `ConfigResolver.resolve` to match the design exactly (cleaner, matches no-fallback rule semantics — though the apiKey case is "missing key" not "fallback for missing key"), or (b) record the exception in `CLAUDE.md` "Project Memory / Approved Exceptions" with rationale (e.g. resolver doesn't know whether a session will run; deferring the throw lets the UI present a missing-key affordance without aborting the controller). Either is acceptable.
+Owner: plan-003 follow-up. Estimate: 30 min for option (b), 1 h for option (a) including test updates.
 
 ### R-22 (toolbar) — `swift test` exits 0 silently on Apple CommandLineTools (High — DX, plan-002 Phase 0, 2026-04-26)
 Continuation of R-17. Tests written for `MacrecUITests` and
@@ -210,6 +337,144 @@ The default build (Swift 5.9 mode) is clean — no warnings, no errors. This iss
 Plan-002 dispatches Phase F (quit-while-recording flow) and Phase G (error-mapping banner) in parallel within Wave 5. The design (`docs/design/project-design.md` §15.15 "Wave 4 → Wave 5" boundary table) shows that both phases edit `Sources/MacrecUIKit/Views/RootView.swift`: F adds a Quit button at the bottom of the popover stack; G inserts an `ErrorBanner` at the top. Concurrent agents editing the same file will race or merge-conflict. **Mitigation**: Phase 6 orchestrator MUST dispatch F and G **sequentially** within Wave 5 — F first (adds the Quit affordance) then G (adds the ErrorBanner) is the recommended order, but either ordering is acceptable as long as the two are not concurrent. Each individual phase remains a single-file edit; only the Wave 5 dispatch order matters. Owner: Phase 6 orchestrator + Phase 7 Code Reviewer.
 
 ## Completed items
+
+### PEND-AS-2 — Apple SpeechAnalyzer SIGABRT on ad-hoc-signed CLI / Float32 buffers (Resolved 2026-04-28 in plan-005 Phase I debug)
+
+First real-key e2e run of `test_scripts/e2e-transcription-apple.sh` on
+2026-04-28 aborted with SIGABRT (exit 134) before producing any
+output. Two distinct bugs surfaced sequentially during the debug
+session:
+
+1. **`SFSpeechRecognizer.requestAuthorization` crashes ad-hoc-signed
+   CLIs on macOS 26.** TCC rejects the call (`"This app has crashed
+   because it attempted to access privacy-sensitive data without a
+   usage description"`) even when `NSSpeechRecognitionUsageDescription`
+   is correctly embedded in `__TEXT,__info_plist`. Verified by
+   isolating: a 6-line standalone Swift binary calling
+   `SFSpeechRecognizer.requestAuthorization` aborts identically, even
+   wrapped in an `.app` bundle in `~/Applications`. All third-party
+   apps using SpeechRecognition on the host (Claude, Ghostty,
+   Raycast, Notes) carry a real `TeamIdentifier` — Apple appears to
+   gate this TCC service behind Developer ID signatures on macOS 26.
+   **Resolution**: `SpeechPermission.ensureGranted()` made a no-op
+   (the modern `SpeechAnalyzer` API does not require any TCC
+   permission — verified end-to-end with `Speech.framework` directly,
+   no IPC to `tccd` whatsoever).
+
+2. **`SpeechAnalyzer` requires Int16 PCM, not Float32.** After fix #1,
+   surfaced as `"Failed precondition: Audio sample data must be 16-bit
+   signed integers"` in `SpeechFramework` log. Phase B's
+   `ProductionSpeechAnalyzerAdapter` was constructing Float32
+   `AVAudioPCMBuffer`s and yielding them via `AnalyzerInput`.
+   **Resolution**: `pcmFormat` switched from
+   `.pcmFormatFloat32 / non-interleaved` to
+   `.pcmFormatInt16 / interleaved`; `makePCMBuffer` clamps incoming
+   `[Float]` to `[-1, 1]` and quantises to full Int16 range via
+   `int16ChannelData`. Also added `AssetInventory.assetInstallationRequest`
+   download-on-first-use so the on-device language pack lands without
+   user intervention.
+
+Verification (`bash test_scripts/e2e-transcription-apple.sh`):
+**PASS** — 4 apple-tagged sidecar lines, 5 of 6 keyword hits, model
+field `"apple"`, language field `"en_US@rg=grzzzz"`. Regression
+checks on `noop`, `key-missing`, and `gemini` scripts all PASS.
+
+Files changed:
+- `Sources/MacrecCore/Permissions/SpeechPermission.swift` (`ensureGranted` no-op + extensive docs)
+- `Sources/MacrecCore/Transcription/Providers/SpeechAnalyzerAdapter.swift` (Int16 format + Int16 buffer fill + asset download)
+
+### PEND-LT-6 — Default Gemini REST model id may 4xx; documented fallback (Resolved 2026-04-28 by switching the default in code)
+The plan-004 brainstorming session (2026-04-28) initially pinned
+`gemini-3.1-flash-live-preview` as the v1 default per user direction.
+The same day's first real-key run of
+`test_scripts/e2e-transcription-gemini.sh` empirically confirmed that
+the model id returns HTTP 404 on `:generateContent` (it is the Live
+WebSocket API SKU, not a REST SKU — exactly as the Gemini docs at
+<https://ai.google.dev/gemini-api/docs/audio> warned). Re-running with
+`MACREC_TRANSCRIBE_MODEL=gemini-3-flash-preview` produced a clean PASS
+(2 segments, 6/6 keyword hits) using the documented Google REST audio
+model. The default in
+`Sources/MacrecCore/Transcription/Providers/GeminiRESTTranscriptionProvider.swift`
+was switched from `gemini-3.1-flash-live-preview` to
+`gemini-3-flash-preview` on 2026-04-28 along with the corresponding
+doc updates in `docs/design/configuration-guide.md`,
+`docs/tools/macrec.md`, and `docs/tools/macrec-ui.md`.
+The old id remains in the `allowedModelIds` set for backward-compat
+with explicit user configs (will produce HTTP 404, but is allowed).
+The PEND-LT-6 risk recorded in plan-004 §9.1 is closed.
+
+### LT-PEND-1 — Phase I manual smoke test against a real `GOOGLE_API_KEY` is still pending (High — verification, plan-003 Phase I, 2026-04-26)
+Phases A–H of plan-003 (engine, configuration, persistence, networking,
+provider, UI, documentation) are complete. **Phase I — the ten-step
+manual smoke test against a real Gemini Live API key (plan-003 §4
+Phase I) — has NOT yet been executed.** The user must:
+1. Obtain a key at <https://aistudio.google.com/app/apikey>.
+2. Run `bash test_scripts/e2e-transcription-noop.sh` (regression; no
+   key required) and confirm exit 0.
+3. Run `GOOGLE_API_KEY=… bash test_scripts/e2e-transcription.sh` and
+   confirm exit 0.
+4. Walk the UI happy path (steps 6–8 in plan-003 §4 Phase I).
+5. Validate long-session reconnect (step 9) and network-drop simulation
+   (step 10).
+Until Phase I is signed off, the Gemini Live empirical-reliability
+escalation (ESC-LT-1) remains open — if step 4 fails (no `final` event
+within 30 s), fall back to the `gemini-live-2.5-flash-native-audio`
+model (set `MACREC_TRANSCRIBE_MODEL`) and re-run. Owner: user.
+
+Resolved by plan-004 (Phase J.2) — the new `e2e-transcription-gemini.sh` script automates the Phase I manual smoke test against a real `GOOGLE_API_KEY` for the REST-batch architecture.
+(Resolved 2026-04-28 by plan-004 Phase J.2 — actual phase noted above)
+
+### LT-PEND-2 — `--transcribe-source both` v1 limitation: single-driver fallback to `mixed` (Medium — feature gap, plan-003 Phase D / F, 2026-04-26)
+v1 ships a single `TranscriptionDriver` (one provider Task, one
+WebSocket session, one sidecar writer). When `--transcribe-source both`
+is requested with a non-`split` recording layout, the driver falls
+back to `mixed` and emits a single sidecar (project-design §LT-7.1
+covers the layout-`split` × `both` case fully; the
+non-split + `both` combination is the gap). True per-source dual-driver
+transcription (two parallel WebSocket sessions, two sidecars labelled
+`.system.transcript.<ext>` and `.mic.transcript.<ext>`) for the
+non-split + `both` case is tracked as a v2 follow-up: extend
+`TranscriptionDriver` to fan out into two cooperating drivers when the
+combo demands it. The CLI / UI documentation calls out the fallback
+explicitly. Owner: v2 backlog.
+
+Resolved by plan-004 (Phase E) — the new `TranscriptionManager` actor instantiates one `SourceBuffer` per source for `--transcribe-source both` (regardless of recording layout) and emits per-source-tagged segments to a single sidecar.
+(Resolved 2026-04-28 by plan-004 Phase E — actual phase noted above)
+
+### R-LT-1 (Phase 7 review) — Sidecar filenames missing `.transcript.` infix (High — defect, plan-003 Phase D / G, 2026-04-26)
+Both refined-request §AC-LT-1 ("absence of any `*.transcript.*` files") and §AC-LT-5 (`…part01.transcript.jsonl`) and project-design §LT-7.1 specify that sidecar paths are `recording-….transcript.<ext>` (and `…partNN.transcript.<ext>`). The implemented `SidecarPathBuilder.sidecarURL(...)` produces `recording-….<ext>` and `recording-….partNN.<ext>` — no `.transcript.` infix. The unit-test suite (`SidecarPathBuilderTests`) was authored to match the buggy implementation, not the design, so it does not catch the deviation.
+Files to fix: `Sources/MacrecCore/Transcription/Persistence/SidecarPathBuilder.swift` (insert `"transcript"` into the components list right before `format.rawValue`), `Tests/MacrecCoreTests/Transcription/Persistence/SidecarPathBuilderTests.swift` (every expected-name string), and any e2e script under `test_scripts/` that lists sidecar paths.
+Impact: AC-LT-5 (sidecar naming) fails as written; AC-LT-1 still passes (because it asserts negative match for `*.transcript.*` and the bug means no such file exists, but the assertion is moot). The transcription stream itself works correctly — only filenames are off-spec.
+Owner: plan-003 follow-up coder. Estimate: 30 min including test updates.
+
+Resolved by plan-004 (Phase F.1) — `SidecarPathBuilder` is updated to insert the `"transcript"` infix before `format.rawValue`; `SidecarPathBuilderTests` are rewritten to match the design.
+(Resolved 2026-04-28 by plan-004 Phase F.1 — actual phase noted above)
+
+### R-LT-2 (Phase 7 review) — `--detach --transcribe gemini-live` cross-check missing (Medium — design conformance, plan-003 Phase C, 2026-04-26)
+Project-design §LT-5.5 step 8 mandates: "if `--detach` is true AND provider != `.none`, throw `MacrecError.transcriptionDetachUnsupported`." `MacrecError` does not have a `transcriptionDetachUnsupported` case, and `ConfigResolver.resolve` does not perform the cross-check. A user who runs `macrec start --detach --transcribe gemini-live` will reach `RecordingSession.run`, daemonize, and only then have transcription open a WebSocket from a detached process — which has no foreground stderr/stdout for partial output (the original concern that motivated the v1 exclusion in OQ-LT-5).
+Files to fix: `Sources/MacrecCore/Errors/MacrecError.swift` (add `transcriptionDetachUnsupported` case → exit 64 EX_USAGE; description / remediation per design §LT-4); `Sources/MacrecCore/Config/ConfigResolver.swift` (add the cross-check after step 7 — before returning the `RecordingOptions`).
+Impact: detach + transcribe currently launches a transcription session whose UI surface is invisible. No data corruption — transcription writes the sidecar — but the privacy disclosure path (FR-53) is bypassed and the user has no signal that the WebSocket is open.
+Owner: plan-003 follow-up. Estimate: 1 h including new MacrecErrorTranscriptionTests assertion.
+
+Resolved by plan-004 (Phase G.1) — by deletion. The REST architecture has no terminal-output dependency, so detach + transcribe is now valid. `MacrecError.transcriptionDetachUnsupported` is removed and `ConfigResolver` no longer enforces the cross-check.
+(Resolved 2026-04-28 by plan-004 Phase G.1/G.4 — actual phase noted above)
+
+### R-LT-4 (Phase 7 review) — JSONL header / footer not implemented (Medium — feature gap, plan-003 Phase D, 2026-04-26)
+Project-design §LT-7.2 / §LT-9.1 specifies a 512-byte-padded JSONL header line that's "rewritten in place on every metric update and at session end" plus a `metricsSnapshot()` and `rotateSidecar(toAudioURL:)` actor surface. The implemented `JSONLTranscriptWriter` writes only per-event lines (no header), and `TranscriptSidecarWriter` exposes only `init / write / close / isOpen` — no `rotateSidecar`, no `metricsSnapshot`. The `JSONLTranscriptWriter`'s file-header comment acknowledges the omission ("there is no header line in this Phase D unit"). Phase G surfaces metrics from the controller's events stream rather than from the header, so the user-visible behavior of FR-58 still works — but a sidecar consumer that wanted to read summary metrics from the file alone (offline post-processing) cannot.
+Impact: `jsonl` sidecars don't carry the metric summary specified in design table §LT-7.2 (the "header line is rewritten with final counts" footer is also absent). AC-LT-14 ("cost metrics emitted") is satisfied at the UI layer but not at the file layer.
+Owner: plan-003 follow-up phase or v2. Estimate: 4–6 h including header rewrite, the actor's `rotateSidecar(toAudioURL:)` for in-place split + tests.
+
+Resolved by removal in plan-004 — the 512-byte-padded JSONL header / footer rewrite scheme from project-design §LT-7.2 / §LT-9.1 is dropped (those design subsections are explicitly superseded by plan-004's §LT callout). The REST-batch architecture surfaces metrics via the `TranscriptionMetrics` value type (FR-58: chunks sent, billable seconds, error count, last RTT) emitted at stop on the events stream, in the post-stop UI summary, and at the `info`-level log line. JSONL sidecars carry only one record per coalesced segment with id-keyed in-place rewrite (plan-004 §5.2).
+(Resolved 2026-04-28 by plan-004 — by removal; metrics surface via TranscriptionMetrics field — actual resolution noted above)
+
+### R-LT-5 (Phase 7 review) — `RecordingSession.split(nextOutput:)` does not rotate sidecar (Medium — defect, plan-003 Phase G, 2026-04-26)
+`RecordingSession.split(nextOutput:)` rotates the audio recorder atomically but leaves `_transcriptionSidecar` untouched. The driver continues writing to the original sidecar URL even though the audio file has rotated to `.partNN`. **Pause/resume flow (`SessionCoordinator.pause/resume`) is unaffected** — that path stops + restarts the session, so each segment naturally builds its own sidecar via `setUpTranscriptionPipelineIfNeeded`. Only the manual in-place split (FR-32 / `split()`) loses the rotation.
+Impact: when a user invokes manual `split()` with transcription on, the resulting `recording.partNN.<format>` audio files do not have matching `recording.partNN.transcript.<ext>` siblings — there is one transcript that spans every partNN segment.
+Resolution: when `_transcriptionSidecar` is non-nil during `split()`, close the old sidecar after the recorder swap, derive the new sidecar URL via `SidecarPathBuilder.sidecarURL(forRecording: nextOutput, …)`, open a new `TranscriptSidecarWriter`, and switch the forwarder task's target.
+Owner: plan-003 follow-up.
+
+Resolved by plan-004 (Phase G.4) — `RecordingSession.split(nextOutput:)` calls `manager.rotateSidecar(toAudioURL:)`, which closes the current sidecar writers, opens fresh ones at the path derived from `nextOutput` via `SidecarPathBuilder`, and resets the `SegmentCoalescer`. Surface added in Phase F.
+(Resolved 2026-04-28 by plan-004 Phase G.4 — actual phase noted above)
 
 ### R-31 (Phase 7 review) — FR-34 `.part01` rename of first segment unimplemented (Resolved 2026-04-26)
 Resolution: `SessionCoordinator.pause()` and `split()` now invoke a new private `renameFirstSegmentOnDisk(bareURL:)` on the seg 1 → seg 2 transition. The helper consults `baseOptions.layout` to decide whether to rename one file (mixed / stereo-split) or both `.system` and `.mic` sidecars (split layout). `SegmentNamer` gained `renameForFirstSegment(_:)` and `splitSidecarURLs(baseURL:)` static helpers. Failures are logged at `.warning` and swallowed. Tests: `Tests/MacrecUITests/SegmentNamerTests.swift` (4 new cases) and `Tests/MacrecUITests/SessionCoordinatorTests.swift` (3 new cases — mixed rename, split-layout dual rename, rename-failure non-fatal). Files: `Sources/MacrecUIKit/SegmentNamer.swift`, `Sources/MacrecUIKit/SessionCoordinator.swift`. Owner: Phase 7 follow-up.

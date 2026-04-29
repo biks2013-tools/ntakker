@@ -66,16 +66,24 @@ This section records explicit, user-approved exceptions to the Structure & Conve
 - **Reason**: The tool must capture macOS system audio (audio playing through Music, Spotify, browsers, Zoom, Teams, etc.) plus the built-in microphone. The first-class APIs for this on macOS 13+ are `ScreenCaptureKit` (system audio) and `AVFoundation` (microphone). Both are Swift/Objective-C frameworks with no first-class Node/TypeScript bindings. Implementing the tool natively in Swift avoids brittle FFI shims and is the platform-recommended path.
 - **Implication**: All conventions that explicitly assume Node/TypeScript (e.g. `process.env` resolution, `~/.tool-agents/[tool-name]/.env` durable defaults, the env-variable precedence chain) still apply in spirit — they will be implemented using Swift equivalents (`ProcessInfo.processInfo.environment`, `FileManager`, etc.) so the user-facing configuration behavior is identical to a TypeScript tool.
 
+### Exception 002 — Deployment target bumped to macOS 26 for SpeechAnalyzer
+
+- **Rule overridden**: implicit project assumption from plan-001 that the deployment target stays at `macOS 14` for broad compatibility.
+- **Approved**: 2026-04-28
+- **Scope**: Project-wide (Package.swift `platforms: [.macOS(.v26)]`)
+- **Reason**: plan-005 adds on-device live transcription via `SpeechAnalyzer`, introduced in macOS 26 (Tahoe). The new API unlocks real-time partials (~80–250 ms first-partial latency), Swift-concurrency-native results streams, and dual-locale parallel recognition. Quality and latency materially exceed the macOS 14-compatible `SFSpeechRecognizer` on-device mode. The project's primary user runs macOS 26.4.1; the bump is acceptable for v1.5.
+- **Implication**: anyone running macOS 13–25 cannot build or run `macrec` after this change. If wider compatibility is needed later, the streaming provider could fall back to `SFSpeechRecognizer` via `#available(macOS 26, *)` gating.
+
 ## Tools
 
 ### macrec
 
-macOS dual-source audio recorder: captures system audio (via `ScreenCaptureKit`) and the microphone (via `AVFoundation`) simultaneously and writes to `m4a` / `wav` / `caf` in `mixed`, `split`, or `stereo-split` layouts. Supports foreground execution (Ctrl-C to stop) or detached background execution paired with a `stop` subcommand.
+macOS dual-source audio recorder: captures system audio (via `ScreenCaptureKit`) and the microphone (via `AVFoundation`) simultaneously and writes to `m4a` / `wav` / `caf` in `mixed`, `split`, or `stereo-split` layouts. Supports foreground execution (Ctrl-C to stop) or detached background execution paired with a `stop` subcommand. Foreground recordings can optionally stream the captured audio to a real-time speech-to-text provider (Google Gemini Live in v1) via `--transcribe`, producing a JSONL / TXT / SRT / VTT transcript sidecar alongside the audio file.
 
 Documentation: [docs/tools/macrec.md](docs/tools/macrec.md)
 
 ### macrec-ui
 
-macOS menu-bar status item app for the `macrec` audio recorder. Provides a popover toolbar to start, pause, resume, stop, and split recordings, with elapsed-time, format/layout/folder/mic selectors, permission status, and per-source level meters; drives `MacrecCore` in-process and ships under a separate bundle id (`com.local.macrec-ui`) so its TCC grants are independent of the CLI's.
+macOS menu-bar status item app for the `macrec` audio recorder. Provides a popover toolbar to start, pause, resume, stop, and split recordings, with elapsed-time, format/layout/folder/mic selectors, permission status, and per-source level meters; drives `MacrecCore` in-process and ships under a separate bundle id (`com.local.macrec-ui`) so its TCC grants are independent of the CLI's. The popover also exposes opt-in live transcription (None / Gemini Live picker, source picker, sidecar-format picker, inline live-transcript panel, one-time privacy-disclosure dialog, and per-recording cost / latency display).
 
 Documentation: [docs/tools/macrec-ui.md](docs/tools/macrec-ui.md)

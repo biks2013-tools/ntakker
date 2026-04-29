@@ -160,6 +160,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         //    bootstraps again.
         bootstrapLogging()
 
+        // 1b. Merge `~/.tool-agents/macrec-ui/.env` into the running
+        //     process environment. Without this, the four-tier
+        //     resolution chain documented in the .env file's header
+        //     was effectively shell-only for the UI app — a saved
+        //     `GOOGLE_API_KEY` would be invisible to the
+        //     `ProcessInfo.processInfo.environment` lookup that
+        //     `ControlBar` does at start-recording time. Shell-set
+        //     values still win (the loader uses `setenv(..., 0)` which
+        //     is a no-op when the variable is already present).
+        let merged = EnvFileStore.loadIntoProcess(toolName: AppDelegate.toolAgentsName)
+        logger.info("merged \(merged.count) env-file key(s) into process environment")
+
         logger.info("macrec-ui launching (bundle id=\(Bundle.main.bundleIdentifier ?? "<nil>"))")
 
         // 2. Defensive activation policy (investigation Topic 1

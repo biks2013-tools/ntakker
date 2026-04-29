@@ -1,10 +1,13 @@
-// swift-tools-version:5.9
+// swift-tools-version:6.2
 // macrec — see docs/design/plan-001-recording-tool.md §A
+// swift-tools-version bumped 5.9 → 6.2 (plan-005 Phase 0 / Task 0.1) so
+// that `.macOS(.v26)` is available in PackageDescription. See CLAUDE.md
+// "Approved Exception 002" for the deployment-target bump rationale.
 import PackageDescription
 
 let package = Package(
     name: "macrec",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v26)],
     products: [
         .executable(name: "macrec", targets: ["macrec"]),
         .library(name: "MacrecCore", targets: ["MacrecCore"]),
@@ -18,6 +21,19 @@ let package = Package(
         .package(
             url: "https://github.com/apple/swift-log",
             from: "1.5.4"
+        ),
+        // Argmax's open-source Swift bundle. Exposes the `WhisperKit`
+        // product — Whisper (large-v3 multilingual by default) running
+        // on-device via CoreML / Apple Neural Engine. Used by the new
+        // `WhisperKitTranscriptionProvider` (id `whisperkit`) to give
+        // users an on-device alternative to Apple Speech for locales
+        // whose Apple-shipped asset is not downloadable (e.g. el-GR
+        // — confirmed unavailable on the user's Mac, 2026-04-29).
+        // Pinned to `0.18.0` to match the version used by the sibling
+        // `notch` project, which has been running this in production.
+        .package(
+            url: "https://github.com/argmaxinc/argmax-oss-swift.git",
+            exact: "0.18.0"
         ),
     ],
     targets: [
@@ -47,6 +63,7 @@ let package = Package(
             dependencies: [
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "WhisperKit", package: "argmax-oss-swift"),
             ],
             path: "Sources/MacrecCore"
         ),
@@ -146,5 +163,12 @@ let package = Package(
                 ])
             ]
         ),
-    ]
+    ],
+    // Tools-version 6.2 defaults to Swift 6 language mode + strict
+    // concurrency, which would turn many existing warnings (in code we
+    // are NOT touching in plan-005 Phase 0) into errors. Pin the
+    // language mode to Swift 5 for now; per-target migration to Swift 6
+    // is tracked separately and is out of scope for the deployment-
+    // target bump (plan-005 Phase 0 / Task 0.1).
+    swiftLanguageModes: [.v5]
 )

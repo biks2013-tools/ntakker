@@ -13,12 +13,29 @@
         `stereo-split` (single stereo file with the mic pinned to one channel
         and system audio to the other). It runs in the foreground (Ctrl-C to
         stop) or detached as a background daemon, with a companion `stop`
-        subcommand for clean finalization.
+        subcommand for clean finalization. Optionally, foreground recordings
+        can stream the captured audio in parallel to a real-time speech-to-text
+        provider (Google Gemini Live in v1, opt-in via `--transcribe`) and
+        write a JSONL / TXT / SRT / VTT transcript sidecar alongside the
+        audio file.
     </objective>
     <command>
         macrec <subcommand> [options]
     </command>
     <info>
+        ## What changed in v1.5
+
+        > Default `--transcribe` value flipped from `none` to `apple`. Plain
+        > `macrec start` now produces an on-device transcript sidecar by
+        > default (Apple SpeechAnalyzer; no API key, no network). To restore
+        > the old behaviour, set `MACREC_TRANSCRIBE=none` in your `.env` (or
+        > pass `--transcribe none` on the CLI).
+        >
+        > A new provider id `apple` is now accepted alongside `gemini`
+        > (and the deprecated `gemini-live` alias for `gemini`). Apple is
+        > the only provider that supports comma-separated locale lists in
+        > `--transcribe-language` for parallel dual-locale recognition.
+
         ## Overview
 
         `macrec` is the only first-party tool in this project so far. It
@@ -89,9 +106,58 @@
           --log-file <log-file>   Log file path for --detach mode (mode 0600, append).
                                   Default: ~/.tool-agents/macrec/macrec.log. Env:
                                   MACREC_LOG_FILE. (FR-29)
+          --transcribe <provider>
+                                  Live transcription provider. Default: apple
+                                  (changed from `none` in v1.5 / plan-005).
+                                  Allowed: none | apple | gemini.
+                                  (`gemini-live` is accepted as a deprecated
+                                  alias for one release; the resolver lowers
+                                  it to `gemini` and logs a deprecation
+                                  notice.) Env: MACREC_TRANSCRIBE.
+                                  (FR-48 / plan-003 / plan-004 / plan-005)
+          --transcribe-source <source>
+                                  Audio source for transcription. Default: mixed.
+                                  Allowed: system | mic | mixed | both. Env:
+                                  MACREC_TRANSCRIBE_SOURCE. (FR-47)
+          --transcribe-format <format>
+                                  Sidecar transcript format. Default: jsonl.
+                                  Allowed: jsonl | txt | srt | vtt. Env:
+                                  MACREC_TRANSCRIBE_FORMAT. (FR-51)
+          --transcribe-model <model-id>
+                                  Provider-specific model id override. Default:
+                                  provider's pinned default (currently
+                                  `gemini-3-flash-preview` for the
+                                  `gemini` provider). Env:
+                                  MACREC_TRANSCRIBE_MODEL. See "Model id"
+                                  below for the allowed list and the
+                                  documented HTTP-4xx fallback. (plan-003
+                                  §LT-5.2 / plan-004 §9.1)
+          --transcribe-language <bcp-47[,bcp-47...]>
+                                  Hint the spoken-language code (BCP-47, e.g.
+                                  en-US). Comma-separated values activate
+                                  dual-locale parallel recognition on the
+                                  `apple` provider (e.g. `en-US,el-GR`).
+                                  `gemini` uses only the first hint and
+                                  ignores the rest. Default: provider
+                                  auto-detect. Env: MACREC_TRANSCRIBE_LANGUAGE.
+          --transcribe-key-expires-at <iso-8601>
+                                  Optional ISO-8601 date marking when the
+                                  configured API key expires. If past, a warning
+                                  is logged at start; recording is NOT blocked.
+                                  Env: MACREC_TRANSCRIBE_KEY_EXPIRES_AT.
+                                  (plan-003 §LT-5.2)
           --version               Show the version.
           -h, --help              Show help information.
         ```
+
+        > **Security note — no `--transcribe-key` flag exists.** API keys are
+        > never accepted on the command line (they would otherwise leak into
+        > shell history, `ps`, and process-tree dumps). The provider-specific
+        > vendor-canonical env var (`GOOGLE_API_KEY` for `gemini`) is the
+        > only accepted source, resolved through the four-tier configuration
+        > chain. Recommended storage: `~/.tool-agents/macrec/.env` (mode
+        > `0600`). See [docs/design/configuration-guide.md](../design/configuration-guide.md)
+        > §2.21.
 
         Examples:
 
@@ -117,6 +183,38 @@
             --layout stereo-split --mic-channel right \
             --mic-device "BuiltInMicrophoneDevice" \
             --output ~/recordings/interview.m4a
+
+        # 6. Recording with no transcription (default behaviour — identical
+        #    to pre-plan-003 builds; no network connections, no sidecar files).
+        macrec start --output ~/recordings/talk.m4a
+
+        # 7. Recording with Gemini transcription writing a JSONL sidecar.
+        #    GOOGLE_API_KEY must be exported (or in ~/.tool-agents/macrec/.env).
+        #    Produces ~/recordings/talk.m4a + ~/recordings/talk.transcript.jsonl.
+        export GOOGLE_API_KEY=...   # from https://aistudio.google.com/app/apikey
+        macrec start \
+            --transcribe gemini \
+            --transcribe-source mixed \
+            --transcribe-format jsonl \
+            --output ~/recordings/talk.m4a
+
+        # 8. Mic-only Gemini transcription with an SRT sidecar
+        #    (final-only cues, suitable for video-editor import).
+        macrec start \
+            --transcribe gemini \
+            --transcribe-source mic \
+            --transcribe-format srt \
+            --output ~/recordings/lecture.m4a
+
+        # 9. Detached background recording WITH transcription (plan-004
+        #    lifted the v1 detach-incompatible restriction; the REST
+        #    batch architecture has no terminal-output dependency).
+        #    Stop later with `macrec stop`.
+        macrec start \
+            --detach \
+            --transcribe gemini \
+            --transcribe-format jsonl \
+            --output ~/recordings/meeting.m4a --overwrite
         ```
 
         ### `stop`
@@ -271,6 +369,26 @@
         an explicit System Settings path printed to stderr (see
         project-design.md §8 for the locked strings).
 
+        ### Speech Recognition (for `--transcribe apple`)
+
+        When `--transcribe apple` is selected (the v1.5 default),
+        `macrec` also needs the **Speech Recognition** TCC grant. The
+        `Info.plist` carries `NSSpeechRecognitionUsageDescription`; the
+        first run that opts into the Apple provider triggers a system
+        prompt. Denying the prompt — or revoking the grant later in
+        System Settings → Privacy & Security → Speech Recognition —
+        causes `macrec start` to exit 77 (`EX_NOPERM`) via
+        `MacrecError.speechRecognitionPermissionDenied` before any
+        capture session opens; no audio file is produced.
+
+        > **R-2 / PEND-AS-1 caveat.** Because development builds are
+        > ad-hoc-signed, every `swift build` rebuild can change the
+        > binary's TCC identity and re-trigger the prompt. The
+        > workarounds documented in the next section (re-grant after a
+        > rebuild burst, or build once and re-use the same binary) apply
+        > equally to Speech Recognition. Tracked in
+        > `Issues - Pending Items.md` PEND-AS-1.
+
         ### TCC ad-hoc-signing instability for development builds (R-2)
 
         Because `swift build` produces an ad-hoc-signed binary that lives at
@@ -304,7 +422,178 @@
         | 70   | `EX_SOFTWARE`    | `noInputDevicesAvailable`, `scStreamFailedToStart`, `scStreamSilentStopExceeded`, `avCaptureFailedToStart`, `writerFailedToStart`, `stopTimeout` | runtime failure                          |
         | 75   | `EX_TEMPFAIL`    | `screenRecordingPermissionNotDetermined`, `microphonePermissionNotDetermined`, `staleRecording`                                    | retryable                                |
         | 77   | `EX_NOPERM`      | `screenRecordingPermissionDenied`, `microphonePermissionDenied`, `microphonePermissionRestricted`                                  | permission denied                        |
-        | 78   | `EX_CONFIG`      | `missingRequiredConfig`, `micDeviceNotFound`, `alreadyRecording`, `noActiveRecording`                                              | configuration / workflow error           |
+        | 78   | `EX_CONFIG`      | `missingRequiredConfig`, `micDeviceNotFound`, `alreadyRecording`, `noActiveRecording`, `transcriptionApiKeyMissing` | configuration / workflow error           |
+
+        Plan-003 added two new error → exit-code mappings (project-design.md
+        §LT-4):
+
+        - `transcriptionApiKeyMissing` → **78** (`EX_CONFIG`). Raised by
+          `ConfigResolver.resolve(...)` BEFORE any audio capture begins when a
+          non-`none` provider is selected and no API key is found in any tier
+          of the configuration chain. **No audio file is created.** (AC-LT-4.)
+        - `transcriptionInvalidProvider` → **64** (`EX_USAGE`). Raised when
+          `--transcribe` receives an unrecognised provider name.
+
+        > **Detach mode is compatible with `--transcribe`.** The plan-003-era
+        > `transcriptionDetachUnsupported` cross-check has been removed by
+        > plan-004 Phase G.1. The REST batch architecture POSTs audio chunks
+        > over plain HTTPS and writes the JSONL sidecar alongside the audio
+        > file with no foreground stderr/stdout dependency, so a detached
+        > daemon produces the same sidecar as a foreground recording. The
+        > `MacrecError.transcriptionDetachUnsupported` case has been deleted
+        > from `MacrecError`.
+
+        ## Live transcription
+
+        `macrec` can stream the captured audio to a streaming speech-to-text
+        provider in parallel with the on-disk recording, producing a sidecar
+        transcript file alongside the audio file. The feature is **opt-in**;
+        with no `--transcribe` flag and no `MACREC_TRANSCRIBE` env var, the
+        recording behaviour is byte-for-byte identical to pre-plan-003 builds
+        (AC-LT-1 / AC-LT-16). Architecture and decision rationale live in
+        `docs/design/project-design.md` §LT-1 .. §LT-10; functional
+        requirements are FR-45 .. FR-58 in `docs/design/project-functions.md`.
+
+        ### Supported providers (v1)
+
+        | Provider id    | Description                                                                                       | Required env var   |
+        |----------------|---------------------------------------------------------------------------------------------------|--------------------|
+        | `none`         | Transcription disabled — true no-op.                                                              | _(none)_           |
+        | `apple`        | **Default (v1.5+).** On-device Apple SpeechAnalyzer (macOS 26+). No API key, no network. Supports dual-locale parallel recognition via comma-separated `--transcribe-language` (e.g. `en-US,el-GR`). | _(none)_         |
+        | `gemini`       | Google Gemini REST batch API (HTTPS POST; 2.5 s WAV chunks at 16 kHz mono PCM16; plan-004).       | `GOOGLE_API_KEY`   |
+        | `gemini-live`  | Deprecated alias for `gemini` (one-release transition; resolver lowers it to `gemini` and warns). | `GOOGLE_API_KEY`   |
+
+        Additional providers (OpenAI Realtime, Deepgram Streaming,
+        AssemblyAI Streaming) are admitted by the `TranscriptionProvider`
+        protocol (NFR-21) and tracked as v2 follow-ups.
+
+        ### Two-tier requirement
+
+        Two configuration values must be present together when transcription
+        is enabled:
+
+        1. **`MACREC_TRANSCRIBE` (or `--transcribe`)** picks the provider.
+           Resolved through the four-tier chain (shell env → user `.env` →
+           local `.env` → CLI flag). Default `none`.
+        2. **The provider's required API key** must be resolvable by the
+           same chain at recording start. For `gemini` (and its deprecated
+           alias `gemini-live`) this is `GOOGLE_API_KEY`. If the chosen
+           provider needs a key and none is found, `ConfigResolver` raises
+           `MacrecError.transcriptionApiKeyMissing` (exit `78`) **before**
+           any capture session is opened — no audio file is created
+           (AC-LT-4).
+
+        ### Sidecar file naming
+
+        The sidecar lives next to the audio file, with the same basename and
+        an inserted `.transcript` infix before the format extension. The
+        rules track the recording's segmentation (FR-51, project-design
+        §LT-7.1):
+
+        | Recording case                                              | Audio output                                | Sidecar(s)                                                          |
+        |-------------------------------------------------------------|---------------------------------------------|---------------------------------------------------------------------|
+        | Single segment, `mixed` / `stereo-split`                    | `recording-….m4a`                           | `recording-….transcript.<ext>`                                      |
+        | Multi-segment (pause/resume or split)                       | `recording-….part01.m4a`, `…part02.m4a`     | `recording-….part01.transcript.<ext>`, `recording-….part02.transcript.<ext>` |
+        | `--layout split` + `--transcribe-source` ∈ {mixed,system,mic} | `recording-….mic.m4a`, `recording-….system.m4a` | one sidecar reflecting the chosen single stream                      |
+        | `--layout split` + `--transcribe-source both`               | `recording-….mic.m4a`, `recording-….system.m4a` | `recording-….mic.transcript.<ext>` AND `recording-….system.transcript.<ext>` |
+
+        `<ext>` is one of `jsonl` (default), `txt`, `srt`, `vtt`.
+
+        > **v1 limitation — `--transcribe-source both`.** v1 ships a single
+        > transcription driver and emits one combined transcript stream.
+        > When `both` is requested with a non-split layout, the driver
+        > falls back to `mixed`. True per-source dual-driver transcription
+        > is tracked as a v2 follow-up (see `Issues - Pending Items.md`).
+
+        ### Long-session behaviour
+
+        plan-004 replaced the original Gemini Live WebSocket architecture
+        with a Gemini REST batch architecture: `TranscriptionManager`
+        coalesces audio into 2.5 s WAV chunks at 16 kHz mono PCM16 and
+        POSTs each chunk to the REST endpoint as an independent request.
+        There is no long-lived connection to keep alive, no
+        ~10-minute session cap, and no reconnect/backoff state machine.
+        Per-chunk request failures (HTTP 5xx, transient network errors)
+        are surfaced as non-fatal `error` events on the events stream and
+        recorded in `TranscriptionMetrics.errorCount`; recording continuity
+        is **never** affected by transcription request failures (NFR-17,
+        AC-LT-10).
+
+        ### Privacy warning
+
+        > **Audio leaves the machine.** When `--transcribe gemini` is
+        > active, the captured PCM audio (mic, system, or both depending on
+        > `--transcribe-source`) is downsampled to 16 kHz mono PCM16,
+        > packaged as 2.5 s WAV chunks, and POSTed over HTTPS to
+        > `https://generativelanguage.googleapis.com` (Google's Gemini REST
+        > API) where it is processed on Google's servers. No PII metadata
+        > is transmitted (NFR-20: filename, mic device name, host name,
+        > user name are stripped from the wire payload), but the raw audio
+        > itself **is** sent. Review your organisation's data-handling
+        > policy before enabling on calls containing confidential content.
+        > The default `--transcribe none` keeps every byte local.
+
+        ### Cost / volume metrics
+
+        At session end, an `info`-level log line records
+        `chunksSent`, `billableSeconds`, `errorCount`, and `lastRTT`
+        (FR-58). The same counters surface in the post-stop UI summary
+        (macrec-ui) and on the events stream consumed by
+        `SessionCoordinator`. Use `billableSeconds` × the provider's
+        published per-second rate to estimate cost per recording. (The
+        plan-003 §LT-7.2 / §LT-9.1 512-byte JSONL header line was
+        dropped by plan-004 — JSONL sidecars now carry one record per
+        coalesced segment with id-keyed in-place rewrite, and metrics
+        are surfaced via `TranscriptionMetrics` rather than a file
+        header.)
+
+        ### Model id
+
+        The `--transcribe-model` flag (env `MACREC_TRANSCRIBE_MODEL`)
+        overrides the provider's pinned default model. For `gemini`:
+
+        - **Default**: `gemini-3-flash-preview` (the documented Google
+          REST audio model per
+          <https://ai.google.dev/gemini-api/docs/audio>).
+        - **Allowed list** (validated by
+          `TranscriptionProviderFactory.build`):
+            - `gemini-3-flash-preview` (default)
+            - `gemini-3.1-flash-live-preview` (Live-API SKU; returns
+              HTTP 404 on the REST endpoint — kept in the allow-list
+              only for backward-compat configs)
+            - `gemini-2.5-flash`
+            - `gemini-2.5-pro`
+            - `gemini-2.0-flash`
+
+        Any value outside the allowed list is sent through to the API
+        as-is with a `warning` log line; the provider may then return
+        an HTTP 4xx if the model id is unknown.
+
+        > **History.** The plan-004 brainstorming session (2026-04-28)
+        > initially pinned `gemini-3.1-flash-live-preview` as the
+        > default per user direction. Empirical verification later
+        > that day showed it returns HTTP 404 on `:generateContent`
+        > (it is the Live API SKU, not a REST SKU). PEND-LT-6 was
+        > closed by switching the default to `gemini-3-flash-preview`.
+        > If your config explicitly sets the old id, expect 4xx
+        > errors and switch to the new default.
+        > Tracked under `Issues - Pending Items.md` PEND-LT-6.
+
+        ### Bandwidth
+
+        Each 2.5 s @ 16 kHz mono PCM16 WAV chunk is approximately
+        80 KB on the wire. Base64-encoded inside the JSON request body
+        it inflates to roughly 107 KB per request. Concrete envelope:
+
+        | Setting                              | Per chunk | Per minute | Per 60-minute session |
+        |--------------------------------------|-----------|------------|-----------------------|
+        | One source (`mixed`, `system`, `mic`) | ~107 KB   | ~2.5 MB    | ~155 MB upstream       |
+        | `--transcribe-source both`           | ~214 KB   | ~5.0 MB    | ~310 MB upstream       |
+
+        For very long recordings with `--transcribe-source both`,
+        cumulative upstream bandwidth can approach a few GB. Run on a
+        stable network connection; transient request failures are
+        non-fatal but inflate `TranscriptionMetrics.errorCount`.
 
         ## Building from source
 
@@ -394,8 +683,13 @@
           requirements (FR-1 .. FR-29).
         - `docs/design/plan-001-recording-tool.md` — implementation plan
           (Phases A through L).
+        - `docs/design/plan-003-live-transcription.md` — live-transcription
+          implementation plan (Phases 0 through I).
+        - `docs/design/refined-request-live-transcription.md` —
+          live-transcription requirements brief (FR-45..FR-58, AC-LT-1..AC-LT-25).
         - `docs/design/configuration-guide.md` — per-variable configuration
-          reference.
+          reference (includes the `MACREC_TRANSCRIBE*` family and
+          `GOOGLE_API_KEY`).
         - `Issues - Pending Items.md` — open risks (R-1 .. R-19) and
           completed items.
     </info>

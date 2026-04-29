@@ -18,6 +18,14 @@
 //     transition, but `errorOccurred` lets the controller surface the
 //     error banner without inspecting the state payload.
 //
+// Plan-004 Phase H — the rest-batch transcription pipeline streams
+// `TranscriptionEvent` values that already contain a `metricsTick`
+// case. The coordinator forwards those events verbatim via
+// `.transcriptEvent(...)`, and additionally re-publishes the metric
+// payload as a dedicated `.transcriptionMetrics(...)` event so views
+// that only care about the metric snapshot do not have to pattern-
+// match inside the larger event enum.
+//
 // This is a `Sendable` enum so it can cross the actor → `@MainActor`
 // boundary on the coordinator's `AsyncStream<SessionCoordinatorEvent>`
 // stream.
@@ -43,4 +51,26 @@ public enum SessionCoordinatorEvent: Sendable {
     /// observers that prefer to dispatch on `SessionState` see the
     /// same transition.
     case errorOccurred(MacrecError)
+
+    // -- Live transcription (plan-003 Phase G; design §LT-8.5 — refreshed
+    //    in plan-004 Phase H for the rest-batch event shape) --
+
+    /// A transcription event forwarded from the active session's
+    /// `transcriptEvents` stream. The controller demultiplexes this
+    /// into the `transcriptSegments` array, the metrics snapshot, the
+    /// pending privacy-disclosure label, and the transient
+    /// `lastTranscriptionError` slot.
+    case transcriptEvent(TranscriptionEvent)
+
+    /// Convenience metric tick — re-emitted by the coordinator each
+    /// time the upstream `TranscriptionEvent.metricsTick` arrives so
+    /// metric-only consumers can subscribe without unpacking the full
+    /// event enum.
+    case transcriptionMetrics(TranscriptionMetrics)
+
+    /// A segment rotation marker. Inserted by the coordinator at
+    /// pause / resume / split boundaries so the transcript panel can
+    /// render a horizontal-rule separator (AC-LT-20). The string is
+    /// the user-visible label (e.g. `"part02"`).
+    case transcriptSegmentBoundary(label: String)
 }

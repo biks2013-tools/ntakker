@@ -6,6 +6,15 @@
 // the single source of truth for the SwiftUI views (Phase E builds on
 // top of it).
 //
+// Plan-004 Phase H — UI integration with rest-batch transcription. The
+// transcription side-channel switched from a streaming
+// `partial`/`final` event surface to a coalesced `[TranscriptSegment]`
+// model driven by `TranscriptionEvent.segmentAppended` /
+// `.segmentUpdated`. The controller now exposes the segments array
+// directly (instead of a synthesised `TranscriptLine` shape), plus a
+// metrics snapshot, an opt-in privacy-disclosure label, and a transient
+// last-error string for the amber banner.
+//
 // Threading:
 //   * The controller is `@MainActor` so every observed-property write
 //     happens on the main thread.
@@ -25,6 +34,23 @@ import Foundation
 import Logging
 import MacrecCore
 import Observation
+
+// MARK: - Transcription view-model types (plan-004 Phase H)
+
+/// High-level state of the transcription side-channel for the UI. The
+/// rest-batch shape (plan-004) does not expose connection-level state;
+/// the manager either is producing segments and metric ticks (`.active`)
+/// or it is not (`.idle`). A non-fatal error from the provider sets
+/// `.error(message)` until the next event clears it.
+public enum TranscriptionUIState: Sendable, Equatable {
+    /// Transcription is disabled OR the session has not yet produced any
+    /// events.
+    case idle
+    /// Transcription is enabled and producing events.
+    case active
+    /// Most recent non-fatal error message from the provider/sidecar.
+    case error(String)
+}
 
 /// `@MainActor @Observable` view model for the toolbar UI. Owns the
 /// observable `SessionState`, the elapsed-time counter, the latest
@@ -68,6 +94,50 @@ public final class RecordingController {
     /// `setOptions(_:)`. `nil` until the user has provided enough
     /// inputs to construct a `RecordingOptions` (`output` is required).
     public private(set) var options: RecordingOptions?
+
+    // MARK: - Transcription observed state (plan-004 Phase H)
+
+    /// High-level lifecycle state of the active transcription pipeline.
+    /// Driven by the rest-batch event stream — stays `.idle` until the
+    /// first `segmentAppended` / `metricsTick` arrives, flips back to
+    /// `.idle` at session teardown.
+    public private(set) var transcriptionStatus: TranscriptionUIState = .idle
+
+    /// Append-only list of coalesced transcript segments. Each event
+    /// from `TranscriptionEvent.segmentAppended` / `.segmentUpdated`
+    /// mutates this array per the index payload. Capped at the most
+    /// recent `maxLiveTranscriptSegments` entries so memory stays
+    /// bounded for long recordings.
+    public private(set) var transcriptSegments: [TranscriptSegment] = []
+
+    /// Aggregated transcription metrics from the manager. Updated on
+    /// every `metricsTick` event.
+    public private(set) var transcriptionMetrics: TranscriptionMetrics = TranscriptionMetrics()
+
+    /// Provider display name pending a privacy-disclosure prompt. Set
+    /// by `TranscriptionEvent.privacyDisclosure(...)`; cleared by the
+    /// view layer once the user acknowledges.
+    public private(set) var pendingDisclosure: String?
+
+    /// Most-recent non-fatal transcription error message — surfaced as
+    /// a transient amber banner in the live transcript panel. Cleared
+    /// when a new `metricsTick` arrives (next successful round-trip).
+    public private(set) var lastTranscriptionError: String?
+
+    /// Whether the active provider needs an API key but the resolved
+    /// `RecordingOptions.transcriptionApiKey` is `nil`. Drives the
+    /// red-dot `TranscriptionMissingKeyBadge` in the picker. Updated
+    /// each time `setOptions(_:)` is called.
+    public private(set) var transcriptionMissingKey: Bool = false
+
+    /// Maximum number of segments retained in `transcriptSegments`.
+    /// Older segments are dropped from the head of the array when the
+    /// cap is exceeded — the sidecar file remains the persistent
+    /// record. The same constant is also used by tests / panels that
+    /// previously talked about "lines"; kept under the historical
+    /// `maxLiveTranscriptLines` symbol for source-compat.
+    public static let maxLiveTranscriptSegments: Int = 100
+    public static let maxLiveTranscriptLines: Int = maxLiveTranscriptSegments
 
     // MARK: - Private state
 
@@ -116,6 +186,47 @@ public final class RecordingController {
     /// the options and surface any error via `.failed`.
     public func setOptions(_ options: RecordingOptions) {
         self.options = options
+        // Recompute the missing-key state. A provider whose
+        // `requiredApiKey` is non-nil but whose resolved
+        // `transcriptionApiKey` is nil/empty is missing its key.
+        if let providerId = options.transcriptionProviderId,
+           !providerId.isEmpty,
+           providerId.lowercased() != "none",
+           providerId.lowercased() != "noop"
+        {
+            // v1 supports the Gemini rest-batch provider under the
+            // canonical id `"gemini"`. The deprecated alias
+            // `"gemini-live"` is still accepted by the resolver and
+            // also requires a key.
+            let needsKey: Bool
+            switch providerId.lowercased() {
+            case "gemini", "gemini-live":
+                needsKey = true
+            default:
+                needsKey = false
+            }
+            if needsKey {
+                let key = options.transcriptionApiKey
+                self.transcriptionMissingKey = (key == nil) || (key?.isEmpty ?? true)
+            } else {
+                self.transcriptionMissingKey = false
+            }
+        } else {
+            self.transcriptionMissingKey = false
+        }
+    }
+
+    /// Acknowledge the most-recent privacy disclosure. Called by the
+    /// view layer once the user dismisses the modal sheet — clears the
+    /// `pendingDisclosure` slot so the sheet does not re-fire on the
+    /// next render pass.
+    public func acknowledgePendingDisclosure() {
+        pendingDisclosure = nil
+    }
+
+    /// Dismiss the transient transcription-error banner.
+    public func dismissTranscriptionError() {
+        lastTranscriptionError = nil
     }
 
     // MARK: - Lifecycle
@@ -145,6 +256,13 @@ public final class RecordingController {
         segmentElapsed = 0
         totalElapsed = 0
         latestLevels = nil
+        // Reset transcription state. `transcriptionStatus` will flip
+        // to `.active` on the first event the manager forwards.
+        transcriptSegments = []
+        transcriptionMetrics = TranscriptionMetrics()
+        pendingDisclosure = nil
+        lastTranscriptionError = nil
+        transcriptionStatus = .idle
 
         let coord = SessionCoordinator(
             baseOptions: options,
@@ -261,6 +379,115 @@ public final class RecordingController {
             completedSegments.append(url)
         case .errorOccurred(let error):
             latestError = error
+        case .transcriptEvent(let trEvent):
+            applyTranscriptionEvent(trEvent)
+        case .transcriptionMetrics(let metrics):
+            transcriptionMetrics = metrics
+            // A fresh metrics tick implies the most recent provider
+            // round-trip succeeded; clear the transient error banner
+            // so it does not stick around forever.
+            lastTranscriptionError = nil
+            if transcriptionStatus == .idle {
+                transcriptionStatus = .active
+            }
+        case .transcriptSegmentBoundary(let label):
+            // Segment boundary marker from SessionCoordinator (plan-002
+            // FR-32 / R-31). No transcript-side action — segments
+            // naturally re-anchor on the next .segmentAppended event
+            // from the new manager.
+            logger.debug("transcript segment boundary: \(label)")
+        }
+    }
+
+    /// Apply a single `TranscriptionEvent` to the controller's observed
+    /// state. The rest-batch shape (plan-004) replaces the historical
+    /// `partial` / `final` event pair with `segmentAppended` /
+    /// `segmentUpdated`, and replaces `providerStateChange` /
+    /// `sessionEnded` with `metricsTick` + the manager's final tick at
+    /// `stop()`.
+    private func applyTranscriptionEvent(_ event: TranscriptionEvent) {
+        switch event {
+        case let .segmentAppended(index, segment):
+            logger.info("transcript event: segmentAppended idx=\(index) text='\(segment.text.prefix(40))…' total=\(transcriptSegments.count + 1)")
+            appendOrInsertSegment(at: index, segment: segment)
+            transcriptionStatus = .active
+        case let .segmentUpdated(index, segment):
+            logger.info("transcript event: segmentUpdated idx=\(index) text='\(segment.text.prefix(40))…'")
+            updateSegment(at: index, segment: segment)
+            transcriptionStatus = .active
+        case let .segmentFinalized(index, segment):
+            logger.info("transcript event: segmentFinalized idx=\(index) text='\(segment.text.prefix(40))…'")
+            // Phase H (plan-005): wire the streaming "settled" visual
+            // treatment to this event. The replacement segment carries
+            // a non-nil `durationSec` (set by the streaming pipeline's
+            // finalize handler) and the winning `language` tag, both of
+            // which are required by the row view to render the
+            // "settled" style and the language chip.
+            finalizeSegment(at: index, segment: segment)
+            transcriptionStatus = .active
+        case let .privacyDisclosure(providerDisplayName):
+            logger.info("transcript event: privacyDisclosure provider=\(providerDisplayName)")
+            pendingDisclosure = providerDisplayName
+        case let .metricsTick(metrics):
+            logger.debug("transcript event: metricsTick chunks=\(metrics.chunksSent) errors=\(metrics.errorCount)")
+            transcriptionMetrics = metrics
+            lastTranscriptionError = nil
+            if transcriptionStatus == .idle {
+                transcriptionStatus = .active
+            }
+        case let .error(detail):
+            logger.error("transcript event: error \(detail)")
+            lastTranscriptionError = detail
+            transcriptionStatus = .error(detail)
+        }
+    }
+
+    /// Append a coalesced segment, capping at
+    /// `maxLiveTranscriptSegments` (drop-oldest). The sidecar file
+    /// remains the persistent record for everything we drop.
+    ///
+    /// The `index` payload is the manager's authoritative position.
+    /// Under normal operation it is `transcriptSegments.count`; we
+    /// honour explicit indices defensively in case events arrive out of
+    /// order under load.
+    private func appendOrInsertSegment(at index: Int, segment: TranscriptSegment) {
+        if index == transcriptSegments.count {
+            transcriptSegments.append(segment)
+        } else if index >= 0 && index < transcriptSegments.count {
+            // An out-of-order event; treat as an in-place update.
+            transcriptSegments[index] = segment
+        } else {
+            // Index past the end (gap) — pad with the segment so the
+            // panel still renders something meaningful.
+            transcriptSegments.append(segment)
+        }
+        if transcriptSegments.count > Self.maxLiveTranscriptSegments {
+            let overflow = transcriptSegments.count - Self.maxLiveTranscriptSegments
+            transcriptSegments.removeFirst(overflow)
+        }
+    }
+
+    /// Replace the segment at `index` with the updated value. No-op if
+    /// the index is out of range — the cap may have already evicted it.
+    private func updateSegment(at index: Int, segment: TranscriptSegment) {
+        guard index >= 0 && index < transcriptSegments.count else { return }
+        transcriptSegments[index] = segment
+    }
+
+    /// Plan-005 Phase H: replace the segment at `index` with its
+    /// finalised counterpart (non-nil `durationSec`, populated
+    /// `language` tag). Falls back to `append` when the index is past
+    /// the end so the row still renders even if the upstream
+    /// `segmentAppended` was lost or evicted by the drop-oldest cap.
+    private func finalizeSegment(at index: Int, segment: TranscriptSegment) {
+        if index >= 0 && index < transcriptSegments.count {
+            transcriptSegments[index] = segment
+        } else {
+            transcriptSegments.append(segment)
+            if transcriptSegments.count > Self.maxLiveTranscriptSegments {
+                let overflow = transcriptSegments.count - Self.maxLiveTranscriptSegments
+                transcriptSegments.removeFirst(overflow)
+            }
         }
     }
 
@@ -282,8 +509,15 @@ public final class RecordingController {
             stopElapsedTimer()
         case .paused, .stopped:
             stopElapsedTimer()
+            if case .stopped = newState {
+                // Session ended — reset the transcription pipeline
+                // status so the panel collapses cleanly on the next
+                // start.
+                transcriptionStatus = .idle
+            }
         case .failed:
             stopElapsedTimer()
+            transcriptionStatus = .idle
         case .idle, .starting, .resuming:
             // No timer change.
             break
