@@ -26,7 +26,22 @@ import MacrecCore
 import SwiftUI
 
 /// Two-row permission indicator. Polls every 2 s while visible.
+///
+/// Visibility modes:
+///   - `.always` — both rows always render (used by the Settings
+///     panel where the user expects to see status at any time).
+///   - `.onlyWhenIssues` — the view collapses to nothing when both
+///     permissions are `.authorized` (used by the popover so a clean
+///     setup does not waste vertical space; non-`authorized` rows
+///     still render so the user can act on them in place).
 struct PermissionStatusView: View {
+
+    enum Visibility {
+        case always
+        case onlyWhenIssues
+    }
+
+    let visibility: Visibility
 
     /// Latest snapshot from `PermissionGate`. `nil` until first poll.
     @State private var snapshot: PermissionGate.Snapshot?
@@ -34,18 +49,26 @@ struct PermissionStatusView: View {
     private let gate = PermissionGate()
     private let logger = Logger(label: "macrec.ui.permission")
 
+    init(visibility: Visibility = .always) {
+        self.visibility = visibility
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            row(
-                title: String(localized: "Screen Recording"),
-                state: screenRecordingState,
-                action: screenRecordingAction
-            )
-            row(
-                title: String(localized: "Microphone"),
-                state: microphoneState,
-                action: microphoneAction
-            )
+        Group {
+            if shouldRender {
+                VStack(alignment: .leading, spacing: 6) {
+                    row(
+                        title: String(localized: "Screen Recording"),
+                        state: screenRecordingState,
+                        action: screenRecordingAction
+                    )
+                    row(
+                        title: String(localized: "Microphone"),
+                        state: microphoneState,
+                        action: microphoneAction
+                    )
+                }
+            }
         }
         .task {
             await pollLoop()
@@ -57,6 +80,16 @@ struct PermissionStatusView: View {
         ) { _ in
             Task { await refreshOnce() }
         }
+    }
+
+    /// `false` only when `visibility == .onlyWhenIssues` AND both
+    /// permissions are authorized; in every other case the rows are
+    /// rendered (including the bootstrap pre-snapshot phase, so the
+    /// user is not left wondering whether the tool can record).
+    private var shouldRender: Bool {
+        if visibility == .always { return true }
+        guard let s = snapshot else { return true }
+        return !(s.screenRecording == .authorized && s.microphone == .authorized)
     }
 
     // MARK: - Polling

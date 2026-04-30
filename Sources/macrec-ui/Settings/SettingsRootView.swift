@@ -12,9 +12,11 @@
 
 import SwiftUI
 
-/// Sidebar entries. The order is locked: providers in declaration
-/// order (matching the popover picker), then Privacy, then About.
+/// Sidebar entries. The order is locked: Permissions first (most
+/// urgent / first-run signal), then providers in declaration order
+/// (matching the popover picker), then Privacy, then About.
 enum SettingsCategory: String, Identifiable, CaseIterable, Hashable {
+    case permissions
     case gemini
     case soniox
     case azure
@@ -27,6 +29,7 @@ enum SettingsCategory: String, Identifiable, CaseIterable, Hashable {
 
     var displayName: String {
         switch self {
+        case .permissions:   return String(localized: "Permissions")
         case .gemini:        return String(localized: "Gemini")
         case .soniox:        return String(localized: "Soniox")
         case .azure:         return String(localized: "Azure OpenAI")
@@ -39,6 +42,7 @@ enum SettingsCategory: String, Identifiable, CaseIterable, Hashable {
 
     var systemIcon: String {
         switch self {
+        case .permissions:   return "checkmark.shield"
         case .gemini:        return "sparkles"
         case .soniox:        return "waveform.path"
         case .azure:         return "cloud"
@@ -82,6 +86,7 @@ struct SettingsRootView: View {
     @ViewBuilder
     private func detailView(for category: SettingsCategory) -> some View {
         switch category {
+        case .permissions:   PermissionsSettingsView()
         case .gemini:        GeminiSettingsView()
         case .soniox:        SonioxSettingsView()
         case .azure:         AzureBatchSettingsView()

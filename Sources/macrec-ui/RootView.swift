@@ -130,7 +130,13 @@ struct RootView: View {
                         value: recordingController?.latestError != nil
                     )
 
-                PermissionStatusView()
+                // Plan-007 follow-up (2026-04-30): the permission rows
+                // collapse to zero height when both Screen Recording
+                // and Microphone are `.authorized`. The full
+                // ever-visible view lives in Settings → Permissions
+                // for users who want to verify the grant state at
+                // any time.
+                PermissionStatusView(visibility: .onlyWhenIssues)
             }
             .padding(.horizontal, 16)
             .padding(.top, 16)
@@ -157,16 +163,19 @@ struct RootView: View {
                 FilenameField()
 
                 // -- Recording settings (collapsible) --
-                // Format / Layout / Folder live here, stacked
-                // vertically. The expanded/collapsed state is
-                // persisted via @AppStorage.
+                // Format and Layout share one row to save vertical
+                // space; Folder lives on its own line because the
+                // long path needs the full width. The expanded /
+                // collapsed state is persisted via @AppStorage.
                 DisclosureGroup(
                     String(localized: "Recording settings"),
                     isExpanded: $recordingSettingsExpanded
                 ) {
                     VStack(alignment: .leading, spacing: 8) {
-                        FormatPicker()
-                        LayoutPicker()
+                        HStack(alignment: .firstTextBaseline, spacing: 12) {
+                            FormatPicker()
+                            LayoutPicker()
+                        }
                         FolderPicker()
                     }
                     .padding(.top, 4)
@@ -175,6 +184,15 @@ struct RootView: View {
                 MicrophonePicker()
 
                 // -- Live transcription (plan-003 Phase G; design §LT-8.1) --
+                //
+                // Plan-007 follow-up (2026-04-30): the per-provider key
+                // entry rows (Gemini, Soniox, Azure batch + realtime,
+                // ElevenLabs) and the Azure read-only summary block
+                // were lifted out of the popover into the Settings
+                // window (⌘, → Settings → Gemini / Soniox / Azure /
+                // ElevenLabs). The popover keeps only the picker, the
+                // source / format / language pickers, and a one-liner
+                // pointer to Settings when a cloud provider is active.
                 DisclosureGroup(
                     String(localized: "Live transcription"),
                     isExpanded: $transcriptionExpanded
@@ -190,62 +208,19 @@ struct RootView: View {
                             // honors only the first hint as a prompt-side
                             // language note).
                             TranscriptionLanguagePicker()
-                            // Gemini API key — visible only when the
-                            // picker selects a Gemini variant. Persists
-                            // GOOGLE_API_KEY to ~/.tool-agents/macrec-ui/.env
-                            // (mode 0600) and pushes it into the running
-                            // process so the very next Start picks it up.
-                            GeminiKeyField()
-                            // Soniox API key (plan-006) — visible only when
-                            // the picker selects the Soniox provider.
-                            // Persists SONIOX_API_KEY to
-                            // ~/.tool-agents/macrec-ui/.env (mode 0600).
-                            SonioxKeyField()
-                            // Plan-007 Phase C — Azure OpenAI key field
-                            // (shared across both batch and realtime
-                            // surfaces; the env-var name is the same).
-                            // Renders an inline read-only summary of the
-                            // resolved endpoint / deployment / api-version
-                            // so the user can sanity-check what the next
-                            // Start will use.
-                            if Self.normalize(transcribeProviderRaw) == "azure"
-                                || Self.normalize(transcribeProviderRaw) == "azure-openai-realtime"
-                            {
-                                ProviderKeyField(
-                                    providerId: Self.normalize(transcribeProviderRaw),
-                                    envVarName: "AZURE_OPENAI_API_KEY",
-                                    displayLabel: String(localized: "Azure OpenAI API key"),
-                                    helpURL: URL(string: "https://learn.microsoft.com/en-us/azure/ai-services/openai/")
-                                )
-                                Group {
-                                    Text(String(localized: "Endpoint: \(Self.resolved(envVar: "AZURE_OPENAI_ENDPOINT", fallback: "(not set)"))"))
-                                    Text(String(localized: "Deployment: \(Self.resolved(envVar: "AZURE_OPENAI_DEPLOYMENT", fallback: "(not set)"))"))
-                                    Text(String(localized: "API version: \(Self.resolved(envVar: "AZURE_OPENAI_API_VERSION", fallback: "2025-04-01-preview (default)"))"))
-                                }
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                if Self.normalize(transcribeProviderRaw) == "azure-openai-realtime" {
-                                    Group {
-                                        Text(String(localized: "VAD threshold: \(Self.resolved(envVar: "AZURE_OPENAI_REALTIME_VAD_THRESHOLD", fallback: "0.5 (default)"))"))
-                                        Text(String(localized: "VAD silence (ms): \(Self.resolved(envVar: "AZURE_OPENAI_REALTIME_VAD_SILENCE_MS", fallback: "200 (default)"))"))
-                                        Text(String(localized: "Noise reduction: \(Self.resolved(envVar: "AZURE_OPENAI_REALTIME_NOISE_REDUCTION", fallback: "near_field (default)"))"))
+                            // For cloud providers, surface a single-line
+                            // pointer to the Settings window where the
+                            // API key + provider-specific tuning live.
+                            if Self.isCloudProvider(transcribeProviderRaw) {
+                                SettingsLink {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "gearshape")
+                                        Text(String(localized: "Manage \(Self.providerDisplayName(for: transcribeProviderRaw)) API key & settings…"))
                                     }
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
                                 }
-                                Text(String(localized: "Edit these values in Settings (⌘,) → Azure OpenAI."))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .padding(.top, 2)
-                            }
-                            // Plan-007 Phase C — ElevenLabs API key field.
-                            if Self.normalize(transcribeProviderRaw) == "elevenlabs" {
-                                ProviderKeyField(
-                                    providerId: "elevenlabs",
-                                    envVarName: "ELEVENLABS_API_KEY",
-                                    displayLabel: String(localized: "ElevenLabs API key"),
-                                    helpURL: URL(string: "https://elevenlabs.io/app/settings/api-keys")
-                                )
+                                .buttonStyle(.borderless)
+                                .padding(.top, 2)
                             }
                         }
                     }
@@ -401,24 +376,17 @@ struct RootView: View {
         raw.trimmingCharacters(in: .whitespaces).lowercased()
     }
 
-    /// Read the canonical resolved value for an env var: prefer the
-    /// `~/.tool-agents/macrec-ui/.env` value (the Settings-managed
-    /// store) over `ProcessInfo` so the popover always shows the same
-    /// value as the Settings panel. Falls back to `ProcessInfo` (which
-    /// may carry a fresh shell-exported value) and finally to
-    /// `fallback` when nothing is set.
-    private static func resolved(envVar: String, fallback: String) -> String {
-        if let fromEnvFile = EnvFileStore.read(toolName: "macrec-ui", key: envVar),
-           !fromEnvFile.isEmpty
-        {
-            return fromEnvFile
+    /// Human-readable provider name shown in the popover's
+    /// "Manage <provider> API key & settings…" pointer.
+    private static func providerDisplayName(for raw: String) -> String {
+        switch raw.lowercased() {
+        case "gemini", "gemini-live":      return "Gemini"
+        case "soniox":                      return "Soniox"
+        case "azure":                       return "Azure OpenAI"
+        case "azure-openai-realtime":       return "Azure OpenAI Realtime"
+        case "elevenlabs":                  return "ElevenLabs"
+        default:                            return "provider"
         }
-        if let fromShell = ProcessInfo.processInfo.environment[envVar],
-           !fromShell.isEmpty
-        {
-            return fromShell
-        }
-        return fallback
     }
 
     /// Plan-007 Task 0.3 — per-provider acknowledgement check, with
