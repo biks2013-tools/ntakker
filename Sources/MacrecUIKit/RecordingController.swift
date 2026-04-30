@@ -229,6 +229,18 @@ public final class RecordingController {
         lastTranscriptionError = nil
     }
 
+    /// Clear the live transcript panel without touching the underlying
+    /// session. Resets `transcriptSegments` (the rolling in-memory cap)
+    /// and the transient error banner; leaves `transcriptionStatus` and
+    /// `transcriptionMetrics` alone so an in-flight session keeps
+    /// reporting cost / latency and a still-active provider can keep
+    /// appending fresh segments. The on-disk sidecar file is the
+    /// persistent record and is unaffected.
+    public func clearTranscriptSegments() {
+        transcriptSegments = []
+        lastTranscriptionError = nil
+    }
+
     // MARK: - Lifecycle
 
     /// Start a session. Builds a `SessionCoordinator` from the

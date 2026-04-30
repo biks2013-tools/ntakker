@@ -69,11 +69,22 @@ struct LiveTranscriptPanel: View {
         Group {
             if shouldShow {
                 VStack(alignment: .leading, spacing: 6) {
-                    HStack {
+                    HStack(spacing: 6) {
                         Text("Transcript")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
+                        if !segments.isEmpty {
+                            Button {
+                                recordingController?.clearTranscriptSegments()
+                            } label: {
+                                Image(systemName: "trash")
+                                    .imageScale(.small)
+                            }
+                            .buttonStyle(.borderless)
+                            .help(String(localized: "Clear transcript (sidecar file is unaffected)"))
+                            .accessibilityLabel(String(localized: "Clear transcript"))
+                        }
                         TranscriptionStatusBadge()
                     }
                     if let err = lastError {

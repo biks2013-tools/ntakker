@@ -83,4 +83,14 @@ struct LiveTranscriptPanelTests {
         let b = makeSegment(text: "hello")
         #expect(a.id != b.id)
     }
+
+    @Test("clearTranscriptSegments is a safe no-op on a fresh controller")
+    func clearOnFreshControllerIsNoOp() {
+        let c = makeController()
+        c.clearTranscriptSegments()
+        #expect(c.transcriptSegments.isEmpty)
+        #expect(c.lastTranscriptionError == nil)
+        #expect(c.transcriptionStatus == .idle)
+    }
 }
+
