@@ -9363,3 +9363,1124 @@ plan-007 §13. The design's recommendation for each:
   (corrects the original "no Azure realtime" finding)
 - Open decisions (OQ-A2-1..5): plan-007 §13 + this design §A2D-11
 - Risk register additions: plan-007 §10 RT-RISK-1..7
+
+## UI Redesign v1.6 — Light/Dark/System Theming + Popover Layout Refresh
+
+> **Authoritative source documents** for this section:
+> 1. `docs/design/refined-request-ui-redesign.md` — refined spec (18
+>    requirements, 12 acceptance criteria, A-01..A-08, Q-01..Q-03).
+> 2. `docs/reference/codebase-scan-ui-redesign.md` — exact `@AppStorage`
+>    inventory (15 keys), popover composition root, hosting boundary.
+> 3. `docs/reference/investigation-ui-redesign.md` — recommended approaches
+>    for the four sub-topics (theming, switching, persistence, layout).
+> 4. `docs/reference/research-nshostingcontroller-appearance.md` — confirms
+>    `NSHostingController` propagates appearance live on macOS 26 (post-15
+>    bug-fix); confirms `@AppStorage` reactivity is sufficient (no
+>    `NotificationCenter` observer needed for the appearance key).
+> 5. `docs/design/plan-008-ui-redesign-and-theming.md` — phase plan
+>    (P1..P11). This design section is the **HOW/WHY**; the plan is the
+>    **WHAT/WHEN**.
+> 6. `docs/design/mockups/popover-redesign.html` — visual target. The
+>    `:root` and `.popover.dark :root` CSS custom-property blocks
+>    (lines 147..164 light, 179..196 dark) are the literal source of the
+>    16 design tokens reified as `Palette` in §UR-3.
+>
+> **Constraints carried forward (must obey):**
+> - Swift / SwiftUI only — CLAUDE.md Exception 001 (TS-only rule does
+>   not apply to this project).
+> - macOS 26 deployment target — CLAUDE.md Exception 002.
+> - Zero rename of the 15 existing `@AppStorage` keys (codebase-scan §4f).
+> - Preserve vertical-elasticity popover plumbing (`ResizeHandle` +
+>   `PopoverController.heightObserver` + `NSPopover.contentSize`) — see
+>   §15 and codebase-scan §4h.
+> - Preserve `LiveTranscriptPanel` streaming verbatim — visual rehousing
+>   only.
+> - No fallback for required configuration. The appearance default
+>   (`"system"`) and the transcription-enabled default (`true`) are
+>   user-facing UX defaults documented in this section, **not** silent
+>   substitutions for missing configuration. No exception entry needed
+>   (refined-request §Constraints clause).
+> - Database naming convention — N/A (no database is touched).
+
+This section adds five user-visible artifacts to the macrec-ui app and
+roughly fifteen Swift files (eight new sources, four modified sources,
+three new test files):
+
+1. A user-facing **appearance switcher** (Follow System / Light / Dark)
+   surfaced in two places — the popover header strip and a new General
+   tab in the Settings dialog — both bound to the same `@AppStorage`
+   key.
+2. A **light/dark/system theme** that paints both the popover and the
+   Settings window from a single Swift palette, with a CSS-token →
+   SwiftUI-token mapping comment that keeps the mockup auditable.
+3. A **redesigned popover composition** that replaces the two
+   `DisclosureGroup`s with two `Form { Section { … } }.formStyle(.grouped)`
+   inset cards, a metadata strip header (filename-as-title + permission
+   pill + Save-to chip + appearance switcher), and a red-gradient
+   `Start Recording` footer.
+4. A **collapsed permissions pill** that surfaces only "All permissions
+   granted" when TCC is healthy and expands to the existing
+   `PermissionStatusView` per-permission CTAs when one or more
+   permissions are missing.
+5. A **redesigned API-key sub-row** (status chip + `Replace…` button)
+   that replaces the legacy `Save / Clear` button pair while preserving
+   the `EnvFileStore` / `ProcessInfo` four-tier resolution chain
+   verbatim (chip is display-only).
+
+The section is organized as eleven sub-sections (UR-1..UR-11) that map
+1:1 to the design-content checklist in plan-008.
+
+---
+
+### §UR-1 Component & file architecture
+
+The full file tree to create and modify, with each path's role and the
+phase from plan-008 that owns it. New files are marked **NEW**;
+modified files are marked **MOD**. All paths are relative to the
+project root.
+
+```
+# === Reusable in MacrecUIKit (testable from XCTest target) ===
+Sources/MacrecUIKit/Theme/AppearanceMode.swift                            (NEW — P1)
+
+# === macrec-ui executable target ===
+Sources/macrec-ui/Theme/Palette.swift                                     (NEW — P1)
+Sources/macrec-ui/Theme/SemanticColors.swift                              (NEW — P1)
+Sources/macrec-ui/Theme/AppearanceHostingRoot.swift                       (NEW — P1)
+
+Sources/macrec-ui/Settings/Sections/GeneralSettingsView.swift             (NEW — P2)
+Sources/macrec-ui/Settings/SettingsRootView.swift                         (MOD — P2)
+
+Sources/macrec-ui/MacrecUIApp.swift                                       (MOD — P1)
+Sources/macrec-ui/PopoverController.swift                                 (MOD — P8)
+
+Sources/macrec-ui/Views/Header/PopoverHeaderView.swift                    (NEW — P3)
+Sources/macrec-ui/Views/Header/FilenameTitleField.swift                   (NEW — P3)
+Sources/macrec-ui/Views/Header/MetadataStrip.swift                        (NEW — P3)
+Sources/macrec-ui/Views/Header/PermissionsPill.swift                      (NEW — P3)
+Sources/macrec-ui/Views/Header/SaveToChip.swift                           (NEW — P3)
+Sources/macrec-ui/Views/Header/AppearanceSwitcher.swift                   (NEW — P3)
+
+Sources/macrec-ui/Views/Sections/GeneralSection.swift                     (NEW — P4)
+Sources/macrec-ui/Views/Sections/LiveTranscriptionSection.swift           (NEW — P4)
+Sources/macrec-ui/Views/Sections/LiveTranscriptionSectionHeader.swift     (NEW — P6)
+Sources/macrec-ui/Views/Sections/PopoverSettingsForm.swift                (NEW — P4)
+
+Sources/macrec-ui/Views/Transcription/ApiKeyStatusRow.swift               (NEW — P5)
+Sources/macrec-ui/Views/Transcription/ApiKeyStatusChip.swift              (NEW — P5)
+
+Sources/macrec-ui/Views/Footer/PopoverFooter.swift                        (NEW — P7)
+Sources/macrec-ui/Views/Footer/RecordButton.swift                         (NEW — P7)
+Sources/macrec-ui/Views/Footer/ReadyPill.swift                            (NEW — P7)
+
+Sources/macrec-ui/RootView.swift                                          (MOD — P3, P4, P7, P9)
+Sources/macrec-ui/Views/PermissionStatusView.swift                        (MOD — P3 — expose state)
+Sources/macrec-ui/Views/Transcription/LiveTranscriptPanel.swift           (MOD — P9 — restyle only)
+Sources/macrec-ui/Views/Transcription/SonioxKeyField.swift                (MOD — P5 — Replace… host)
+Sources/macrec-ui/Views/Transcription/GeminiKeyField.swift                (MOD — P5 — Replace… host)
+Sources/macrec-ui/Views/Transcription/ProviderKeyField.swift              (MOD — P5 — Replace… host)
+Sources/macrec-ui/Views/ControlBar.swift                                  (MOD — P6 — read transcriptionEnabled)
+Sources/macrec-ui/Views/FilenameField.swift                               (UNCHANGED — kept verbatim, no
+                                                                           longer composed by RootView;
+                                                                           deprecation comment in P11)
+Sources/macrec-ui/Views/FolderPicker.swift                                (UNCHANGED — same disposition)
+
+# === Tests (Tests/MacrecUITests/, MacrecUIKit-importable only) ===
+Tests/MacrecUITests/Theme/AppearanceModeTests.swift                       (NEW — P10)
+Tests/MacrecUITests/Theme/AppearancePersistenceTests.swift                (NEW — P10)
+Tests/MacrecUITests/Theme/PaletteTests.swift                              (NEW — P10)
+Tests/MacrecUITests/Settings/GeneralSettingsViewTests.swift               (NEW — P10)
+Tests/MacrecUITests/Header/AppearanceSwitcherTests.swift                  (NEW — P10)
+Tests/MacrecUITests/ControlBarStartTappedKeysRegressionTests.swift        (NEW — P10)
+```
+
+Notes on placement:
+
+- **`AppearanceMode` lives in `MacrecUIKit`, not `macrec-ui`.** This
+  mirrors the architectural fix already applied to
+  `PrivacyDisclosureViewModel` (relocated so XCTest can reach it
+  without `@testable import` of an executable target). The tests
+  `AppearanceModeTests` and `AppearancePersistenceTests` import
+  `MacrecUIKit` only.
+- **`Palette`, `SemanticColors`, `AppearanceHostingRoot`** live in
+  `macrec-ui` because they are SwiftUI view-layer concerns of the
+  executable. They are reachable from `Tests/MacrecUITests/Theme/`
+  via `@testable import macrec_ui` (the target name; check
+  `Package.swift` for the underscore convention SPM applies).
+- **`Theme/`** is a brand-new subdirectory under
+  `Sources/macrec-ui/`. SPM picks it up automatically (default glob
+  `Sources/<target>/**/*.swift`); no `Package.swift` edit required.
+  P1 verifies with `swift build -v 2>&1 | grep AppearanceHostingRoot`.
+- **`Views/Header/`, `Views/Sections/`, `Views/Footer/`** are new
+  subdirectories that group the redesign-only views. Existing leaf
+  views (`FormatPicker`, `LayoutPicker`, etc.) stay where they are
+  in `Views/` and are composed by the new Section views via
+  `LabeledContent`.
+- **`Views/Transcription/SonioxKeyField.swift`** etc. are MOD-only:
+  the field's outer container is restructured so that the legacy
+  `Save / Clear` button pair is gone and the file exposes a single
+  view that the new `ApiKeyStatusRow` presents in a sheet. The
+  underlying `EnvFileStore` write logic stays.
+
+---
+
+### §UR-2 Module architecture (text diagram)
+
+```
+    ┌────────────────────────────────────────────────────────────────┐
+    │  Sources/MacrecUIKit/  (library; importable by macrec-ui +     │
+    │  Tests/MacrecUITests; no AppKit dependency)                    │
+    │                                                                │
+    │   • AppearanceMode  (public enum String, Sendable, CaseIter.)  │
+    │       — userDefaultsKey: "com.macrec.ui.appearance"            │
+    │       — defaultRawValue: "system"                              │
+    │       — colorScheme: ColorScheme?  (nil for .system)           │
+    │   • RecordingController, SessionCoordinator, etc. (UNCHANGED)  │
+    └────────────────────────────────────────────────────────────────┘
+                              ▲                   ▲
+              imports         │                   │  imports
+                              │                   │
+    ┌─────────────────────────┴────┐    ┌─────────┴──────────────────┐
+    │  Sources/macrec-ui/  (exe)   │    │  Tests/MacrecUITests/      │
+    │                              │    │                            │
+    │  Theme/                      │    │   Theme/                   │
+    │   • Palette                  │    │    • AppearanceModeTests   │
+    │       (light + dark static)  │    │    • AppearancePersistence │
+    │   • SemanticColors           │    │    • PaletteTests          │
+    │       (NSColor namespace)    │    │   Settings/                │
+    │   • AppearanceHostingRoot    │    │    • GeneralSettingsView…  │
+    │       (Content-generic)      │    │   Header/                  │
+    │                              │    │    • AppearanceSwitcher…   │
+    │  Views/Header/               │    │   ControlBarStartTapped…   │
+    │  Views/Sections/             │    │                            │
+    │  Views/Footer/               │    └────────────────────────────┘
+    │  Views/Transcription/        │
+    │  Views/ (existing leaves)    │
+    │                              │
+    │  RootView                    │
+    │   ├ PopoverHeaderView        │
+    │   ├ PopoverSettingsForm      │
+    │   │   ├ GeneralSection       │
+    │   │   └ LiveTranscriptionSec │
+    │   │       └ ApiKeyStatusRow  │
+    │   ├ LiveTranscriptPanel      │
+    │   └ PopoverFooter            │
+    │       ├ ReadyPill            │
+    │       └ RecordButton  ──── (or Pause/Stop/Split via ControlBar)│
+    │                                                                │
+    │  PopoverController (AppKit)                                    │
+    │   └ NSHostingController(rootView:                              │
+    │       AppearanceHostingRoot { RootView() })                    │
+    │                                                                │
+    │  MacrecUIApp.body                                              │
+    │   └ Settings { SettingsRootView() }                            │
+    │       .preferredColorScheme(resolvedScheme)                    │
+    └────────────────────────────────────────────────────────────────┘
+                              │
+              consumes        │
+                              ▼
+    ┌────────────────────────────────────────────────────────────────┐
+    │  Sources/MacrecCore/  (UNCHANGED — engine boundary respected)  │
+    │  RecordingSession, TranscriptionManager, ConfigResolver,       │
+    │  EnvFileStore (the chip in §UR-4 reads through this; never     │
+    │  writes through it)                                            │
+    └────────────────────────────────────────────────────────────────┘
+```
+
+Three boundaries are load-bearing:
+
+- **`MacrecUIKit` ⟷ `macrec-ui`**. `AppearanceMode` is the only new
+  symbol crossing this boundary in v1.6. `macrec-ui`'s
+  `AppearanceHostingRoot`, `GeneralSettingsView`, and
+  `AppearanceSwitcher` import `MacrecUIKit` and consume
+  `AppearanceMode.userDefaultsKey`, `.defaultRawValue`, and
+  `.colorScheme`. They never re-spell the magic string `"com.macrec.ui.appearance"`.
+- **`macrec-ui` ⟷ AppKit hosting**. `PopoverController` constructs
+  `NSHostingController(rootView: AppearanceHostingRoot { RootView() })`
+  and passes through `RecordingController` via the existing
+  `\.recordingController` environment key. Per
+  `research-nshostingcontroller-appearance.md`, **no new
+  `NotificationCenter` observer** is added for the appearance key —
+  `@AppStorage`'s KVO-backed reactivity handles redraw inside the
+  SwiftUI graph rooted at `NSHostingController`. The existing
+  `heightObserver` is unchanged.
+- **`macrec-ui` ⟷ `MacrecCore`**. Unchanged. The `ApiKeyStatusRow`
+  reads resolved env values via the existing
+  `ControlBar.resolvedEnvValue(_:)` helper (extracted to
+  `MacrecUIKit` if currently `private` — see plan-008 P5 risks).
+
+---
+
+### §UR-3 Data models & persistence schema
+
+Two new `@AppStorage` keys are added. Both are stored in
+`UserDefaults.standard`, which for the `com.local.macrec-ui` bundle
+maps to the same `defaults` domain queried in acceptance criterion 6
+(`defaults read com.local.macrec-ui …`). No existing key is renamed.
+No existing key changes type, default, or owner.
+
+#### §UR-3.1 New key: `"com.macrec.ui.appearance"`
+
+| Property | Value |
+|---|---|
+| Key string | `"com.macrec.ui.appearance"` (also `AppearanceMode.userDefaultsKey`) |
+| Type | `String` (raw value of `AppearanceMode`) |
+| Default value | `"system"` (also `AppearanceMode.defaultRawValue`) |
+| Allowed values | `"system"` \| `"light"` \| `"dark"` |
+| Read surfaces | `MacrecUIApp` (Settings scene `.preferredColorScheme`); `AppearanceHostingRoot` (popover `.preferredColorScheme`); `GeneralSettingsView` (Settings tab picker); `AppearanceSwitcher` (popover header picker) |
+| Write surfaces | `GeneralSettingsView`; `AppearanceSwitcher` (both bind via `$appearanceRaw`) |
+| Migration | None — net-new key. No prior key holds equivalent state. |
+| No-fallback rule | This is a **user-facing UX default**, not a missing-config fallback. Documented here and in plan-008 §Decisions. No exception entry needed. |
+| Defensive parsing | If `UserDefaults` returns an unknown raw (user manually edited defaults to e.g. `"sepia"`), `AppearanceMode(rawValue:)` returns `nil` → `.preferredColorScheme(nil)` → falls back to system appearance. Intentional. |
+
+#### §UR-3.2 New key: `"com.macrec.ui.transcriptionEnabled"`
+
+| Property | Value |
+|---|---|
+| Key string | `"com.macrec.ui.transcriptionEnabled"` |
+| Type | `Bool` |
+| Default value | `true` |
+| Allowed values | `true` \| `false` |
+| Read surfaces | `LiveTranscriptionSectionHeader` (drives the `Toggle` `.switch` style and the `.disabled` modifier on body rows); `ControlBar.startTapped()` (gates the `transcribeProvider` value composed into `RecordingOptions`) |
+| Write surfaces | `LiveTranscriptionSectionHeader` (the `Toggle` binding) |
+| Migration | None — net-new key. |
+| Engine-retention semantics (Q-03 resolution) | When `transcriptionEnabled == false`, `ControlBar.startTapped()` composes `RecordingOptions` as if `transcribeProvider == "none"`. The persisted `"com.macrec.ui.transcribeProvider"` value is **not** mutated, so re-toggling ON restores the same engine, source, format, and language hints. |
+
+#### §UR-3.3 Orphaned-but-retained keys (Phase 4 byproduct)
+
+After P4 replaces the two `DisclosureGroup`s with always-open `Form`
+sections, the following two keys lose their consumers:
+
+- `"com.macrec.ui.transcriptionExpanded"` — was bound to the
+  "Live transcription" disclosure.
+- `"com.macrec.ui.recordingSettingsExpanded"` — was bound to the
+  "Recording settings" disclosure.
+
+**Disposition**: keep the keys defined in `UserDefaults` (a downgrade
+to v1.5 re-reads them safely), but stop reading and writing them from
+any view. Documented as orphaned in plan-008 §Out of Scope and §11.
+No code path consumes them after P4.
+
+#### §UR-3.4 Complete `@AppStorage` inventory after this design
+
+(Identical to plan-008 §"@AppStorage key inventory after this plan".)
+The 15 pre-existing keys are retained verbatim. The two new keys above
+bring the total to 17. No collisions.
+
+---
+
+### §UR-4 Type / interface contracts
+
+The signatures below are the **frozen API contract** between
+parallel-implementation units. Coders working on the units identified
+in §UR-10 must not change these signatures without coordinating via
+the dependency-validator. Bodies are intentionally elided — the
+implementing coder writes them.
+
+#### §UR-4.1 `MacrecUIKit/Theme/AppearanceMode.swift`
+
+```swift
+import SwiftUI
+
+/// User-facing appearance preference. Persisted as a `String` raw value
+/// in `UserDefaults.standard` under `Self.userDefaultsKey`.
+///
+/// Lives in `MacrecUIKit` (not `macrec-ui`) so the test target can
+/// reach it without `@testable import` of an executable. Mirrors
+/// `PrivacyDisclosureViewModel`'s placement decision.
+public enum AppearanceMode: String, CaseIterable, Identifiable, Sendable {
+    case system
+    case light
+    case dark
+
+    public var id: String { rawValue }
+
+    /// Localized display string for menu/picker rows.
+    public var displayName: String { /* implementer */ }
+
+    /// SF Symbol name suitable for `Image(systemName:)` in pickers.
+    /// `.system` → `"circle.lefthalf.filled"`, `.light` → `"sun.max"`,
+    /// `.dark` → `"moon"`.
+    public var systemImageName: String { /* implementer */ }
+
+    /// SwiftUI color scheme to apply via `.preferredColorScheme(_:)`.
+    /// `nil` for `.system` (defer to host / system).
+    public var colorScheme: ColorScheme? { /* implementer */ }
+
+    /// `@AppStorage` key. The single string spelling for this preference.
+    public static let userDefaultsKey: String = "com.macrec.ui.appearance"
+
+    /// Documented user-facing default (NOT a missing-config fallback).
+    public static let defaultRawValue: String = AppearanceMode.system.rawValue
+}
+```
+
+#### §UR-4.2 `macrec-ui/Theme/Palette.swift`
+
+```swift
+import SwiftUI
+
+/// Brand-and-semantic token palette. The 16 fields below are the
+/// SwiftUI reification of the CSS custom properties declared in
+/// `docs/design/mockups/popover-redesign.html` (`:root` for light at
+/// lines 147..164, `.popover.dark :root` for dark at lines 179..196).
+///
+/// Two static instances (`Palette.light` and `Palette.dark`) are the
+/// only call sites; `AppearanceHostingRoot` selects between them via
+/// `@Environment(\.colorScheme)` and injects via `\.palette`.
+///
+/// **Do NOT** add `.regularMaterial` inside `Form` section backgrounds
+/// — the popover host already provides vibrancy; double-frost is wrong.
+struct Palette: Sendable {
+    // Text tokens
+    let label: Color            // CSS --label
+    let value: Color            // CSS --value
+    let secondary: Color        // CSS --secondary
+    let tertiary: Color         // CSS --tertiary
+
+    // Stroke / separator
+    let separator: Color        // CSS --separator
+    let groupStroke: Color      // CSS --group-stroke
+    let controlStroke: Color    // CSS --control-stroke
+
+    // Surface fills
+    let groupBackground: Color  // CSS --group-bg
+    let controlBackground: Color// CSS --control-bg
+    let fieldBackground: Color  // CSS --field-bg
+    let chipBackground: Color   // CSS --chip-bg
+
+    // Accent
+    let accent: Color           // CSS --accent
+
+    // Brand: record button
+    let recordGradientStart: Color  // CSS --record-grad first stop
+    let recordGradientEnd: Color    // CSS --record-grad last stop
+
+    // Brand: success chip
+    let successBackground: Color // CSS --success-bg
+    let successForeground: Color // CSS --success-fg
+    let successDot: Color        // CSS --success-dot
+
+    /// Light variant (mockup `:root` lines 147..164).
+    static let light: Palette = Palette(/* implementer wires the 17 values */)
+
+    /// Dark variant (mockup `.popover.dark :root` lines 179..196).
+    static let dark: Palette = Palette(/* implementer wires the 17 values */)
+
+    /// Convenience: linear gradient for the record button.
+    var recordButtonGradient: LinearGradient {
+        LinearGradient(colors: [recordGradientStart, recordGradientEnd],
+                       startPoint: .top, endPoint: .bottom)
+    }
+}
+```
+
+A header comment in this file documents which CSS properties map to
+`Color(nsColor:)` semantic colors (e.g. `--separator` →
+`Color(nsColor: .separatorColor)`) versus which are brand-specific
+literals (e.g. `--record-grad`). Future readers can audit the mapping
+without opening the HTML.
+
+#### §UR-4.3 `macrec-ui/Theme/SemanticColors.swift`
+
+```swift
+import SwiftUI
+
+/// Uninstantiable namespace re-exporting `Color(nsColor:)` semantic
+/// colors as readable `static let` properties. Keeps call sites short:
+/// `SemanticColors.groupBackground` instead of
+/// `Color(nsColor: .controlBackgroundColor)`.
+///
+/// Used by `Palette.light` / `Palette.dark` initializers to populate
+/// the system-derived tokens (separator, control background, etc.).
+enum SemanticColors {
+    static let label: Color = Color(nsColor: .labelColor)
+    static let secondaryLabel: Color = Color(nsColor: .secondaryLabelColor)
+    static let tertiaryLabel: Color = Color(nsColor: .tertiaryLabelColor)
+    static let separator: Color = Color(nsColor: .separatorColor)
+    static let windowBackground: Color = Color(nsColor: .windowBackgroundColor)
+    static let underPageBackground: Color = Color(nsColor: .underPageBackgroundColor)
+    static let controlBackground: Color = Color(nsColor: .controlBackgroundColor)
+    static let controlAccent: Color = Color(nsColor: .controlAccentColor)
+}
+
+/// SwiftUI `EnvironmentKey` for selecting the active `Palette` based on
+/// the current `\.colorScheme`. `AppearanceHostingRoot` writes this
+/// key; downstream views read via `@Environment(\.palette)`.
+private struct PaletteKey: EnvironmentKey {
+    static let defaultValue: Palette = .light
+}
+
+extension EnvironmentValues {
+    var palette: Palette {
+        get { self[PaletteKey.self] }
+        set { self[PaletteKey.self] = newValue }
+    }
+}
+```
+
+#### §UR-4.4 `macrec-ui/Theme/AppearanceHostingRoot.swift`
+
+```swift
+import MacrecUIKit
+import SwiftUI
+
+/// Wrapper that applies `.preferredColorScheme(_:)` and the matching
+/// `Palette` based on `@AppStorage(AppearanceMode.userDefaultsKey)`.
+///
+/// Used by `PopoverController` to wrap `RootView` before handing to
+/// `NSHostingController`. Per
+/// `docs/reference/research-nshostingcontroller-appearance.md`, this
+/// is sufficient on macOS 26 — no `NotificationCenter` observer is
+/// needed for the appearance key (the existing `heightObserver`
+/// covers `popoverHeight`, not appearance).
+struct AppearanceHostingRoot<Content: View>: View {
+    @AppStorage(AppearanceMode.userDefaultsKey)
+    private var raw: String = AppearanceMode.defaultRawValue
+
+    @Environment(\.colorScheme) private var systemColorScheme
+
+    @ViewBuilder var content: () -> Content
+
+    init(@ViewBuilder content: @escaping () -> Content) {
+        self.content = content
+    }
+
+    var body: some View {
+        let mode = AppearanceMode(rawValue: raw)
+        let resolvedScheme: ColorScheme? = mode?.colorScheme
+        // For palette selection, derive the *effective* scheme by
+        // honoring an explicit override, else falling back to the
+        // SwiftUI environment value (which already reflects system).
+        let effectiveScheme: ColorScheme = resolvedScheme ?? systemColorScheme
+        let palette: Palette = (effectiveScheme == .dark) ? .dark : .light
+
+        return content()
+            .preferredColorScheme(resolvedScheme)
+            .environment(\.palette, palette)
+    }
+}
+```
+
+#### §UR-4.5 `macrec-ui/Settings/Sections/GeneralSettingsView.swift`
+
+```swift
+import MacrecUIKit
+import SwiftUI
+
+/// Settings dialog tab — General. Hosts the Appearance picker (and
+/// nothing else for v1.6). Mirrors the popover-header
+/// `AppearanceSwitcher`; both bind to the same `@AppStorage` key.
+struct GeneralSettingsView: View {
+    @AppStorage(AppearanceMode.userDefaultsKey)
+    private var appearanceRaw: String = AppearanceMode.defaultRawValue
+
+    var body: some View { /* implementer — Form { Section("Appearance") { Picker(...) } } */ }
+}
+```
+
+#### §UR-4.6 `macrec-ui/Views/Header/PopoverHeaderView.swift`
+
+```swift
+struct PopoverHeaderView: View {
+    var body: some View { /* VStack(spacing: 8) { FilenameTitleField(); MetadataStrip() } */ }
+}
+
+struct FilenameTitleField: View {
+    @AppStorage("com.macrec.ui.basename") private var basename: String = ""
+    @Environment(\.recordingController) private var controller
+    var body: some View { /* TextField with .font(.title2).fontWeight(.semibold) */ }
+}
+
+struct MetadataStrip: View {
+    var body: some View { /* HStack(spacing: 12) { PermissionsPill(); SaveToChip(); Spacer(); AppearanceSwitcher() } */ }
+}
+```
+
+#### §UR-4.7 `macrec-ui/Views/Header/PermissionsPill.swift`
+
+```swift
+struct PermissionsPill: View {
+    @State private var expanded: Bool = false
+    @Environment(\.palette) private var palette
+    /// Reads consolidated state from `PermissionStatusView`'s exposed
+    /// observable (P3 risk mitigation: refactor `PermissionStatusView`
+    /// to expose `permissionState` as `@State`-backed observable).
+    var body: some View {
+        /* Collapsed: green dot + "All permissions granted" pill.
+           Tappable → expands the existing `PermissionStatusView`
+           (.always mode) below the header. */
+    }
+}
+```
+
+#### §UR-4.8 `macrec-ui/Views/Header/SaveToChip.swift`
+
+```swift
+struct SaveToChip: View {
+    @AppStorage("com.macrec.ui.outputFolder") private var outputFolder: String = ""
+    @Environment(\.popoverBehavior) private var popoverBehavior
+    var body: some View {
+        /* Chip-style Button. On tap: swap popover behavior to
+           .semitransient (preserves FolderPicker.swift behavior),
+           open NSOpenPanel, write resolved path. */
+    }
+}
+```
+
+#### §UR-4.9 `macrec-ui/Views/Header/AppearanceSwitcher.swift`
+
+```swift
+import MacrecUIKit
+import SwiftUI
+
+struct AppearanceSwitcher: View {
+    @AppStorage(AppearanceMode.userDefaultsKey)
+    private var raw: String = AppearanceMode.defaultRawValue
+    var body: some View {
+        Picker("Appearance", selection: $raw) {
+            ForEach(AppearanceMode.allCases) { mode in
+                Image(systemName: mode.systemImageName)
+                    .accessibilityLabel(Text(mode.displayName))
+                    .tag(mode.rawValue)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .help(String(localized: "Appearance: System, Light, or Dark"))
+    }
+}
+```
+
+#### §UR-4.10 `macrec-ui/Views/Sections/LiveTranscriptionSectionHeader.swift`
+
+```swift
+struct LiveTranscriptionSectionHeader: View {
+    @AppStorage("com.macrec.ui.transcriptionEnabled")
+    private var enabled: Bool = true
+    var body: some View {
+        HStack {
+            Text(String(localized: "Live Transcription"))
+                .font(.headline)
+            Spacer()
+            Toggle("", isOn: $enabled)
+                .toggleStyle(.switch)
+                .labelsHidden()
+        }
+    }
+}
+```
+
+The body of `LiveTranscriptionSection` reads the same key and applies
+`.disabled(!enabled)` to its rows so the dimmed-when-off behavior is
+local to the section, not global.
+
+#### §UR-4.11 `macrec-ui/Views/Sections/PopoverSettingsForm.swift`
+
+```swift
+struct PopoverSettingsForm: View {
+    var body: some View {
+        Form {
+            GeneralSection()
+            LiveTranscriptionSection()
+        }
+        .formStyle(.grouped)
+        .fixedSize(horizontal: false, vertical: true)   // critical — see §UR-5
+    }
+}
+```
+
+#### §UR-4.12 `macrec-ui/Views/Footer/PopoverFooter.swift`
+
+```swift
+struct PopoverFooter: View {
+    @Environment(\.recordingController) private var controller
+    var body: some View {
+        /* HStack { ReadyPill(state: controller.state); Spacer(); ControlBar() } */
+        /* The ControlBar internally renders the red-gradient RecordButton
+           when state == .idle, and the Pause/Stop/Split cluster otherwise.
+           Visibility matrix preserved per ControlBar.swift lines 9–18. */
+    }
+}
+
+struct RecordButton: View {
+    @Environment(\.palette) private var palette
+    var action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Label(String(localized: "Start Recording"), systemImage: "record.circle.fill")
+        }
+        .buttonStyle(.borderedProminent)
+        .background(palette.recordButtonGradient)
+        // The actual implementation may need a custom ButtonStyle to
+        // place the gradient as the button fill; the contract is "the
+        // record button uses palette.recordButtonGradient as its
+        // primary fill".
+    }
+}
+
+struct ReadyPill: View {
+    var state: SessionState
+    var body: some View { /* "Ready" / "Recording" / "Paused" pill */ }
+}
+```
+
+#### §UR-4.13 `macrec-ui/Views/Transcription/ApiKeyStatusRow.swift`
+
+```swift
+struct ApiKeyStatusRow: View {
+    /// Currently-selected provider; reads
+    /// `@AppStorage("com.macrec.ui.transcribeProvider")`.
+    let providerRaw: String
+    /// Resolved env value (read via the existing
+    /// `ControlBar.resolvedEnvValue(_:)` helper — extracted to
+    /// `MacrecUIKit` if currently `private`).
+    let resolvedKey: String?
+
+    @State private var showSheet: Bool = false
+
+    var body: some View {
+        HStack {
+            ApiKeyStatusChip(present: resolvedKey?.isEmpty == false)
+            Spacer()
+            Button(String(localized: "Replace…")) { showSheet = true }
+        }
+        .sheet(isPresented: $showSheet) { /* provider-specific entry view */ }
+    }
+}
+
+struct ApiKeyStatusChip: View {
+    let present: Bool
+    @Environment(\.palette) private var palette
+    var body: some View {
+        /* Pill: present → palette.successBackground + .successForeground +
+                          .successDot; absent → secondary text "Not configured" */
+    }
+}
+```
+
+The expiration-date badge from the mockup is **deferred** (Q-02) and
+not implemented in v1.6. The chip surfaces presence-only state.
+
+---
+
+### §UR-5 Layout architecture
+
+The new `RootView` composes its body as a single
+`VStack(spacing: 0)` with five logical bands. The three-band
+elasticity story (pinned top / flexible middle / pinned bottom +
+`ResizeHandle`) is preserved verbatim from the existing layout — see
+codebase-scan §4h.
+
+```
+RootView body
+└── VStack(spacing: 0)
+    ├── PopoverHeaderView                       ← pinned top
+    │     ├── FilenameTitleField (basename @AppStorage)
+    │     └── MetadataStrip
+    │           ├── PermissionsPill
+    │           ├── SaveToChip
+    │           ├── Spacer()
+    │           └── AppearanceSwitcher
+    ├── ErrorBanner                              ← self-conditional, returns
+    │                                              EmptyView when no error
+    ├── PopoverSettingsForm                     ← intrinsic-height middle
+    │     └── Form { ... }
+    │           .formStyle(.grouped)
+    │           .fixedSize(horizontal: false,
+    │                     vertical: true)        ← CRITICAL
+    │           ├── GeneralSection
+    │           │     ├── LabeledContent("Format")     { FormatPicker() }
+    │           │     ├── LabeledContent("Layout")     { LayoutPicker() }
+    │           │     └── LabeledContent("Microphone") { MicrophonePicker() }
+    │           └── LiveTranscriptionSection
+    │                 .disabled(!transcriptionEnabled)
+    │                 header: LiveTranscriptionSectionHeader (NSSwitch)
+    │                 body:
+    │                   ├── LabeledContent("Engine")    { TranscriptionPicker() }
+    │                   ├── LabeledContent("Source")    { TranscriptionSourcePicker() }
+    │                   ├── LabeledContent("Format")    { TranscriptionFormatPicker() }
+    │                   ├── LabeledContent("Language")  { TranscriptionLanguagePicker() }
+    │                   └── ApiKeyStatusRow
+    ├── LiveTranscriptPanel                     ← FLEXIBLE — claims residual
+    │     .frame(maxHeight: .infinity)             vertical space
+    ├── TranscriptionMetricsView                ← intrinsic
+    ├── PopoverFooter                            ← pinned bottom
+    │     ├── ReadyPill
+    │     └── ControlBar (renders RecordButton when idle, Pause/Stop/Split
+    │                     otherwise — preserves visibility matrix from
+    │                     ControlBar.swift lines 9–18)
+    ├── SavedToDisclosure                        ← self-hides when empty
+    └── ResizeHandle (height: $popoverHeight)    ← unchanged binding
+```
+
+The whole stack is wrapped in:
+
+```
+.frame(
+    height: min(max(popoverHeight, ResizeHandle.minHeight), ResizeHandle.maxHeight),
+    alignment: .top
+)
+```
+
+(unchanged from the current implementation — see codebase-scan §4h
+points 1 and 4).
+
+**Why vertical elasticity is preserved.**
+
+- `PopoverSettingsForm` carries
+  `.fixedSize(horizontal: false, vertical: true)`. Without it, the
+  `Form { … }.formStyle(.grouped)` would expand to fill all available
+  vertical space (Form on macOS 26 wraps its content in an internal
+  `ScrollView` that takes infinite height by default). With it, the
+  Form reports its **intrinsic** content height, leaving residual
+  vertical space to siblings.
+- `LiveTranscriptPanel` carries `.frame(maxHeight: .infinity)`. It
+  claims all residual vertical space inside the parent `VStack`.
+- The `RootView` outer `.frame(height: …)` continues to drive the
+  popover's window height via `PopoverController.heightObserver` →
+  `NSPopover.contentSize`. The user's drag on `ResizeHandle` writes
+  through `popoverHeight @AppStorage` → `UserDefaults.didChangeNotification`
+  → AppKit bridge.
+
+This is the same three-band pattern that `ControlBar` and the
+existing `LiveTranscriptPanel` already coexist with — codebase-scan
+§4h confirms the controls band uses
+`.fixedSize(horizontal: false, vertical: true)` today. The redesign
+relocates the controls into a `Form` but keeps the modifier chain
+identical.
+
+**Why double-scroll is avoided.** `Form.formStyle(.grouped)` on
+macOS 26 internally adopts `ScrollView` semantics. Nesting it inside
+the existing outer `VStack` (no outer `ScrollView`) is the supported
+shape. We do **not** wrap `RootView` body in a `ScrollView` — only
+the Form is internally scrollable when its intrinsic height exceeds
+its frame, and the `.fixedSize(…, vertical: true)` modifier prevents
+the scroll engagement in the common case (Form fits its content).
+This matches investigation §Topic 4.A guidance.
+
+---
+
+### §UR-6 Appearance propagation diagram
+
+```
+                  ┌─────────────────────────────────────────────┐
+                  │ @AppStorage("com.macrec.ui.appearance")     │
+                  │  (KVO-backed, in UserDefaults.standard;     │
+                  │   bundle domain = com.local.macrec-ui)      │
+                  └──────────────────┬──────────────────────────┘
+                                     │
+                  ┌──────────────────┼──────────────────────────┐
+                  │                  │                          │
+                  ▼                  ▼                          ▼
+     ┌────────────────────┐  ┌────────────────────┐  ┌────────────────────┐
+     │ AppearanceHosting  │  │ MacrecUIApp.body   │  │ AppearanceSwitcher │
+     │ Root (popover side)│  │ Settings { } scene │  │ + GeneralSettings  │
+     │  reads $raw        │  │  reads $raw        │  │  bind $raw (read+  │
+     │  → .preferredColor │  │  → .preferredColor │  │   write)           │
+     │     Scheme(scheme) │  │     Scheme(scheme) │  └────────────────────┘
+     │  → palette = .light│  │                    │
+     │     or .dark       │  │  Settings window   │
+     │                    │  │  repaints in       │
+     │  injects via       │  │  light/dark/system │
+     │  \.palette env     │  │                    │
+     └────────┬───────────┘  └────────────────────┘
+              │
+              ▼
+     ┌────────────────────────────────────────────┐
+     │ NSHostingController(rootView:              │
+     │   AppearanceHostingRoot { RootView() })    │
+     │                                            │
+     │ SwiftUI graph rooted here. Diff updates    │
+     │ the .preferredColorScheme modifier inside  │
+     │ the graph; NSHostingView's                 │
+     │ viewDidChangeEffectiveAppearance() pushes  │
+     │ the new appearance into                    │
+     │ @Environment(\.colorScheme) for descendants│
+     │                                            │
+     │ Popover repaints in light/dark/system      │
+     └────────────────────────────────────────────┘
+```
+
+**No `NotificationCenter` / KVO observer is required on macOS 26 for
+the appearance key.** The research doc establishes that:
+
+- `@AppStorage` is KVO-backed on `UserDefaults.standard` and delivers
+  changes on the main actor.
+- `NSHostingController`'s SwiftUI graph honors `@AppStorage` updates
+  natively — when `raw` changes, `AppearanceHostingRoot.body`
+  re-evaluates, the `.preferredColorScheme(_:)` modifier diffs, and
+  the hosted view repaints within one run loop.
+- `NSPopover` automatically inherits `NSApp.effectiveAppearance` for
+  the `nil` (system-following) case (per Apple AppKit propagation
+  chain documentation).
+- The macOS 14 bug where `.preferredColorScheme(nil)` got "stuck"
+  after an explicit `.light` / `.dark` value was fixed in macOS 15
+  and the fix carries forward to macOS 26 — confirmed via Apple
+  Developer Forums thread 765709.
+
+**Should-it-ever-break escape hatch.** If a future macOS 26 point
+release regresses live system-following inside a hosted popover, the
+documented escape is:
+
+1. Add `private var appearanceObserver: NSKeyValueObservation?` to
+   `PopoverController`.
+2. In `init`, observe `NSApp.observe(\.effectiveAppearance) { [weak self] _, _ in self?.refreshHostedRoot() }`.
+3. `refreshHostedRoot()` re-assigns
+   `hostingController.rootView = AppearanceHostingRoot { RootView() }`
+   to force a fresh evaluation.
+
+This is **not** implemented in v1.6 (per the research doc, it is not
+needed). It is documented here so a future maintainer has the recipe
+if symptoms appear.
+
+---
+
+### §UR-7 Error handling strategy
+
+The redesign introduces **no new error paths**. Concretely:
+
+- **Appearance key**: `@AppStorage` reads cannot fail (UserDefaults
+  is always readable). Writes cannot fail in any user-observable way
+  (UserDefaults persists asynchronously and never throws). Defensive
+  parsing of unknown raw values returns `nil` from
+  `AppearanceMode(rawValue:)` → `.preferredColorScheme(nil)` →
+  system fallback. This is **intentional and documented**, not a
+  silent substitution for missing required configuration.
+- **Transcription-enabled key**: `@AppStorage<Bool>` round-trips
+  cleanly; no failure mode.
+- **API-key chip / `Replace…` flow**: the chip is **display-only**.
+  It reads through `ControlBar.resolvedEnvValue(_:)` (the existing
+  helper), which surfaces resolved-or-nil. The `Replace…` button
+  presents the existing per-provider entry view (`SonioxKeyField`,
+  `GeminiKeyField`, `ProviderKeyField`) which already wraps
+  `EnvFileStore.write(toolName:key:value:)` and surfaces failures
+  via `MacrecError` → `ErrorBanner`. **No new error path is added.**
+- **Missing required configuration** (no API key for a cloud
+  provider that requires one) continues to flow through the
+  existing path: `RecordingController.start(...)` throws
+  `MacrecError`, the controller publishes `latestError`, and
+  `ErrorBanner` (still mounted in the new `RootView` directly below
+  the header — see §UR-5) renders the message. The redesign does
+  not silence this path.
+- **No-fallback rule honored**. The documented user-facing UX
+  defaults (`appearance = "system"`, `transcriptionEnabled = true`)
+  are not fallbacks for missing configuration — they are the
+  product's specified initial UX. Both are recorded in the
+  refined-request §Constraints clause and plan-008 §Decisions. No
+  exception entry is required.
+
+---
+
+### §UR-8 Technology choices justification
+
+#### §UR-8.1 `Form { Section { … } }.formStyle(.grouped)` over hand-rolled `VStack` + custom backgrounds
+
+- **Why**: macOS Tahoe System Settings is the visual target. `Form`
+  with `.grouped` style produces the inset-card look, hairline
+  dividers, label-on-left/control-on-right `LabeledContent` rows,
+  and `NSPopUpButton` chevron pickers (`.pickerStyle(.menu)`) with
+  zero custom drawing. Investigation Topic 4 §Recommendation
+  confirms this.
+- **Why not hand-rolled** (Option 4.B): re-implements what Apple
+  provides for free; divider insets and padding need to track Tahoe
+  metrics that may shift between OS revisions; loses keyboard /
+  accessibility behavior baked into `Form`.
+- **Trade-off**: less control over per-row padding. Mitigated by the
+  fact that the mockup's row metrics already match the system Form
+  defaults — no custom padding is needed.
+
+#### §UR-8.2 `@AppStorage` over custom `ObservableObject`
+
+- **Why**: matches the convention of all 15 existing keys (codebase-scan
+  §4f). Zero new infrastructure; SwiftUI reactivity for free; works
+  in tests via `UserDefaults(suiteName:).set(_:forKey:)` overrides;
+  the `defaults read com.local.macrec-ui …` shell command in
+  acceptance criterion 6 works unmodified. Investigation Topic 3
+  §Recommendation confirms.
+- **Why not `ObservableObject`** (Option 3.C): heavy machinery for a
+  single string preference; loses `@AppStorage`'s automatic SwiftUI
+  redraw guarantees unless paired with `@StateObject` everywhere;
+  inconsistent with project convention.
+- **Trade-off**: no centralized validation pipeline. Acceptable —
+  validation happens via `AppearanceMode(rawValue:)` at the read site.
+
+#### §UR-8.3 `.preferredColorScheme(_:)` over `NSApp.appearance =` mutation
+
+- **Why**: SwiftUI-idiomatic; scope-controlled (the modifier acts on
+  the SwiftUI subtree it's attached to, with no global side-effects);
+  composes cleanly with `Settings { }` scene; integrates with
+  `@AppStorage` reactivity natively. Investigation Topic 2
+  §Recommendation confirms.
+- **Why not `NSApp.appearance =`** (Option 2.B): mixes AppKit state
+  mutation into SwiftUI; doesn't compose cleanly with
+  `.preferredColorScheme` (which-wins is undefined and version-
+  dependent); harder to test (global singleton); fragile.
+- **Trade-off**: requires the small `AppearanceHostingRoot` wrapper
+  inside `PopoverController`'s hosting setup. Acceptable — the
+  wrapper is six lines and self-documenting.
+
+#### §UR-8.4 Custom `Palette` struct + `@Environment(\.palette, …)` over xcassets color sets
+
+- **Why**: single source of truth in code; easier diffing in PRs; no
+  new `Package.swift` resources surface; brand colors are minimal
+  (record gradient + success chip are the only non-system colors);
+  testable directly via `PaletteTests` without `Bundle.module`
+  plumbing. The project has zero xcassets today (codebase-scan §4g);
+  introducing one for two brand tokens is over-investment.
+- **Why not xcassets** (Option 1.C): brand gradients (record-button)
+  cannot be expressed as a Color Set anyway; SPM + xcassets requires
+  `Bundle.module` plumbing that adds friction in tests; bypasses
+  Increase-Contrast accessibility integration.
+- **Trade-off**: hex literals for brand colors live in code, not in
+  a designer-friendly JSON. Acceptable — there are exactly four hex
+  values across light + dark variants of the record-button gradient
+  and success chip.
+
+#### §UR-8.5 `AppearanceMode` in `MacrecUIKit` not `macrec-ui`
+
+- **Why**: testable from XCTest target without `@testable import` of
+  an executable target. Mirrors the architectural fix already
+  applied to `PrivacyDisclosureViewModel`. Allows
+  `AppearanceModeTests` and `AppearancePersistenceTests` to import
+  `MacrecUIKit` only.
+- **Why not in `macrec-ui`**: forces tests into `@testable import`
+  of an executable target, which SPM supports but is fragile (test
+  recompiles the entire executable on each change). The convention
+  fix is already documented in codebase-scan §5.
+- **Trade-off**: `AppearanceMode` becomes part of the
+  `MacrecUIKit` public API surface. Acceptable — it's a single
+  enum and is genuinely cross-cutting (the popover, the Settings
+  scene, and the UI tests all consume it).
+
+#### §UR-8.6 No `NotificationCenter` observer for the appearance key
+
+- **Why**: per the dedicated research doc, `@AppStorage` reactivity
+  inside the SwiftUI graph rooted at `NSHostingController` handles
+  redraw natively on macOS 26 (post-15 bug fix). Adding an observer
+  duplicates work and adds maintenance burden.
+- **Why not** (defensive-coding alternative): a redundant observer
+  would mask the SwiftUI reactivity bug if it ever regresses, making
+  diagnosis harder.
+- **Trade-off**: depends on macOS 26 not regressing. Documented
+  escape hatch (§UR-6) covers the contingency.
+
+---
+
+### §UR-9 Integration points
+
+The redesign respects the following pre-existing boundaries
+verbatim. Each is a contract that the new code reads but does not
+mutate.
+
+- **`RecordingController` (in `MacrecUIKit`)** — unchanged. Continues
+  to publish `state`, `transcriptSegments`, `transcriptionStatus`,
+  `transcriptionMissingKey`, `transcriptionMetrics`, `latestError`,
+  `latestLevels`, `segmentElapsed`, and `completedSegments`. The
+  redesigned views consume the same nine published properties via
+  `@Environment(\.recordingController)`.
+- **`MacrecCore` engine layer** — unchanged. `RecordingSession`,
+  `TranscriptionManager`, `ConfigResolver`, `EnvFileStore`. The chip
+  in `ApiKeyStatusRow` reads through the existing
+  `ControlBar.resolvedEnvValue(_:)` helper; it never writes through
+  `EnvFileStore` directly. The four-tier env-var resolution chain is
+  unchanged.
+- **CLI (`Sources/macrec/`)** — unchanged. Out of scope.
+- **`PopoverController.heightObserver`** — unchanged. Continues to
+  bridge `popoverHeight` `@AppStorage` writes to
+  `NSPopover.contentSize` on `UserDefaults.didChangeNotification`.
+  The new appearance key fires the same notification, but
+  `heightObserver` filters by key so no spurious resize occurs.
+
+The single new boundary write is at `ControlBar.startTapped()`:
+
+```swift
+@AppStorage("com.macrec.ui.transcriptionEnabled") private var transcriptionEnabled: Bool = true
+@AppStorage("com.macrec.ui.transcribeProvider")   private var transcribeProvider:   String = "apple"
+…
+let effectiveProvider: String = transcriptionEnabled ? transcribeProvider : "none"
+options.transcribeProvider = effectiveProvider
+```
+
+This is the **only** site that consumes `transcriptionEnabled`. The
+persisted `transcribeProvider` value is **not** mutated, preserving
+the user's last engine choice for re-toggling ON.
+
+---
+
+### §UR-10 Parallelization map
+
+The plan-008 phase graph identifies six parallelization seams
+inside this design. Each seam is a Swift compilation unit that can
+be implemented independently provided its **input contract** (the
+signatures from §UR-4 it consumes) is honored.
+
+| Unit | Files | Phase | Input contract (consumes) | Output contract (produces) |
+|---|---|---|---|---|
+| **A — `AppearanceMode`** | `MacrecUIKit/Theme/AppearanceMode.swift` + `Tests/MacrecUITests/Theme/AppearanceModeTests.swift` | P1 + P10 | (none — foundation) | `AppearanceMode` enum: `userDefaultsKey`, `defaultRawValue`, `colorScheme`, `displayName`, `systemImageName`. **Frozen API** — units C, F, G consume. |
+| **B — `Palette` + `SemanticColors`** | `macrec-ui/Theme/Palette.swift`, `macrec-ui/Theme/SemanticColors.swift` + `Tests/MacrecUITests/Theme/PaletteTests.swift` | P1 + P10 | (none — foundation) | `Palette.light`, `Palette.dark` static instances; `\.palette` env key. **Frozen API** — units E, G, H consume. |
+| **C — `GeneralSettingsView` + Settings tab** | `macrec-ui/Settings/Sections/GeneralSettingsView.swift`, `macrec-ui/Settings/SettingsRootView.swift` (MOD) + `Tests/MacrecUITests/Settings/GeneralSettingsViewTests.swift` | P2 + P10 | Unit A (`AppearanceMode.userDefaultsKey`, `.defaultRawValue`) | New `SettingsCategory.general` case; new tab in sidebar. |
+| **D — API-key field redesign** | `Views/Transcription/SonioxKeyField.swift` (MOD), `GeminiKeyField.swift` (MOD), `ProviderKeyField.swift` (MOD), `Views/Transcription/ApiKeyStatusRow.swift` (NEW), `ApiKeyStatusChip.swift` (NEW) | P5 | (purely visual — no signature dependency on A or B beyond `\.palette` for the chip styling, which is consumed via `@Environment` and so does not require unit B's signature to be frozen first) | `ApiKeyStatusRow(providerRaw:resolvedKey:)` view. |
+| **E — `RootView` refactor + popover-layout merge** | `macrec-ui/RootView.swift` (MOD), all `Views/Header/*`, all `Views/Sections/*`, all `Views/Footer/*` | P3 + P4 + P6 + P7 + P9 (this is the central composition root) | Units B (palette), and after it lands: D (chip), F (hosting wrapper) | New three-band `RootView`. **Serial unit** — touches the central composition root; one-agent serial after A, B are merged. |
+| **F — `AppearanceHostingRoot` + `PopoverController` MOD + Settings scene `.preferredColorScheme`** | `macrec-ui/Theme/AppearanceHostingRoot.swift`, `macrec-ui/PopoverController.swift` (MOD), `macrec-ui/MacrecUIApp.swift` (MOD) + `Tests/MacrecUITests/Theme/AppearancePersistenceTests.swift` | P1 + P8 + P10 | Unit A | Wrapper struct; popover wrap site; Settings scene modifier. |
+| **G — `AppearanceSwitcher`** | `macrec-ui/Views/Header/AppearanceSwitcher.swift` + `Tests/MacrecUITests/Header/AppearanceSwitcherTests.swift` | P3 + P10 | Units A, B | Picker view bound to the appearance key. Composed by unit E into `MetadataStrip`. |
+| **H — `LiveTranscriptPanel` restyle** | `macrec-ui/Views/Transcription/LiveTranscriptPanel.swift` (MOD) | P9 | Unit B (`\.palette`) | Container restyled; streaming behavior verbatim. **Independent** — tests in `LiveTranscriptPanelTests` already cover behavior. |
+| **I — `ControlBar` MOD** | `macrec-ui/Views/ControlBar.swift` (MOD) + `Tests/MacrecUITests/ControlBarStartTappedKeysRegressionTests.swift` | P6 + P10 | (none — independent) | `transcriptionEnabled` gate at `startTapped()`. |
+
+**Topological order for the parallel build**:
+
+```
+Phase 1 (parallel):  Unit A, Unit B
+Phase 2 (parallel):  Unit C, Unit D, Unit F, Unit G, Unit H, Unit I
+Phase 3 (serial):    Unit E (the merge)
+Phase 4 (parallel):  P10 test builders fill remaining gaps
+```
+
+**Frozen-contract guarantee.** Coders claiming Unit A and Unit B
+must publish their signatures (§UR-4.1, §UR-4.2, §UR-4.3) before
+the Phase-2 parallel agents begin. Once published, the signatures
+do **not** change without a coordinated re-spec — a unit-D or unit-G
+agent that picks up `AppearanceMode.userDefaultsKey` consumes that
+exact name. This is enforced by the dependency-validator in plan-008
+P8.
+
+---
+
+### §UR-11 Architectural decisions log
+
+| ADR | Decision | Alternatives considered | Rationale | Trade-offs |
+|---|---|---|---|---|
+| UR-ADR-1 | Use `Form { Section { … } }.formStyle(.grouped)` for the two settings sections in the popover middle band. | (a) Hand-rolled `VStack` + custom rounded backgrounds + manual `Divider()` (Option 4.B in investigation). (b) `List`-based grouped style (rejected; `List` engages full-height behavior and fights the elasticity contract). | Built-in HIG match for macOS Tahoe System Settings; system-managed dividers and accessibility; least code; investigation §Topic 4 explicitly recommends. | Less control over per-row padding; must use `.formStyle(.grouped)` to get the inset look (no granular escape hatch); Form internally engages a `ScrollView` that requires `.fixedSize(horizontal: false, vertical: true)` to coexist with the elastic transcript panel (§UR-5). |
+| UR-ADR-2 | Persist appearance via `@AppStorage("com.macrec.ui.appearance")` in `UserDefaults.standard`, raw `String`. | (a) `@AppStorage` with explicit suite name `UserDefaults(suiteName: "com.local.macrec-ui")` (Option 3.B). (b) Custom `ObservableObject` wrapper (Option 3.C). | Matches all 15 existing UI keys (codebase-scan §4f); `defaults read com.local.macrec-ui …` works directly per acceptance criterion 6; SwiftUI reactivity for free; testable via UserDefaults suite overrides. | None material. The convention "stay in `UserDefaults.standard`" is consistent. |
+| UR-ADR-3 | Apply `.preferredColorScheme(_:)` via the `AppearanceHostingRoot` SwiftUI wrapper inside `NSHostingController`, not via `NSApp.appearance =` mutation. | (a) `NSApp.appearance = NSAppearance(named: …)` (Option 2.B; AppKit-native global mutation). (b) Scene-only modifier without popover propagation (Option 2.A; would fail acceptance criterion 5). | Pure SwiftUI; scope-controlled; no global side-effects; integrates with `@AppStorage` reactivity natively; works on both popover and Settings scene; macOS 26 propagation confirmed by the dedicated research doc. | Requires the small `AppearanceHostingRoot` wrapper inside `PopoverController`'s hosting setup. Acceptable — six lines, self-documenting. |
+| UR-ADR-4 | Place `AppearanceMode` in `MacrecUIKit`, not in `macrec-ui`. | (a) Place in `macrec-ui/Theme/AppearanceMode.swift` and use `@testable import macrec_ui` from the test target. | Mirrors the `PrivacyDisclosureViewModel` placement decision; `XCTest` reaches the type without `@testable import` of an executable; faster test recompiles; cleaner public API surface. | Adds one symbol to `MacrecUIKit`'s public surface. Acceptable — the type is a 9-line enum that is genuinely cross-cutting. |
+| UR-ADR-5 | Use a single Swift `Palette` struct (no xcassets). | (a) `*.xcassets` color sets with Any/Dark Appearance variants (Option 1.C). (b) Full custom `Palette` struct without system-color reuse (Option 1.B). | Zero new build-system surface; the project has no xcassets today; brand colors are minimal (record gradient + success chip — 4 hex values total); testable directly via `PaletteTests`; single source of truth for the CSS-token → SwiftUI-token mapping. | Hex literals for brand colors live in code, not in a designer-friendly JSON. Acceptable for the small scope. |
+| UR-ADR-6 | No `NotificationCenter` / KVO observer for the appearance key in `PopoverController`. | (a) Add a `UserDefaults.didChangeNotification` observer mirroring `heightObserver` and re-assign `hostingController.rootView` on appearance change. | Per `research-nshostingcontroller-appearance.md`, `@AppStorage` reactivity inside the SwiftUI graph handles repaint natively on macOS 26 (post-15 bug fix); the redundant observer would only mask future regressions and add maintenance burden. | Depends on macOS 26 not regressing live system-following inside `NSHostingController`. Documented escape hatch in §UR-6. |
+| UR-ADR-7 | Add `@AppStorage("com.macrec.ui.transcriptionEnabled")` (Bool, default `true`) to gate the Live Transcription section, **without** mutating the persisted `transcribeProvider`. | (a) Reset `transcribeProvider` to `"none"` when the NSSwitch toggles OFF (simpler; loses last-engine memory). | Better UX: re-toggling ON restores the user's last engine, source, format, and language hints. The gate is a visibility/active flag, not an engine selector. | Two related state values (`transcriptionEnabled` + `transcribeProvider`) must be kept consistent at `ControlBar.startTapped()`. Mitigated by a single line: `effectiveProvider = transcriptionEnabled ? transcribeProvider : "none"`. |
+| UR-ADR-8 | Defer the API-key expiration-date chip (Q-02) to a follow-up plan. The v1.6 chip surfaces presence-only state. | (a) Implement in v1.6 with a new `@AppStorage("com.macrec.ui.apiKeyExpiry.<provider>")` key per provider plus a date entry control inside the `Replace…` sheet. | Non-trivial UX addition (per-provider date entry surface) that deserves its own plan; not blocking the rest of the redesign; can be added without breaking the chip's contract (the chip already accepts `present: Bool`). | The mockup shows an expiration badge that v1.6 does not render. Documented as out-of-scope in plan-008. |
+| UR-ADR-9 | Consolidate the folder picker into the metadata-strip `SaveToChip`; remove the folder row from the General section body. | (a) Keep the folder row in General and also surface it as a chip (would be redundant). (b) Remove the chip and keep only the row (would diverge from the mockup). | Mockup shows the folder only in the metadata strip (refined-request A-07). | The existing `FolderPicker.swift` becomes orphan-but-retained for back-compat; deprecation comment in P11. |
+| UR-ADR-10 | Keep the orphaned `transcriptionExpanded` and `recordingSettingsExpanded` keys readable in `UserDefaults` for back-compat; stop reading/writing them from any view. | (a) Migrate or delete the keys. | A downgrade to v1.5 must re-read them safely; deleting them would break a downgrade. The cost of leaving them is a single UserDefaults entry that no view consumes — negligible. | Two keys are listed in the inventory as "orphaned". Documented in §UR-3.3 and plan-008 §11. |
+
+---
+
+### §UR-12 Cross-references
+
+- Plan: `docs/design/plan-008-ui-redesign-and-theming.md` (P1..P11
+  with parallelization map, AC coverage, risk register).
+- Refined request: `docs/design/refined-request-ui-redesign.md`
+  (R1..R18, AC#1..#12, A-01..A-08, Q-01..Q-03).
+- Codebase scan: `docs/reference/codebase-scan-ui-redesign.md`
+  (popover composition, 15-key inventory, hosting boundary, Settings
+  dialog inventory, color-utility absence).
+- Investigation: `docs/reference/investigation-ui-redesign.md`
+  (Topics 1–4 and recommendations).
+- Research: `docs/reference/research-nshostingcontroller-appearance.md`
+  (macOS 26 propagation confirmation, escape hatch).
+- Mockup: `docs/design/mockups/popover-redesign.html` (`:root` and
+  `.popover.dark :root` CSS custom-property blocks → §UR-3 / §UR-4.2
+  Palette).
+- Tools docs touched in P11: `docs/tools/macrec-ui.md` (one
+  paragraph describing the appearance switcher).
+- Functional requirements file: `docs/design/project-functions.md`
+  (P11 adds the new appearance / theming / transcriptionEnabled
+  requirements).

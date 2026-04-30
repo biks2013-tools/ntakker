@@ -1165,6 +1165,44 @@ so users opt in once per data-residency posture; the legacy single
 boolean and the plan-006 Soniox-specific flag are migrated forward
 on first run after upgrade.
 
+### Added by plan-008 — UI redesign + light/dark/system theming
+
+#### FR-UI-APPEARANCE — Appearance mode picker
+**Status:** PLANNED.
+The macrec-ui menu-bar app MUST surface a 3-options appearance picker
+(System / Light / Dark) in two locations: the popover header metadata
+strip and the Settings dialog under a new "General" tab. Both controls
+bind to the same persisted preference. The selected appearance MUST be
+applied to the entire macrec-ui app (popover + Settings window + any
+auxiliary windows/sheets) via `.preferredColorScheme(_:)` on the root
+SwiftUI scene, and additionally via an `AppearanceHostingRoot` wrapper
+that wraps the popover's `RootView` before it is mounted in
+`NSHostingController` (because the popover is hosted outside the
+SwiftUI scene tree on macOS 26).
+
+The preference MUST persist across app launches via
+`@AppStorage("com.macrec.ui.appearance")` on `UserDefaults.standard`,
+with raw values `"system"` / `"light"` / `"dark"` and default `"system"`.
+The persisted value MUST be readable via
+`defaults read com.local.macrec-ui com.macrec.ui.appearance`.
+
+Scope of effect: whole app (popover + Settings window + any auxiliary
+sheets). The default value `"system"` is a documented user-facing UX
+default (not a silent substitution for missing required configuration),
+and is therefore allowed under the project's no-fallback-configuration
+rule.
+
+#### FR-UI-TRANSCRIPTION-GATE — Live Transcription section header toggle
+**Status:** PLANNED.
+The "Live Transcription" section in the popover MUST expose a
+`Toggle.toggleStyle(.switch)` in its section header that gates whether
+the transcription pipeline runs at recording start. The toggle persists
+via `@AppStorage("com.macrec.ui.transcriptionEnabled")` (Bool, default
+`true`). When OFF, `ControlBar.startTapped()` composes
+`RecordingOptions` as if `transcribeProvider == "none"` regardless of
+the persisted `transcribeProvider` value (which is preserved unchanged
+so re-enabling the toggle restores the user's last engine selection).
+
 ---
 
 ## 2. Non-functional requirements
@@ -1367,3 +1405,19 @@ with the disposition "validate during Phase 10".
   v2.
 - Adoption of an official Soniox Swift SDK if/when one is published at
   `github.com/soniox/soniox-swift` — OQ-SX-11 v2.
+
+### Added by plan-008 — UI redesign v2 candidates
+
+- API-key expiration-date chip (Q-02 deferred from plan-008). The
+  popover's API-key sub-row in v1.6 renders only "Configured" /
+  "Not configured" status. A future plan introduces a new persisted
+  field per provider (`com.macrec.ui.apiKeyExpiry.<provider>`) plus
+  a date-entry control inside the `Replace…` flow so the chip can
+  surface red/amber/green expiration status.
+- Cleanup of orphaned `@AppStorage` keys
+  `com.macrec.ui.transcriptionExpanded` and
+  `com.macrec.ui.recordingSettingsExpanded` (no longer read after
+  plan-008 P4; retained in `UserDefaults` for back-compat).
+- Removal of deprecated view files no longer composed by `RootView`
+  after plan-008 (`FilenameField.swift`, `FolderPicker.swift`,
+  `SonioxKeyField.swift`, `GeminiKeyField.swift`, `ProviderKeyField.swift`).

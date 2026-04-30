@@ -45,8 +45,20 @@ struct MacrecUIApp: App {
         // place to manage cloud-provider API keys and tuning. ⌘, opens
         // it automatically; the popover's gear button calls
         // `EnvironmentValues.openSettings` to open it programmatically.
+        // Wrap `SettingsRootView` in `AppearanceHostingRoot` so the
+        // `Settings { }` window honors the persisted `AppearanceMode`
+        // (light / dark / system) the same way the popover does. The
+        // wrapper internally applies `.preferredColorScheme(_:)` and
+        // injects `\.palette` — see project-design §UR-4.4 / §UR-6 and
+        // plan-008 Unit F. We do not apply `.preferredColorScheme(_:)`
+        // on the `Settings` scene directly because the `App`'s scene
+        // builder cannot host `@AppStorage` reactivity without a
+        // wrapping `View`; routing through `AppearanceHostingRoot`
+        // keeps a single source of truth for both host sites.
         Settings {
-            SettingsRootView()
+            AppearanceHostingRoot {
+                SettingsRootView()
+            }
         }
     }
 }

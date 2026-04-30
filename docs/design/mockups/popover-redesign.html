@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>macrec-ui · Popover Redesign</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow-x: hidden;
+  }
+
+  /* ---------- Desktop background (Sequoia-ish aurora) ---------- */
+  body {
+    min-height: 100vh;
+    background:
+      radial-gradient(ellipse 60% 50% at 18% 22%, rgba(150, 200, 255, 0.85), transparent 60%),
+      radial-gradient(ellipse 55% 45% at 82% 18%, rgba(200, 150, 220, 0.75), transparent 60%),
+      radial-gradient(ellipse 60% 55% at 50% 85%, rgba(255, 200, 160, 0.55), transparent 60%),
+      radial-gradient(ellipse 70% 60% at 90% 75%, rgba(120, 160, 220, 0.6), transparent 60%),
+      linear-gradient(180deg, #3F6BB1 0%, #5380C2 28%, #6B8FCC 55%, #B79A88 100%);
+    background-attachment: fixed;
+  }
+
+  /* ---------- Menu bar ---------- */
+  .menubar {
+    height: 26px;
+    background: rgba(255,255,255,0.32);
+    backdrop-filter: blur(40px) saturate(180%);
+    -webkit-backdrop-filter: blur(40px) saturate(180%);
+    box-shadow: inset 0 -0.5px 0 rgba(0,0,0,0.06);
+    display: flex;
+    align-items: center;
+    padding: 0 14px;
+    gap: 18px;
+    font-size: 13.5px;
+    color: #1a1a1a;
+    position: sticky;
+    top: 0;
+    z-index: 50;
+  }
+  .menubar .apple-logo {
+    width: 14px; height: 14px;
+    display: inline-block;
+  }
+  .menubar .app { font-weight: 600; }
+  .menubar .item { font-weight: 400; opacity: 0.92; }
+  .menubar .right { margin-left: auto; display: flex; align-items: center; gap: 14px; font-size: 12.5px; }
+  .menubar .icon { width: 16px; height: 16px; opacity: 0.85; display: inline-flex; align-items: center; }
+  .menubar .recording-anchor {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 1px 7px; border-radius: 5px;
+    background: rgba(0,0,0,0.06);
+    box-shadow: inset 0 0 0 0.5px rgba(0,0,0,0.08);
+    position: relative;
+  }
+  .menubar .recording-anchor .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: linear-gradient(180deg, #FF6258, #FF2D20);
+    box-shadow: 0 0 6px rgba(255,45,32,0.55);
+  }
+
+  /* ---------- Layout ---------- */
+  .stage {
+    padding: 70px 40px 80px;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 64px;
+  }
+
+  .variant-block {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 380px;
+  }
+
+  .variant-tag {
+    color: rgba(255,255,255,0.78);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.18);
+  }
+  .variant-name {
+    color: white;
+    font-size: 19px;
+    font-weight: 600;
+    margin-bottom: 4px;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.22);
+    letter-spacing: -0.01em;
+  }
+  .variant-desc {
+    color: rgba(255,255,255,0.78);
+    font-size: 12.5px;
+    margin-bottom: 26px;
+    text-shadow: 0 1px 1px rgba(0,0,0,0.15);
+    text-align: center;
+    max-width: 320px;
+    line-height: 1.4;
+  }
+
+  /* ---------- Popover frame (shared) ---------- */
+  .popover {
+    width: 360px;
+    border-radius: 14px;
+    position: relative;
+    padding: 14px;
+    box-shadow:
+      0 0 0 0.5px rgba(0,0,0,0.22),
+      0 1px 0 rgba(255,255,255,0.6) inset,
+      0 22px 60px rgba(0,0,0,0.32),
+      0 6px 16px rgba(0,0,0,0.18);
+  }
+  .popover::before {
+    content: '';
+    position: absolute;
+    top: -7px;
+    left: 50%;
+    transform: translateX(-50%) rotate(45deg);
+    width: 14px;
+    height: 14px;
+    border-top-left-radius: 3px;
+    z-index: -1;
+  }
+
+  /* ---------- LIGHT variant ---------- */
+  .light {
+    background: rgba(244, 244, 246, 0.78);
+    backdrop-filter: blur(60px) saturate(180%);
+    -webkit-backdrop-filter: blur(60px) saturate(180%);
+    color: #1c1c1e;
+  }
+  .light::before {
+    background: rgba(244, 244, 246, 0.78);
+    box-shadow: -0.5px -0.5px 0 0 rgba(0,0,0,0.18);
+  }
+  .light {
+    --label: rgba(0,0,0,0.86);
+    --value: rgba(0,0,0,0.92);
+    --secondary: rgba(0,0,0,0.55);
+    --tertiary: rgba(0,0,0,0.4);
+    --separator: rgba(0,0,0,0.08);
+    --group-bg: rgba(255,255,255,0.55);
+    --group-stroke: rgba(0,0,0,0.06);
+    --control-bg: #ffffff;
+    --control-stroke: rgba(0,0,0,0.12);
+    --control-shadow: 0 0.5px 1px rgba(0,0,0,0.06);
+    --field-bg: #ffffff;
+    --chip-bg: rgba(0,0,0,0.05);
+    --accent: #007AFF;
+    --record-grad: linear-gradient(180deg, #FF6258 0%, #FF2D20 100%);
+    --record-shadow: 0 1px 0 rgba(255,255,255,0.4) inset, 0 2px 6px rgba(255,45,32,0.32), 0 8px 18px rgba(255,45,32,0.18);
+    --success-bg: rgba(48,209,88,0.18);
+    --success-fg: #0A6E2C;
+    --success-dot: #30D158;
+  }
+
+  /* ---------- DARK variant ---------- */
+  .dark {
+    background: rgba(40, 40, 42, 0.74);
+    backdrop-filter: blur(60px) saturate(180%);
+    -webkit-backdrop-filter: blur(60px) saturate(180%);
+    color: #F4F4F4;
+  }
+  .dark::before {
+    background: rgba(40, 40, 42, 0.74);
+    box-shadow: -0.5px -0.5px 0 0 rgba(255,255,255,0.16);
+  }
+  .dark {
+    --label: rgba(255,255,255,0.92);
+    --value: rgba(255,255,255,0.96);
+    --secondary: rgba(255,255,255,0.55);
+    --tertiary: rgba(255,255,255,0.38);
+    --separator: rgba(255,255,255,0.09);
+    --group-bg: rgba(255,255,255,0.06);
+    --group-stroke: rgba(255,255,255,0.08);
+    --control-bg: rgba(255,255,255,0.12);
+    --control-stroke: rgba(255,255,255,0.14);
+    --control-shadow: 0 0.5px 0 rgba(255,255,255,0.06) inset;
+    --field-bg: rgba(0,0,0,0.28);
+    --chip-bg: rgba(255,255,255,0.08);
+    --accent: #0A84FF;
+    --record-grad: linear-gradient(180deg, #FF6B61 0%, #FF3B30 100%);
+    --record-shadow: 0 1px 0 rgba(255,255,255,0.25) inset, 0 2px 6px rgba(255,45,32,0.4), 0 10px 22px rgba(255,45,32,0.22);
+    --success-bg: rgba(48,209,88,0.22);
+    --success-fg: #6CE89A;
+    --success-dot: #30D158;
+  }
+
+  /* ---------- Header (filename + meta) ---------- */
+  .header {
+    padding: 4px 4px 12px;
+    margin-bottom: 4px;
+  }
+  .header-input {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 100%;
+    background: transparent;
+    border: none;
+    padding: 1px 0 2px;
+    font-family: inherit;
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    color: var(--value);
+    border-radius: 4px;
+    margin: 0 -2px;
+    padding-left: 2px;
+    padding-right: 2px;
+  }
+  .header-input:hover { background: var(--chip-bg); }
+  .header-input:focus { outline: none; box-shadow: 0 0 0 3px rgba(10,132,255,0.35); background: var(--field-bg); }
+
+  .header-meta {
+    margin-top: 6px;
+    font-size: 11.5px;
+    color: var(--secondary);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .header-meta .sep { opacity: 0.45; }
+  .header-meta .perm-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--success-bg);
+    color: var(--success-fg);
+    padding: 2px 8px 2px 6px;
+    border-radius: 100px;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+  .header-meta .perm-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success-dot); }
+
+  /* ---------- Section group ---------- */
+  .section + .section { margin-top: 14px; }
+
+  .section-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 8px 6px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+  }
+  .section-title .toggle-engine {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--secondary);
+  }
+
+  .group {
+    background: var(--group-bg);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 0 0 0.5px var(--group-stroke);
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    min-height: 36px;
+    gap: 10px;
+  }
+  .row + .row, .row + .row-sub, .row-sub + .row {
+    border-top: 0.5px solid var(--separator);
+  }
+  .row .label {
+    font-size: 13px;
+    color: var(--label);
+    flex-shrink: 0;
+  }
+  .row .control {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--value);
+    font-size: 13px;
+    min-width: 0;
+  }
+
+  /* NSPopUpButton-like select */
+  .popup {
+    appearance: none;
+    -webkit-appearance: none;
+    border: none;
+    font-family: inherit;
+    font-size: 13px;
+    color: var(--value);
+    background-color: var(--control-bg);
+    box-shadow: 0 0 0 0.5px var(--control-stroke), var(--control-shadow);
+    padding: 3px 22px 3px 8px;
+    border-radius: 5px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='10' viewBox='0 0 8 10'%3E%3Cpath fill='%23999' d='M4 0L0 4h8zM4 10L0 6h8z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 6px center;
+    background-size: 8px 10px;
+    line-height: 18px;
+    cursor: default;
+    max-width: 240px;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  .dark .popup {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='10' viewBox='0 0 8 10'%3E%3Cpath fill='%23bbb' d='M4 0L0 4h8zM4 10L0 6h8z'/%3E%3C/svg%3E");
+  }
+
+  /* Path control */
+  .path {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px 3px 6px;
+    border-radius: 5px;
+    background: var(--chip-bg);
+    font-size: 12.5px;
+    color: var(--value);
+    max-width: 220px;
+    overflow: hidden;
+    cursor: default;
+  }
+  .path .folder-ico { color: var(--accent); flex-shrink: 0; }
+  .path .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .path .change {
+    color: var(--accent); font-weight: 500; font-size: 11.5px;
+    margin-left: 2px; flex-shrink: 0; cursor: pointer;
+  }
+
+  /* Toggle (NSSwitch) */
+  .switch {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 36px; height: 22px;
+    background: var(--control-bg);
+    box-shadow: inset 0 0 0 0.5px var(--control-stroke);
+    border-radius: 100px;
+    position: relative;
+    cursor: pointer;
+    transition: background 0.18s ease;
+  }
+  .switch::after {
+    content: '';
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 18px; height: 18px;
+    background: white;
+    border-radius: 50%;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.25);
+    transition: transform 0.18s ease;
+  }
+  .switch.on {
+    background: #34C759;
+    box-shadow: inset 0 0 0 0.5px rgba(0,0,0,0.05);
+  }
+  .switch.on::after { transform: translateX(14px); }
+
+  /* API key sub-row */
+  .row-sub {
+    padding: 10px 12px 12px;
+  }
+  .row-sub .sub-head {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 6px;
+  }
+  .row-sub .sub-label {
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--secondary);
+  }
+  .row-sub .status-chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11px; font-weight: 500; color: var(--success-fg);
+  }
+  .row-sub .status-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success-dot); }
+
+  .key-input-row { display: flex; gap: 5px; }
+  .key-input {
+    flex: 1; min-width: 0;
+    background: var(--field-bg);
+    border: none;
+    box-shadow: inset 0 0 0 0.5px var(--control-stroke);
+    border-radius: 5px;
+    padding: 4px 8px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    font-size: 11.5px;
+    letter-spacing: 0.05em;
+    color: var(--value);
+  }
+  .key-input::placeholder { color: var(--tertiary); letter-spacing: 0; font-family: inherit; }
+  .key-input:focus { outline: none; box-shadow: inset 0 0 0 0.5px var(--control-stroke), 0 0 0 3px rgba(10,132,255,0.35); }
+
+  .btn {
+    appearance: none;
+    -webkit-appearance: none;
+    border: none;
+    background: var(--control-bg);
+    box-shadow: 0 0 0 0.5px var(--control-stroke), var(--control-shadow);
+    color: var(--value);
+    font-family: inherit;
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: 5px;
+    cursor: pointer;
+  }
+  .btn:hover { filter: brightness(0.97); }
+  .btn:disabled { opacity: 0.5; cursor: default; }
+
+  /* ---------- Footer / Record button ---------- */
+  .footer {
+    margin-top: 18px;
+    padding: 4px 4px 2px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .ready-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11.5px; color: var(--secondary);
+  }
+  .ready-pill .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--success-dot);
+    box-shadow: 0 0 6px rgba(48,209,88,0.55);
+  }
+  .record-btn {
+    appearance: none;
+    -webkit-appearance: none;
+    border: none;
+    background: var(--record-grad);
+    color: white;
+    font-family: inherit;
+    font-size: 13.5px;
+    font-weight: 600;
+    letter-spacing: 0.005em;
+    padding: 7px 16px 7px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    box-shadow: var(--record-shadow);
+    margin-left: auto;
+  }
+  .record-btn .rec-glyph {
+    width: 14px; height: 14px; border-radius: 50%;
+    background: white;
+    box-shadow: 0 0 0 1.5px rgba(255,255,255,0.4);
+  }
+
+  /* ---------- Section title row layout overrides ---------- */
+  .section-title.with-toggle { padding-bottom: 6px; }
+
+  /* ---------- Helpers ---------- */
+  .ico { display: inline-flex; align-items: center; justify-content: center; }
+
+  /* ---------- Keyboard hint ---------- */
+  .footnote {
+    margin: 32px auto 0;
+    text-align: center;
+    color: rgba(255,255,255,0.7);
+    font-size: 11.5px;
+    text-shadow: 0 1px 1px rgba(0,0,0,0.15);
+    max-width: 560px;
+  }
+  .footnote code {
+    background: rgba(0,0,0,0.2); padding: 1px 5px;
+    border-radius: 3px; color: white;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+  }
+</style>
+</head>
+<body>
+
+<!-- ============== MENU BAR ============== -->
+<div class="menubar">
+  <span class="apple-logo">
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
+      <path d="M10.6 7.4c0-1.6 1.3-2.4 1.4-2.5-.7-1.1-1.9-1.2-2.3-1.2-1-.1-1.9.6-2.4.6s-1.3-.6-2.1-.6c-1.1 0-2.1.6-2.6 1.6-1.1 1.9-.3 4.8.8 6.4.5.8 1.2 1.6 2 1.6.8 0 1.1-.5 2.1-.5s1.2.5 2.1.5c.9 0 1.4-.8 2-1.6.6-.9.8-1.7.9-1.8-.1-.1-1.7-.6-1.7-2.5zM9 2.7c.4-.5.7-1.2.6-1.9-.6 0-1.3.4-1.7.9-.4.4-.7 1.1-.6 1.8.7.1 1.4-.3 1.7-.8z"/>
+    </svg>
+  </span>
+  <span class="app">macrec-ui</span>
+  <span class="item">File</span>
+  <span class="item">Edit</span>
+  <span class="item">View</span>
+  <span class="item">Window</span>
+  <span class="item">Help</span>
+  <span class="right">
+    <span class="icon" title="Spotlight">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="6" cy="6" r="4"/><path d="M9 9l3 3" stroke-linecap="round"/></svg>
+    </span>
+    <span class="icon" title="Control Center">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1" y="1" width="5" height="5" rx="1"/><rect x="8" y="1" width="5" height="5" rx="1"/><rect x="1" y="8" width="5" height="5" rx="1"/><rect x="8" y="8" width="5" height="5" rx="1"/></svg>
+    </span>
+    <span class="recording-anchor" title="macrec-ui">
+      <span class="dot"></span>
+      <span style="font-weight:600; font-size: 11.5px;">REC</span>
+    </span>
+    <span style="font-variant-numeric: tabular-nums;">Wed 30 Apr · 21:14</span>
+  </span>
+</div>
+
+<!-- ============== STAGE ============== -->
+<div class="stage">
+
+  <!-- ===== VARIANT A: LIGHT ===== -->
+  <div class="variant-block">
+    <div class="variant-tag">Variant A</div>
+    <div class="variant-name">Light · System Settings style</div>
+    <div class="variant-desc">Inset grouped sections, NSPopUpButton controls, hairline dividers — the modern macOS Tahoe popover dialect.</div>
+
+    <div class="popover light">
+      <!-- HEADER: filename + permission pills -->
+      <div class="header">
+        <input class="header-input" value="recording-2026-04-30-20-25" />
+        <div class="header-meta">
+          <span class="perm-pill"><span class="dot"></span>All permissions granted</span>
+          <span>·</span>
+          <span>~/Recordings</span>
+          <span class="sep">·</span>
+          <span>Idle</span>
+        </div>
+      </div>
+
+      <!-- SECTION: General -->
+      <div class="section">
+        <div class="section-title">General</div>
+        <div class="group">
+          <div class="row">
+            <span class="label">Format</span>
+            <div class="control">
+              <select class="popup"><option>m4a — AAC</option><option>wav</option><option>caf</option></select>
+            </div>
+          </div>
+          <div class="row">
+            <span class="label">Layout</span>
+            <div class="control">
+              <select class="popup"><option>Mixed (single file)</option><option>Split (system + mic)</option><option>Stereo split</option></select>
+            </div>
+          </div>
+          <div class="row">
+            <span class="label">Save to</span>
+            <div class="control">
+              <span class="path">
+                <span class="folder-ico ico">
+                  <svg width="13" height="13" viewBox="0 0 13 13" fill="currentColor"><path d="M1 3.2A1.2 1.2 0 0 1 2.2 2h2.4l1 1.2h5.2A1.2 1.2 0 0 1 12 4.4v5.4A1.2 1.2 0 0 1 10.8 11H2.2A1.2 1.2 0 0 1 1 9.8z"/></svg>
+                </span>
+                <span class="name">Recordings</span>
+                <span class="change">Choose…</span>
+              </span>
+            </div>
+          </div>
+          <div class="row">
+            <span class="label">Microphone</span>
+            <div class="control">
+              <select class="popup"><option>Default Input — MacBook Pro Mic</option><option>External USB Mic</option></select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SECTION: Live Transcription -->
+      <div class="section">
+        <div class="section-title with-toggle">
+          <span>Live Transcription</span>
+          <span class="toggle-engine">
+            <span style="opacity:0.85;">Soniox</span>
+            <span class="switch on" role="switch" aria-checked="true"></span>
+          </span>
+        </div>
+        <div class="group">
+          <div class="row">
+            <span class="label">Engine</span>
+            <div class="control">
+              <select class="popup"><option>Soniox — cloud, multilingual</option><option>Gemini Live</option><option>Apple Speech (on-device)</option><option>None</option></select>
+            </div>
+          </div>
+          <div class="row">
+            <span class="label">Source</span>
+            <div class="control">
+              <select class="popup"><option>Mixed</option><option>System audio only</option><option>Microphone only</option></select>
+            </div>
+          </div>
+          <div class="row">
+            <span class="label">Sidecar format</span>
+            <div class="control">
+              <select class="popup"><option>JSONL</option><option>TXT</option><option>SRT</option><option>VTT</option></select>
+            </div>
+          </div>
+          <div class="row">
+            <span class="label">Language</span>
+            <div class="control">
+              <select class="popup"><option>Greek (Greece) — el-GR</option><option>English (US) — en-US</option><option>Auto-detect</option></select>
+            </div>
+          </div>
+          <div class="row-sub">
+            <div class="sub-head">
+              <span class="sub-label">Soniox API Key</span>
+              <span class="status-chip"><span class="dot"></span>Configured · expires 2026-09-01</span>
+            </div>
+            <div class="key-input-row">
+              <input class="key-input" type="password" value="••••••••••••••••••••••••••" />
+              <button class="btn">Replace…</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- FOOTER: ready + record -->
+      <div class="footer">
+        <span class="ready-pill"><span class="dot"></span>Ready</span>
+        <button class="record-btn">
+          <span class="rec-glyph"></span>
+          Start Recording
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== VARIANT B: DARK ===== -->
+  <div class="variant-block">
+    <div class="variant-tag">Variant B</div>
+    <div class="variant-name">Dark · Same design, after dark</div>
+    <div class="variant-desc">Same structure with the dark vibrancy material. Proves the layout is appearance-agnostic and matches macOS dark-mode HIG.</div>
+
+    <div class="popover dark">
+      <div class="header">
+        <input class="header-input" value="recording-2026-04-30-20-25" />
+        <div class="header-meta">
+          <span class="perm-pill"><span class="dot"></span>All permissions granted</span>
+          <span>·</span>
+          <span>~/Recordings</span>
+          <span class="sep">·</span>
+          <span>Idle</span>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">General</div>
+        <div class="group">
+          <div class="row">
+            <span class="label">Format</span>
+            <div class="control"><select class="popup"><option>m4a — AAC</option></select></div>
+          </div>
+          <div class="row">
+            <span class="label">Layout</span>
+            <div class="control"><select class="popup"><option>Mixed (single file)</option></select></div>
+          </div>
+          <div class="row">
+            <span class="label">Save to</span>
+            <div class="control">
+              <span class="path">
+                <span class="folder-ico ico">
+                  <svg width="13" height="13" viewBox="0 0 13 13" fill="currentColor"><path d="M1 3.2A1.2 1.2 0 0 1 2.2 2h2.4l1 1.2h5.2A1.2 1.2 0 0 1 12 4.4v5.4A1.2 1.2 0 0 1 10.8 11H2.2A1.2 1.2 0 0 1 1 9.8z"/></svg>
+                </span>
+                <span class="name">Recordings</span>
+                <span class="change">Choose…</span>
+              </span>
+            </div>
+          </div>
+          <div class="row">
+            <span class="label">Microphone</span>
+            <div class="control"><select class="popup"><option>Default Input — MacBook Pro Mic</option></select></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title with-toggle">
+          <span>Live Transcription</span>
+          <span class="toggle-engine">
+            <span style="opacity:0.85;">Soniox</span>
+            <span class="switch on" role="switch" aria-checked="true"></span>
+          </span>
+        </div>
+        <div class="group">
+          <div class="row">
+            <span class="label">Engine</span>
+            <div class="control"><select class="popup"><option>Soniox — cloud, multilingual</option></select></div>
+          </div>
+          <div class="row">
+            <span class="label">Source</span>
+            <div class="control"><select class="popup"><option>Mixed</option></select></div>
+          </div>
+          <div class="row">
+            <span class="label">Sidecar format</span>
+            <div class="control"><select class="popup"><option>JSONL</option></select></div>
+          </div>
+          <div class="row">
+            <span class="label">Language</span>
+            <div class="control"><select class="popup"><option>Greek (Greece) — el-GR</option></select></div>
+          </div>
+          <div class="row-sub">
+            <div class="sub-head">
+              <span class="sub-label">Soniox API Key</span>
+              <span class="status-chip"><span class="dot"></span>Configured · expires 2026-09-01</span>
+            </div>
+            <div class="key-input-row">
+              <input class="key-input" type="password" value="••••••••••••••••••••••••••" />
+              <button class="btn">Replace…</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="footer">
+        <span class="ready-pill"><span class="dot"></span>Ready</span>
+        <button class="record-btn">
+          <span class="rec-glyph"></span>
+          Start Recording
+        </button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="footnote">
+  Mockup at 1× macOS scale. Both popovers anchor to the menu bar's <code>REC</code> status item. Resize the window to see the desktop wallpaper.
+</div>
+
+</body>
+</html>

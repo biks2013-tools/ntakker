@@ -110,10 +110,20 @@ final class PopoverController {
             popover?.behavior = newBehavior
         }
 
+        // Wrap in `AppearanceHostingRoot` so the persisted
+        // `AppearanceMode` choice flows into `.preferredColorScheme(_:)`
+        // AND the `\.palette` environment value for every descendant
+        // view — see `Theme/AppearanceHostingRoot.swift` and
+        // project-design §UR-4.4 / §UR-6. The wrapper subscribes to
+        // `@AppStorage` and `\.colorScheme` itself; no
+        // `NotificationCenter` observer or `popover.appearance`
+        // override is required (research-nshostingcontroller-appearance.md).
         let composed = AnyView(
-            rootView
-                .environment(\.recordingController, recordingController)
-                .environment(\.popoverBehavior, behaviorSetter)
+            AppearanceHostingRoot {
+                rootView
+                    .environment(\.recordingController, recordingController)
+                    .environment(\.popoverBehavior, behaviorSetter)
+            }
         )
         let hosting = NSHostingController(rootView: composed)
         self.hostingController = hosting

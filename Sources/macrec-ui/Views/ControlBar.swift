@@ -58,6 +58,15 @@ struct ControlBar: View {
     // Gemini cloud provider via `TranscriptionPicker`.
     @AppStorage("com.macrec.ui.transcribeProvider")
     private var transcribeProviderRaw: String = "apple"
+    // plan-008 Unit I: master enable/disable switch for transcription.
+    // Defaults `true` so existing users do not lose transcription on
+    // upgrade. The gate in `startTapped()` is **non-mutating** — when
+    // `false`, the effective provider passed to the engine is forced to
+    // `"none"` while the persisted `transcribeProviderRaw` is preserved
+    // so re-toggling ON restores the user's last engine choice
+    // (UR-ADR-7).
+    @AppStorage("com.macrec.ui.transcriptionEnabled")
+    private var transcriptionEnabled: Bool = true
     @AppStorage("com.macrec.ui.transcribeSource")
     private var transcribeSourceRaw: String = TranscriptionSource.mixed.rawValue
     @AppStorage("com.macrec.ui.transcriptFormat")
@@ -245,11 +254,22 @@ struct ControlBar: View {
         // propagate to `RecordingOptions`; without this the recording
         // ran with `transcriptionProviderId == nil` and the
         // transcription pipeline was silently skipped.
-        let normalizedProvider = transcribeProviderRaw.lowercased()
-        let transcriptionEnabled = !normalizedProvider.isEmpty
+        //
+        // plan-008 Unit I: the persisted `transcribeProviderRaw` is
+        // gated by the master `transcriptionEnabled` switch BEFORE we
+        // normalize it. When the master switch is OFF the effective
+        // provider is forced to `"none"`, which then collapses through
+        // the existing `transcriptionActive` check below to a nil
+        // `resolvedProviderId`. The persisted value is **not** mutated
+        // (UR-ADR-7) so re-toggling ON restores the prior engine.
+        let effectiveProvider: String = transcriptionEnabled
+            ? transcribeProviderRaw
+            : "none"
+        let normalizedProvider = effectiveProvider.lowercased()
+        let transcriptionActive = !normalizedProvider.isEmpty
             && normalizedProvider != "none"
             && normalizedProvider != "noop"
-        let resolvedProviderId: String? = transcriptionEnabled
+        let resolvedProviderId: String? = transcriptionActive
             ? normalizedProvider
             : nil
         let resolvedTranscriptionSource = TranscriptionSource(
@@ -274,7 +294,7 @@ struct ControlBar: View {
         // ELEVENLABS_API_KEY for ElevenLabs (plan-007 Phase B).
         // Apple Speech and WhisperKit are on-device and need no key.
         let resolvedTranscriptionApiKey: String? = {
-            guard transcriptionEnabled else { return nil }
+            guard transcriptionActive else { return nil }
             let envVar: String?
             switch (resolvedProviderId ?? "").lowercased() {
             case "gemini", "gemini-live":           envVar = "GOOGLE_API_KEY"
@@ -293,7 +313,7 @@ struct ControlBar: View {
         // endpoint or deployment surfaces as
         // `MacrecError.transcriptionConfigConflict` BEFORE the recorder
         // starts. The api-version is optional with a documented starter.
-        let azureProviderActive = transcriptionEnabled
+        let azureProviderActive = transcriptionActive
             && ((resolvedProviderId ?? "").lowercased() == "azure"
                 || (resolvedProviderId ?? "").lowercased() == "azure-openai-realtime")
         let azureOpenAIEndpoint: URL? = {
@@ -320,7 +340,7 @@ struct ControlBar: View {
         // from a previous build / external override could still smuggle
         // a duplicate in.
         let resolvedLanguageHints: [String] = {
-            guard transcriptionEnabled else { return [] }
+            guard transcriptionActive else { return [] }
             var seen: Set<String> = []
             var out: [String] = []
             for raw in [transcribeLanguagePrimaryRaw, transcribeLanguageSecondaryRaw] {

@@ -719,6 +719,9 @@
         | `com.macrec.ui.transcriptFormat`             | Last-selected sidecar transcript format raw value (`jsonl` / `txt` / `srt` / `vtt`). Default `jsonl` (FR-54). |
         | `com.macrec.ui.transcribePrivacyAcknowledged` | One-time acknowledgement flag for the shared cloud-provider privacy disclosure dialog (FR-53). Boolean. Default `false`. |
         | `com.local.macrec-ui.transcription.hasAcceptedSonioxDisclosure` | One-time acknowledgement flag for the Soniox-specific privacy disclosure sheet (plan-006). Set to `true` after the user clicks **Continue** on the Soniox disclosure. Boolean. Default `false`. |
+        | `com.macrec.ui.appearance`                  | User-chosen appearance mode raw value (`system` / `light` / `dark`). Default `system` (added by plan-008 — see "Theming" below). Read by `AppearanceHostingRoot`, `AppearanceSwitcher`, and `GeneralSettingsView`. |
+        | `com.macrec.ui.transcriptionEnabled`        | Master gate for the live-transcription pipeline. `Bool`, default `true`. When `false`, `ControlBar.startTapped()` overrides the engine to `"none"` for the duration of the recording WITHOUT mutating `com.macrec.ui.transcribeProvider` — re-enabling restores the user's last engine (added by plan-008, UR-ADR-7). |
+        | `com.macrec.ui.popoverHeight`               | Persisted vertical popover height (Double, default `600`). Driven by `ResizeHandle` drag gesture; `PopoverController.heightObserver` pushes the value onto `NSPopover.contentSize`. |
 
         These keys are managed via SwiftUI's `@AppStorage` property
         wrapper inside the popover views; they are written
@@ -729,6 +732,63 @@
         sensible empty/zero value at first launch, and the views
         bootstrap reasonable defaults (e.g. `outputFolder` →
         `~/Recordings/`, `basename` → timestamped name) on demand.
+
+        ## Theming (Light / Dark / Follow System)
+
+        Plan-008 introduced a 3-mode appearance picker. Two surfaces:
+
+        1. **Popover metadata strip** — a tiny SF-symbol icon-menu
+           (`AppearanceSwitcher`, `Sources/macrec-ui/Views/Header/`)
+           inline with the permission pill / folder chip / state label.
+           One-click access from any popover open.
+        2. **Settings → General tab** — a 3-row inline `Picker`
+           (`GeneralSettingsView`, `Sources/macrec-ui/Settings/Sections/`)
+           rendered first in the Settings sidebar.
+
+        Both surfaces bind to the same `@AppStorage("com.macrec.ui.appearance")`
+        key (raw `"system"` / `"light"` / `"dark"`, default `"system"`).
+        Persistence is automatic via SwiftUI's property-wrapper reactivity
+        and survives app restarts. Read it manually with:
+
+        ```bash
+        defaults read com.local.macrec-ui com.macrec.ui.appearance
+        ```
+
+        **Propagation chain.** Both the popover (hosted via
+        `NSHostingController` inside `PopoverController`) and the
+        `Settings { }` scene wrap their root in `AppearanceHostingRoot`
+        (`Sources/macrec-ui/Theme/AppearanceHostingRoot.swift`), which:
+
+        - Reads the persisted raw via `@AppStorage`
+        - Maps to `AppearanceMode` (`Sources/MacrecUIKit/Theme/AppearanceMode.swift`)
+        - Applies `.preferredColorScheme(_:)` (passing `nil` for `system`
+          so the OS / parent scope's choice applies)
+        - Injects the appropriate `\.palette` env value (`Palette.light`
+          or `Palette.dark`) so descendant views pick up theme tokens
+
+        Per `docs/reference/research-nshostingcontroller-appearance.md`
+        no `NotificationCenter` / KVO observer is needed on macOS 26 —
+        `@AppStorage` reactivity propagates through the
+        `NSHostingController` boundary natively, and OS appearance
+        flips trigger re-evaluation through `@Environment(\.colorScheme)`.
+
+        **Color tokens.** The theme exposes 17 semantic tokens defined
+        in `Sources/macrec-ui/Theme/Palette.swift` (label / value /
+        secondary / tertiary text colors, group + control + field
+        backgrounds, separator + stroke colors, accent, success
+        background / foreground / dot, and red record-button gradient
+        start/end). Both `Palette.light` and `Palette.dark` instances
+        are pinned to the CSS custom-property values in the design
+        mockup at `docs/design/mockups/popover-redesign.html` (see
+        `Tests/MacrecUITests/Theme/PaletteTests.swift` for the
+        contract pin).
+
+        **Out of scope (deferred).** A user-visible appearance
+        preview, automatic-following of macOS Auto theme schedule,
+        and per-window appearance overrides are not implemented in
+        plan-008 — `.system` mode already follows whatever
+        `NSApplication.effectiveAppearance` resolves to (which honors
+        the macOS Auto schedule), so most of these come "for free".
 
         ## Logging
 

@@ -1,4 +1,5 @@
-// macrec-ui/Views/Transcription/GeminiKeyField.swift
+// macrec-ui/Views/Transcription/GeminiKeyField.swift —
+// updated for plan-008 Unit D (API-key field redesign).
 //
 // SecureField + Save button for the Gemini provider's API key. Lives
 // inside the "Live transcription" disclosure group in `RootView` and
@@ -24,6 +25,11 @@
 // `RecordingOptions` is re-composed at that point). So the missing-key
 // dot in `TranscriptionPicker` automatically picks up the new key the
 // next time the popover reads it.
+//
+// plan-008 Unit D: the inline Save / Clear UI is replaced by
+// `ApiKeyStatusRow` which renders the locked-in v1.6 design
+// (chip + collapsed dotted state + Replace…/Save/Cancel flow). The
+// key-resolution and persistence calls below are unchanged.
 
 import MacrecCore
 import MacrecUIKit
@@ -49,100 +55,51 @@ struct GeminiKeyField: View {
     @AppStorage("com.macrec.ui.transcribeProvider")
     private var providerRaw: String = "apple"
 
-    /// Field text. Seeded from the on-disk value on first appear so
-    /// the user sees the existing key length (and can decide to leave
-    /// it or replace it). We use `SecureField` so the characters are
-    /// dot-masked.
-    @State private var typed: String = ""
-
-    /// Whether the on-disk file currently has a non-empty value for
-    /// `GOOGLE_API_KEY`. Drives the green/red status dot. Refreshed on
-    /// appear and after Save.
-    @State private var hasStoredKey: Bool = false
-
-    /// Transient feedback message after Save / Clear. Auto-clears
-    /// after a short delay so the popover does not accumulate stale
-    /// status text.
-    @State private var feedback: String?
+    /// Cached on-disk value used by `ApiKeyStatusRow` to decide
+    /// "Configured" vs "Not configured". Refreshed on appear and
+    /// after every Save / Clear.
+    @State private var resolvedKey: String?
 
     var body: some View {
         // Only render when the picker has selected a Gemini variant.
         // Apple Speech is on-device and does not need a key.
         let normalised = providerRaw.lowercased()
         if normalised == "gemini" || normalised == "gemini-live" {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Text(String(localized: "Gemini API key"))
-                        .font(.subheadline)
-                    Circle()
-                        .fill(hasStoredKey ? Color.green : Color.red)
-                        .frame(width: 8, height: 8)
-                        .help(hasStoredKey
-                              ? String(localized: "Key is set in ~/.tool-agents/macrec-ui/.env")
-                              : String(localized: "No key on file. Paste your Gemini key and click Save."))
-                    Spacer()
-                }
-
-                HStack(spacing: 6) {
-                    SecureField(
-                        String(localized: "Paste GOOGLE_API_KEY value"),
-                        text: $typed
-                    )
-                    .textFieldStyle(.roundedBorder)
-                    .help(String(localized: "Stored at ~/.tool-agents/macrec-ui/.env (mode 0600). Used until you change it."))
-
-                    Button(String(localized: "Save")) {
-                        save()
-                    }
-                    .disabled(typed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .help(String(localized: "Persist the key to ~/.tool-agents/macrec-ui/.env."))
-
-                    if hasStoredKey {
-                        Button(String(localized: "Clear")) {
-                            clear()
-                        }
-                        .help(String(localized: "Remove the stored key from ~/.tool-agents/macrec-ui/.env."))
-                    }
-                }
-
-                if let feedback {
-                    Text(feedback)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
+            ApiKeyStatusRow(
+                providerDisplayName: "Gemini",
+                resolvedKey: resolvedKey,
+                editPlaceholder: String(localized: "Paste GOOGLE_API_KEY value"),
+                onSave: { newValue in save(newValue) },
+                onClear: { clear() }
+            )
             .onAppear { refreshFromDisk() }
         }
     }
 
     // MARK: - Actions
 
-    /// Read the on-disk value to refresh `hasStoredKey`. The value
-    /// itself is NOT placed back into the SecureField — pre-filling a
-    /// secret field defeats the masking. The dot indicator is the
-    /// single signal of "yes, a key is set".
+    /// Read the on-disk value to refresh `resolvedKey`. The actual
+    /// value is held only in memory so the chip can show
+    /// "Configured" / "Not configured"; it is never echoed back into
+    /// any visible text field — the masked-dots state in
+    /// `ApiKeyStatusRow` is the only on-screen affordance.
     private func refreshFromDisk() {
-        let stored = EnvFileStore.read(
+        resolvedKey = EnvFileStore.read(
             toolName: Self.toolAgentsName,
             key: Self.envVarKey
         )
-        hasStoredKey = (stored != nil)
     }
 
-    private func save() {
-        let trimmed = typed.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+    private func save(_ trimmed: String) {
         do {
             try EnvFileStore.upsert(
                 toolName: Self.toolAgentsName,
                 key: Self.envVarKey,
                 value: trimmed
             )
-            typed = ""
-            hasStoredKey = true
-            showFeedback(String(localized: "Saved. The key takes effect on the next Start."))
+            resolvedKey = trimmed
         } catch {
-            showFeedback(String(localized: "Save failed: \(error.localizedDescription)"))
+            refreshFromDisk()
         }
     }
 
@@ -153,23 +110,9 @@ struct GeminiKeyField: View {
                 key: Self.envVarKey,
                 value: ""
             )
-            typed = ""
-            hasStoredKey = false
-            showFeedback(String(localized: "Key removed."))
+            resolvedKey = nil
         } catch {
-            showFeedback(String(localized: "Clear failed: \(error.localizedDescription)"))
-        }
-    }
-
-    private func showFeedback(_ message: String) {
-        feedback = message
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 4_000_000_000)
-            // Only clear if the message is still the same one we set
-            // — a more recent Save may have superseded it.
-            if feedback == message {
-                feedback = nil
-            }
+            refreshFromDisk()
         }
     }
 }

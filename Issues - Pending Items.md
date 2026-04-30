@@ -6,6 +6,36 @@
 
 ## Pending items (most critical first)
 
+### PLAN-008-PEND-1 — Pre-existing test failures re-confirmed during plan-008 Phase 7 review (catalogued 2026-04-30)
+Three pre-existing failures (untouched by any plan-008 file under review)
+were re-verified during the Phase 7 code review of the UI-redesign +
+theming work and are recorded here so the next maintenance pass can
+clear them. None are introduced by Phase 6.
+
+1. `HostClockAlignerStressTests::"10 skipNextEmission calls produce exactly 10 system gap-fills"` —
+   timing/concurrency flake. Reproduces with
+   `swift test --filter HostClockAlignerStressTests`. The aligner emits
+   silence-fills on a 100 ms window; on a busy dev host the windows
+   collapse and only 2 of the expected 9–11 gap-fills are observed. No
+   plan-008 file touches `HostClockAligner`. Owner: next maintenance
+   pass.
+2. `StreamingTranscriptionPipelineTests::"first partial emits .segmentAppended; second partial for same utterance emits .segmentUpdated; final emits .segmentFinalized"` —
+   already catalogued at CFG-PEND-2 #5 (the `.segmentFinalized` event
+   is not emitted on this dev host). Re-confirmed reproducible during
+   plan-008 review with `swift test --filter "StreamingTranscriptionPipeline"`.
+   No plan-008 file touches the pipeline.
+3. `UIErrorPresenterTests::"staleRecording → retry"` —
+   locale-dependent. The Greek locale on the dev host formats
+   `99999` as `99.999` (period as thousands separator); the test
+   asserts `contains("99999")`. Fix shape: format the PID with
+   `formatter.usesGroupingSeparator = false` in `UIErrorPresenter` or
+   relax the assertion in the test to be locale-agnostic (e.g.
+   construct the expected string via the same number formatter the
+   presenter uses). No plan-008 file touches `UIErrorPresenter`.
+   Owner: next maintenance pass. File:
+   `Sources/MacrecUIKit/UIErrorPresenter.swift`,
+   `Tests/MacrecUITests/UIErrorPresenterTests.swift:220`.
+
 ### PLAN-007-PEND-1 — XCTest suite for plan-007 (Phase E) deferred to follow-up
 Plan-007 ships the production code for Phases 0 + A1 + A2 + B + C + D
 (Azure OpenAI batch + realtime + ElevenLabs + UI + docs) on
@@ -580,6 +610,10 @@ The default build (Swift 5.9 mode) is clean — no warnings, no errors. This iss
 Plan-002 dispatches Phase F (quit-while-recording flow) and Phase G (error-mapping banner) in parallel within Wave 5. The design (`docs/design/project-design.md` §15.15 "Wave 4 → Wave 5" boundary table) shows that both phases edit `Sources/MacrecUIKit/Views/RootView.swift`: F adds a Quit button at the bottom of the popover stack; G inserts an `ErrorBanner` at the top. Concurrent agents editing the same file will race or merge-conflict. **Mitigation**: Phase 6 orchestrator MUST dispatch F and G **sequentially** within Wave 5 — F first (adds the Quit affordance) then G (adds the ErrorBanner) is the recommended order, but either ordering is acceptable as long as the two are not concurrent. Each individual phase remains a single-file edit; only the Wave 5 dispatch order matters. Owner: Phase 6 orchestrator + Phase 7 Code Reviewer.
 
 ## Completed items
+
+### PLAN-008 — UI redesign + Light/Dark/System theming (Closed 2026-05-01)
+
+Plan-008 shipped the popover redesign aligned to `docs/design/mockups/popover-redesign.html`, preserved the vertical-elasticity contract and the `LiveTranscriptPanel` streaming behavior, and added the 3-mode appearance picker (System / Light / Dark) with `@AppStorage("com.macrec.ui.appearance")` persistence. **9 implementation units** (A–I) shipped across 3 waves; **122 plan-008-owned tests pass** (45 Phase-6 contract pins + 77 Phase-9 view pins). Build clean (debug + release). 8 new files in MacrecUIKit/Theme + macrec-ui/{Theme,Views/Header,Views/Sections,Views/Footer}; 4 modified files (RootView, PopoverController, MacrecUIApp, SettingsRootView); two modified API-key fields (Soniox, Gemini, Provider) + one restyled LiveTranscriptPanel. Documentation updated: `docs/tools/macrec-ui.md` "Theming" subsection added; `docs/design/project-design.md` §UR-1..§UR-12 appended; `docs/design/project-functions.md` FR-UI-APPEARANCE + FR-UI-TRANSCRIPTION-GATE added. Three pre-existing test failures triaged into PLAN-008-PEND-1 (unrelated to plan-008). Phase 10 verdict: READY. Manual UI verification on macOS 26 recommended (7-step checklist in Phase-10 report).
 
 ### R-SX-PHASE10 — Plan-006 Soniox Phase 10 integration verification (Closed 2026-04-29)
 

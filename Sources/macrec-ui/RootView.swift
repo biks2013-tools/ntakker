@@ -1,40 +1,39 @@
-// macrec-ui/RootView.swift — see project-design.md §15.1, §15.2,
-// §15.4 and plan-002-toolbar-ui.md §3 Phase E.
+// macrec-ui/RootView.swift — see project-design.md §UR-5 (layout
+// architecture), §UR-4.5..§UR-4.13 (composed view contracts), and
+// plan-008 §E (central composition root).
 //
 // Top-level SwiftUI body that the `NSPopover` hosts via
-// `NSHostingController<RootView>`.
+// `NSHostingController<RootView>`. Composition root for the new
+// popover layout: the legacy DisclosureGroup-based form is replaced
+// by an inset-grouped Form (UR-ADR-1) inside a three-band frame:
 //
-// PHASE E — composes the real popover form. Every sub-view lives in
-// `Sources/macrec-ui/Views/` and reads
-// `@Environment(\.recordingController)` to pull state from the shared
-// `RecordingController`. The popover is small (~360 pt wide); the form
-// is a vertical stack with row-shaped composite cells.
+//   1. Pinned top    — `ErrorBanner` + `PopoverHeader` (filename
+//                      title + metadata strip + optional permissions).
+//   2. Flexible mid  — General + Live Transcription `Form` sections
+//                      (intrinsic height) + `LiveTranscriptPanel`
+//                      (claims residual via `.frame(maxHeight:.infinity)`)
+//                      + transient level-meter / clock when recording.
+//   3. Pinned bottom — `PopoverFooter` (ReadyPill + ControlBar) +
+//                      `SavedToDisclosure` + `ResizeHandle`.
 //
-// Layout (top-to-bottom):
-//   0. ErrorBanner                  — only when latestError != nil
-//                                     (Phase G; self-conditions, returns
-//                                     EmptyView when no error)
-//   1. PermissionStatusView         — top-of-popover indicator block
-//   2. FilenameField + FormatPicker — composed in one row
-//   3. LayoutPicker + FolderPicker  — composed in one row
-//   4. MicrophonePicker             — full-width row
-//   5. LevelMeterView               — only while recording / paused
-//   6. ElapsedTimeView              — only while recording / paused
-//   7. ControlBar                   — always visible
-//   8. SavedToDisclosure            — only when segments non-empty
+// Elasticity invariant (§UR-5): the Form sections carry
+// `.fixedSize(horizontal: false, vertical: true)` so the
+// `LiveTranscriptPanel` is the only sibling claiming
+// `.frame(maxHeight: .infinity)`. The bottom band is therefore always
+// visible while the user resizes the popover via `ResizeHandle`.
+//
+// Unit E preserves every existing `@AppStorage` declaration even when
+// the new layout no longer reads from it (UR-ADR-10):
+//   * `transcriptionExpanded` and `recordingSettingsExpanded` are
+//     orphaned but retained so a downgrade to v1.5 still finds them.
+//   * `transcribeProvider` and `privacyAcknowledged` continue to drive
+//     the cloud-provider privacy disclosure flow.
 //
 // Per the design (§15.12 Threading): every view is implicitly
 // `@MainActor` (SwiftUI default on macOS 14+); no explicit annotation
 // is required on the view itself. The environment-supplied
 // `RecordingController` is itself `@MainActor`-isolated so any reads
 // here are safe.
-//
-// Phase F (quit-while-recording) and Phase G (error mapping) both edit
-// this file. To keep merge-friendly, Phase E confines its changes to:
-//   * replacing the body composition;
-//   * keeping the `@Environment(\.recordingController)` declaration in
-//     the same position so Phase F/G's environment additions can sit
-//     beside it without conflicts.
 
 import MacrecCore
 import MacrecUIKit
@@ -45,6 +44,7 @@ import SwiftUI
 /// NSHostingController<RootView>(rootView: RootView())`.
 struct RootView: View {
     @Environment(\.recordingController) private var recordingController
+    @Environment(\.palette) private var palette
 
     /// Persisted provider id (mirrored from `TranscriptionPicker`'s
     /// `@AppStorage` slot) so this view can decide whether to show
@@ -61,18 +61,23 @@ struct RootView: View {
     /// Whether the privacy sheet is currently presented.
     @State private var showPrivacySheet: Bool = false
 
-    /// Whether the transcription disclosure-group is expanded.
-    /// Persisted so the user's last preference is remembered across
-    /// popover open/close and app restarts.
+    /// Orphan-but-retained per UR-ADR-10. The new layout no longer
+    /// reads this slot; the keys remain in `UserDefaults` so a
+    /// downgrade to v1.5 finds them.
     @AppStorage("com.macrec.ui.transcriptionExpanded")
     private var transcriptionExpanded: Bool = false
 
-    /// Whether the new Recording-settings (format/layout/folder)
-    /// disclosure-group is expanded. Default `false` so the popover
-    /// stays compact on first launch — the user's most-frequent
-    /// settings (Filename + Live transcription) remain at top level.
+    /// Orphan-but-retained per UR-ADR-10 (see above).
     @AppStorage("com.macrec.ui.recordingSettingsExpanded")
     private var recordingSettingsExpanded: Bool = false
+
+    /// Master enable/disable for live transcription (UR-ADR-7). Mirrored
+    /// here from `ControlBar.swift` (Unit I declared the slot) +
+    /// `LiveTranscriptionSectionHeader.swift` so the section visibility
+    /// can update without an extra Binding round-trip. Default `true`
+    /// preserves existing users' transcription on upgrade.
+    @AppStorage("com.macrec.ui.transcriptionEnabled")
+    private var transcriptionEnabled: Bool = true
 
     /// User-chosen popover height (vertical resizable popover). The
     /// `ResizeHandle` at the bottom of the popover updates this via a
@@ -90,151 +95,66 @@ struct RootView: View {
     static let popoverHeightKey = "com.macrec.ui.popoverHeight"
 
     var body: some View {
-        // The popover content is split into THREE bands so the
-        // lifecycle controls always remain visible regardless of how
-        // much vertical space the configuration / live-meter / live-
-        // transcript sections consume:
-        //
-        //   1. Top band — `ErrorBanner` + `PermissionStatusView`. Pinned
-        //      so a missing-permission error is never scrolled away.
-        //   2. Middle band — every configuration/live-data view, wrapped
-        //      in a `ScrollView` so it can grow without pushing the
-        //      bottom band off-screen. `maxHeight` on the outer frame
-        //      caps the popover's natural size; once exceeded, the
-        //      ScrollView takes over.
-        //   3. Bottom band — `ControlBar` (Start/Pause/Resume/Stop/Split)
-        //      plus the optional `SavedToDisclosure`. Pinned so the user
-        //      can ALWAYS reach Stop while a recording is in flight.
-        //
-        // The bug this fixes: adding the language picker pushed the
-        // `ControlBar` past the popover's visible area while a recording
-        // was active, leaving the user with no way to stop. Sticky
-        // bottom + scrollable middle is the standard mac-app pattern
-        // for the same constraint.
         VStack(spacing: 0) {
-            // -- Top band (always visible) --
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .center, spacing: 8) {
-                    Spacer()
-                    SettingsLink {
-                        Image(systemName: "gearshape")
-                            .imageScale(.medium)
-                    }
-                    .buttonStyle(.borderless)
-                    .help(String(localized: "Open Settings (⌘,) — manage cloud-provider API keys and tuning"))
-                }
 
+            // ============ TOP BAND (pinned, never scrolls) ============
+            VStack(alignment: .leading, spacing: 10) {
                 ErrorBanner()
                     .animation(
                         .easeInOut(duration: 0.2),
                         value: recordingController?.latestError != nil
                     )
 
-                // Plan-007 follow-up (2026-04-30): the permission rows
-                // collapse to zero height when both Screen Recording
-                // and Microphone are `.authorized`. The full
-                // ever-visible view lives in Settings → Permissions
-                // for users who want to verify the grant state at
-                // any time.
-                PermissionStatusView(visibility: .onlyWhenIssues)
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 16)
-
-            Divider()
-                .padding(.top, 12)
-
-            // -- Compact controls (intrinsic vertical height) --
-            // Filename, the two disclosure groups, microphone, and
-            // (when recording) the live-stats rows. NO ScrollView —
-            // the user explicitly asked that these controls stay
-            // FULLY VISIBLE at all times. They take their intrinsic
-            // vertical height; expanding `Recording settings` or
-            // `Live transcription` makes the section taller and
-            // shrinks the transcript accordingly. `.fixedSize(...)`
-            // pins the vertical axis to intrinsic so the parent
-            // VStack does not stretch this block to absorb the
-            // popover surplus — that is the transcript panel's job.
-            VStack(alignment: .leading, spacing: 12) {
-                // Filename stays at the top level so the user
-                // always sees the next-recording name without
-                // expanding anything (per the user instruction:
-                // only Format/Layout/Folder go in the new group).
-                FilenameField()
-
-                // -- Recording settings (collapsible) --
-                // Format and Layout share one row to save vertical
-                // space; Folder lives on its own line because the
-                // long path needs the full width. The expanded /
-                // collapsed state is persisted via @AppStorage.
-                DisclosureGroup(
-                    String(localized: "Recording settings"),
-                    isExpanded: $recordingSettingsExpanded
-                ) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(alignment: .firstTextBaseline, spacing: 12) {
-                            FormatPicker()
-                            LayoutPicker()
-                        }
-                        FolderPicker()
+                PopoverHeader(stateLabel: stateLabel) {
+                    AppearanceSwitcher()
+                    SettingsLink {
+                        Image(systemName: "gearshape")
+                            .imageScale(.medium)
+                            .foregroundStyle(palette.secondary)
                     }
-                    .padding(.top, 4)
+                    .buttonStyle(.borderless)
+                    .help(String(localized: "Open Settings (⌘,) — manage cloud-provider API keys and tuning"))
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 14)
+            .padding(.bottom, 6)
+
+            // ============ MIDDLE BAND ============
+            // Two intrinsically-sized `Form` sections + the elastic
+            // transcript panel. The Form's `.fixedSize(...)` modifier
+            // keeps the LiveTranscriptPanel's `.frame(maxHeight:.infinity)`
+            // as the sole claimer of residual vertical space (§UR-5).
+            VStack(alignment: .leading, spacing: 14) {
+                // -- General section --
+                PopoverSection(title: "General") {
+                    Form {
+                        GeneralSection()
+                    }
+                    .formStyle(.grouped)
+                    .scrollDisabled(true)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .scrollContentBackground(.hidden)
                 }
 
-                MicrophonePicker()
-
-                // -- Live transcription (plan-003 Phase G; design §LT-8.1) --
-                //
-                // Plan-007 follow-up (2026-04-30): the per-provider key
-                // entry rows (Gemini, Soniox, Azure batch + realtime,
-                // ElevenLabs) and the Azure read-only summary block
-                // were lifted out of the popover into the Settings
-                // window (⌘, → Settings → Gemini / Soniox / Azure /
-                // ElevenLabs). The popover keeps only the picker, the
-                // source / format / language pickers, and a one-liner
-                // pointer to Settings when a cloud provider is active.
-                DisclosureGroup(
-                    String(localized: "Live transcription"),
-                    isExpanded: $transcriptionExpanded
+                // -- Live Transcription section --
+                PopoverSection(
+                    header: { LiveTranscriptionSectionHeader() }
                 ) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        TranscriptionPicker()
-                        if transcribeProviderRaw != "none" {
-                            TranscriptionSourcePicker()
-                            TranscriptionFormatPicker()
-                            // Plan-005 Phase H follow-up: language picker
-                            // for the on-device Apple Speech provider (also
-                            // surfaces the primary hint to Gemini, which
-                            // honors only the first hint as a prompt-side
-                            // language note).
-                            TranscriptionLanguagePicker()
-                            // For cloud providers, surface a single-line
-                            // pointer to the Settings window where the
-                            // API key + provider-specific tuning live.
-                            if Self.isCloudProvider(transcribeProviderRaw) {
-                                SettingsLink {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "gearshape")
-                                        Text(String(localized: "Manage \(Self.providerDisplayName(for: transcribeProviderRaw)) API key & settings…"))
-                                    }
-                                    .font(.caption)
-                                }
-                                .buttonStyle(.borderless)
-                                .padding(.top, 2)
-                            }
-                        }
+                    Form {
+                        LiveTranscriptionSection()
                     }
-                    .padding(.top, 4)
+                    .formStyle(.grouped)
+                    .scrollDisabled(true)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .scrollContentBackground(.hidden)
                 }
                 .onChange(of: transcribeProviderRaw) { _, newValue in
-                    // Privacy gate: when the user flips the picker into a
-                    // CLOUD-touching provider AND has not yet acknowledged
-                    // the disclosure FOR THAT PROVIDER, present the modal
-                    // sheet (plan-007 Task 0.3 makes the acknowledgement
-                    // per-provider so the user re-confirms when switching
-                    // between cloud vendors with different residency
-                    // postures). Apple Speech / WhisperKit are on-device
-                    // and do not need the disclosure.
+                    // Privacy gate (per-provider acknowledgement per
+                    // plan-007 Task 0.3): present the disclosure modal
+                    // when the user flips into a cloud provider that
+                    // has not been acknowledged yet. Apple Speech /
+                    // WhisperKit are on-device and skip the gate.
                     let normalised = Self.normalize(newValue)
                     if Self.isCloudProvider(normalised),
                        !Self.hasAcknowledged(provider: normalised)
@@ -243,71 +163,39 @@ struct RootView: View {
                     }
                 }
 
+                // -- Live transcript streaming panel --
+                LiveTranscriptPanel()
+                    .frame(maxHeight: .infinity)
+
+                // -- Transient live-stats: meter + elapsed clock --
                 if showsLiveStats {
-                    Divider()
-                    LevelMeterView()
-                    ElapsedTimeView()
+                    VStack(alignment: .leading, spacing: 6) {
+                        LevelMeterView()
+                        ElapsedTimeView()
+                    }
+                    .transition(.opacity)
                 }
+
+                // -- Cost / latency footer --
+                TranscriptionMetricsView()
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            // Pin the vertical axis to the controls' intrinsic
-            // height so the surrounding VStack does not steal extra
-            // popover space and put it here as empty padding. The
-            // transcript band below is the ONLY view with
-            // `.frame(maxHeight: .infinity)` and therefore receives
-            // 100% of the surplus.
-            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
 
-            // -- Flexible transcript band --
-            // Receives 100% of the surplus popover height because
-            // it is the only sibling with `.frame(maxHeight:
-            // .infinity)`. Shrinks automatically when the controls
-            // above get taller (user expands a disclosure group) or
-            // when the user drags the resize handle to make the
-            // popover smaller. The inner ScrollView already has its
-            // own `minHeight: 80` floor so the transcript stays
-            // legible even when squeezed.
-            LiveTranscriptPanel()
-                .padding(.horizontal, 16)
-                .frame(maxHeight: .infinity)
+            // ============ BOTTOM BAND (pinned, never scrolls) ============
+            PopoverFooter()
 
-            // Cost / latency footer — pinned just above the bottom
-            // band so it stays visible while the transcript scrolls.
-            TranscriptionMetricsView()
-                .padding(.horizontal, 16)
-                .padding(.bottom, 4)
-
-            Divider()
-
-            // -- Bottom band (always visible) --
-            VStack(alignment: .leading, spacing: 12) {
-                ControlBar()
-
-                if showsSavedDisclosure {
-                    Divider()
-                    SavedToDisclosure()
-                }
+            if showsSavedDisclosure {
+                Divider()
+                    .overlay(palette.separator)
+                SavedToDisclosure()
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
 
-            // -- Resize handle (vertical resize, persisted height) --
             ResizeHandle(height: $popoverHeight)
         }
         .frame(width: 360)
-        // Vertical resize: explicit height bound to the persisted
-        // `@AppStorage` slot. The user drags `ResizeHandle` (above)
-        // to update it; `PopoverController` observes the same
-        // UserDefaults key and pushes the value onto
-        // `NSPopover.contentSize` so the popover frame actually
-        // grows/shrinks. Clamp matches `ResizeHandle.minHeight` /
-        // `.maxHeight`. `alignment: .top` pins the inner VStack to
-        // the top of the frame as a defence against
-        // `.center`-default behaviour — without it, when the inner
-        // VStack content is shorter than the frame (e.g. transcript
-        // panel returns nothing), SwiftUI vertically centres the
-        // content and we get empty padding above and below.
         .frame(
             height: min(max(popoverHeight, ResizeHandle.minHeight), ResizeHandle.maxHeight),
             alignment: .top
@@ -318,16 +206,10 @@ struct RootView: View {
                 onAcknowledge: {
                     let provider = Self.normalize(transcribeProviderRaw)
                     Self.persistAcknowledgement(for: provider)
-                    // Mirror to the legacy single boolean for any test
-                    // / consumer that still pins the old AppStorage key.
                     privacyAcknowledged = true
                     showPrivacySheet = false
                 },
                 onCancel: {
-                    // Reset the picker to the on-device Apple Speech
-                    // provider (plan-005 Phase H). Falling back to the
-                    // safe default lets the user continue transcribing
-                    // locally without sending audio off-device.
                     transcribeProviderRaw = "apple"
                     showPrivacySheet = false
                 }
@@ -335,9 +217,10 @@ struct RootView: View {
         }
     }
 
+    // MARK: - Derived state
+
     /// Live stats (level meters + elapsed clock) appear while there is
-    /// an active or paused session. Phases F/G are not affected by
-    /// this gate — they only mutate the alert / quit pipeline.
+    /// an active or paused session.
     private var showsLiveStats: Bool {
         guard let state = recordingController?.state else { return false }
         switch state {
@@ -354,12 +237,28 @@ struct RootView: View {
         !(recordingController?.completedSegments.isEmpty ?? true)
     }
 
-    /// Plan-005 Phase H + plan-007 Phase C: cloud-touching providers
-    /// that require the privacy disclosure to be acknowledged before
-    /// they can run. `"apple"` and `"whisperkit"` are on-device and
-    /// excluded; the deprecated alias `"gemini-live"` is treated the
-    /// same as `"gemini"` so users upgrading from a previous release
-    /// also see the sheet.
+    /// Human-readable state label rendered into `MetadataStrip`.
+    private var stateLabel: String {
+        guard let state = recordingController?.state else { return String(localized: "Idle") }
+        switch state {
+        case .idle, .stopped:    return String(localized: "Idle")
+        case .starting:          return String(localized: "Starting…")
+        case .recording:         return String(localized: "Recording")
+        case .pausing:           return String(localized: "Pausing…")
+        case .paused:            return String(localized: "Paused")
+        case .resuming:          return String(localized: "Resuming…")
+        case .splitting:         return String(localized: "Splitting…")
+        case .stopping:          return String(localized: "Stopping…")
+        case .failed:            return String(localized: "Error")
+        }
+    }
+
+    // MARK: - Privacy / cloud provider helpers
+    // (Preserved verbatim from the legacy RootView so the privacy gate
+    // semantics survive the layout refactor unchanged.)
+
+    /// Cloud-touching providers that require the privacy disclosure to
+    /// be acknowledged. `"apple"` and `"whisperkit"` are on-device.
     private static func isCloudProvider(_ raw: String) -> Bool {
         switch raw.lowercased() {
         case "gemini", "gemini-live", "soniox", "azure", "azure-openai-realtime", "elevenlabs":
@@ -369,38 +268,18 @@ struct RootView: View {
         }
     }
 
-    /// Lowercase + trim — the picker's `@AppStorage` slot may have
-    /// drifted from any persisted value; normalising here keeps the
-    /// rest of the view comparing apples to apples.
+    /// Lowercase + trim — defensive normalisation against drifted
+    /// persisted values.
     private static func normalize(_ raw: String) -> String {
         raw.trimmingCharacters(in: .whitespaces).lowercased()
     }
 
-    /// Human-readable provider name shown in the popover's
-    /// "Manage <provider> API key & settings…" pointer.
-    private static func providerDisplayName(for raw: String) -> String {
-        switch raw.lowercased() {
-        case "gemini", "gemini-live":      return "Gemini"
-        case "soniox":                      return "Soniox"
-        case "azure":                       return "Azure OpenAI"
-        case "azure-openai-realtime":       return "Azure OpenAI Realtime"
-        case "elevenlabs":                  return "ElevenLabs"
-        default:                            return "provider"
-        }
-    }
-
-    /// Plan-007 Task 0.3 — per-provider acknowledgement check, with
-    /// a back-compat read of the legacy single boolean for the
-    /// Gemini path so a user who upgraded does not see the Gemini
-    /// dialog twice (the migration in
-    /// `PrivacyDisclosureViewModel.migrateLegacyFlagsIfNeeded` will
-    /// also propagate the legacy flag the first time the view-model
-    /// is instantiated, but we read both here in case the view-model
-    /// has never been touched).
+    /// Per-provider acknowledgement check, with a back-compat read of
+    /// the legacy single boolean for the Gemini and Soniox paths so a
+    /// user upgrading does not see the dialog twice.
     private static func hasAcknowledged(provider: String) -> Bool {
         let key = PrivacyDisclosureViewModel.acknowledgedKey(for: provider)
         if UserDefaults.standard.bool(forKey: key) { return true }
-        // Legacy fallback for `"gemini"` only.
         if provider == "gemini" {
             return UserDefaults.standard.bool(forKey: PrivacyDisclosureViewModel.userDefaultsKey)
         }

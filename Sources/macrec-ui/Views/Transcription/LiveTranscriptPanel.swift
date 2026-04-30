@@ -19,6 +19,7 @@ import SwiftUI
 
 struct LiveTranscriptPanel: View {
     @Environment(\.recordingController) private var recordingController
+    @Environment(\.palette) private var palette
 
     /// Floor on the inner scroll-view height so even on a small
     /// popover there is room for two or three lines of transcript.
@@ -72,7 +73,7 @@ struct LiveTranscriptPanel: View {
                     HStack(spacing: 6) {
                         Text("Transcript")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(palette.secondary)
                         Spacer()
                         if !segments.isEmpty {
                             Button {
@@ -80,6 +81,7 @@ struct LiveTranscriptPanel: View {
                             } label: {
                                 Image(systemName: "trash")
                                     .imageScale(.small)
+                                    .foregroundStyle(palette.secondary)
                             }
                             .buttonStyle(.borderless)
                             .help(String(localized: "Clear transcript (sidecar file is unaffected)"))
@@ -93,7 +95,7 @@ struct LiveTranscriptPanel: View {
                                 .foregroundStyle(.orange)
                             Text(err)
                                 .font(.system(size: 10))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(palette.secondary)
                                 .lineLimit(2)
                         }
                         .padding(.horizontal, 4)
@@ -107,9 +109,18 @@ struct LiveTranscriptPanel: View {
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
                         }
                         .frame(maxHeight: .infinity)
-                        .background(Color(nsColor: .windowBackgroundColor).opacity(0.5))
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(palette.fieldBackground)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(palette.separator, lineWidth: 0.5)
+                        )
                         .onChange(of: segments.count) { _, _ in
                             scrollToBottom(proxy: proxy)
                         }
@@ -118,6 +129,16 @@ struct LiveTranscriptPanel: View {
                         }
                     }
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(palette.groupBackground)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(palette.groupStroke, lineWidth: 0.5)
+                )
             } else {
                 // Idle placeholder — invisible but flexible. Claims
                 // the parent's `.frame(maxHeight: .infinity)` slot so
@@ -150,14 +171,15 @@ struct LiveTranscriptPanel: View {
             if let lang = segment.language, !lang.isEmpty {
                 Text(lang.prefix(2).uppercased())
                     .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(palette.secondary)
                     .padding(.horizontal, 4)
                     .padding(.vertical, 1)
-                    .background(Color.secondary.opacity(0.15))
+                    .background(palette.chipBackground)
                     .cornerRadius(3)
             }
             Text(segment.text)
                 .font(.system(size: 11))
-                .foregroundStyle(segment.isSettled ? .primary : .secondary)
+                .foregroundStyle(segment.isSettled ? palette.value : palette.secondary)
                 .italic(!segment.isSettled)
         }
     }

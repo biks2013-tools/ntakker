@@ -12,10 +12,12 @@
 
 import SwiftUI
 
-/// Sidebar entries. The order is locked: Permissions first (most
-/// urgent / first-run signal), then providers in declaration order
-/// (matching the popover picker), then Privacy, then About.
+/// Sidebar entries. The order is locked: General first (app-wide
+/// preferences — theme picker etc.), then Permissions (urgent /
+/// first-run signal), then providers in declaration order (matching
+/// the popover picker), then Privacy, then About.
 enum SettingsCategory: String, Identifiable, CaseIterable, Hashable {
+    case general
     case permissions
     case gemini
     case soniox
@@ -29,6 +31,7 @@ enum SettingsCategory: String, Identifiable, CaseIterable, Hashable {
 
     var displayName: String {
         switch self {
+        case .general:       return String(localized: "General")
         case .permissions:   return String(localized: "Permissions")
         case .gemini:        return String(localized: "Gemini")
         case .soniox:        return String(localized: "Soniox")
@@ -42,6 +45,7 @@ enum SettingsCategory: String, Identifiable, CaseIterable, Hashable {
 
     var systemIcon: String {
         switch self {
+        case .general:       return "gearshape"
         case .permissions:   return "checkmark.shield"
         case .gemini:        return "sparkles"
         case .soniox:        return "waveform.path"
@@ -59,10 +63,10 @@ struct SettingsRootView: View {
     /// Persisted across launches so reopening Settings lands the user
     /// on the section they last edited.
     @AppStorage("com.macrec.ui.settings.selectedCategory")
-    private var selectedRaw: String = SettingsCategory.azure.rawValue
+    private var selectedRaw: String = SettingsCategory.general.rawValue
 
     private var selected: SettingsCategory {
-        SettingsCategory(rawValue: selectedRaw) ?? .azure
+        SettingsCategory(rawValue: selectedRaw) ?? .general
     }
 
     var body: some View {
@@ -86,6 +90,7 @@ struct SettingsRootView: View {
     @ViewBuilder
     private func detailView(for category: SettingsCategory) -> some View {
         switch category {
+        case .general:       GeneralSettingsView()
         case .permissions:   PermissionsSettingsView()
         case .gemini:        GeminiSettingsView()
         case .soniox:        SonioxSettingsView()
