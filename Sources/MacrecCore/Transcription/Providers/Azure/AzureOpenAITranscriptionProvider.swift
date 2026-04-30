@@ -84,10 +84,19 @@ public struct AzureOpenAITranscriptionProvider: TranscriptionProvider {
         )
         multipart.append(field: "model", value: config.deployment)
         multipart.append(field: "response_format", value: "json")
-        if let lang = options.languageHints.first.flatMap(Self.stripBCP47Region(_:)) {
+        // Plan-007 follow-up (2026-04-30): map the project's
+        // `[String]` hint array into Azure's single-string `language`
+        // + free-form `prompt` shape. Two hints (e.g. "en,el") fold
+        // into a prompt-based code-switching nudge per the OpenAI
+        // guide's recommended workaround.
+        let resolved = AzureLanguageHints.resolve(
+            hints: options.languageHints,
+            customInstruction: options.customSystemInstruction
+        )
+        if let lang = resolved.language {
             multipart.append(field: "language", value: lang)
         }
-        if let prompt = options.customSystemInstruction, !prompt.isEmpty {
+        if let prompt = resolved.prompt, !prompt.isEmpty {
             multipart.append(field: "prompt", value: prompt)
         }
         let (contentType, body) = multipart.build()
@@ -135,6 +144,8 @@ public struct AzureOpenAITranscriptionProvider: TranscriptionProvider {
     /// Strip a BCP-47 region tag (`en-US` → `en`) so the form field
     /// matches Azure's ISO-639-1 expectation. Returns `nil` for empty
     /// hints so the call site can skip appending the field entirely.
+    /// Retained for back-compat with any direct callers; new code
+    /// should use `AzureLanguageHints.resolve(...)` instead.
     static func stripBCP47Region(_ hint: String) -> String? {
         let trimmed = hint.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return nil }

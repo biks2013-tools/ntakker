@@ -44,8 +44,20 @@ public final class AzureOpenAIRealtimeTranscriptionProvider: TranscriptionProvid
         source: SourceTag,
         options: TranscriptionOptions
     ) async throws -> any StreamingTranscriptionSession {
+        // Plan-007 follow-up (2026-04-30): translate the project's
+        // `[String]` language-hint array (e.g. "en,el") into Azure's
+        // single-string `language` + free-form `prompt` shape using
+        // the shared resolver. This is what unlocks bilingual
+        // transcription on `gpt-4o-mini-transcribe` via the prompt
+        // workaround documented in the OpenAI speech-to-text guide.
+        let resolved = AzureLanguageHints.resolve(
+            hints: options.languageHints,
+            customInstruction: options.customSystemInstruction
+        )
         let session = AzureOpenAIRealtimeSession(
             config: config,
+            languageHint: resolved.language,
+            promptHint: resolved.prompt,
             urlSession: urlSession,
             logger: logger
         )

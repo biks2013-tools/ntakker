@@ -29,6 +29,15 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
     private let logger: Logger
     private let urlSession: URLSession
 
+    /// Plan-007 follow-up (2026-04-30): per-call language steering
+    /// resolved by `AzureLanguageHints.resolve(...)` at session
+    /// construction. Re-applied on every reconnect so language
+    /// guidance survives a 1006 close. Captured at init from
+    /// `TranscriptionOptions` passed to
+    /// `AzureOpenAIRealtimeTranscriptionProvider.openStreamingSession(...)`.
+    private let languageHint: String?
+    private let promptHint: String?
+
     private var wsTask: URLSessionWebSocketTask?
     private var receiveLoopTask: Task<Void, Never>?
     private var preemptiveReconnectTask: Task<Void, Never>?
@@ -58,10 +67,14 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
 
     public init(
         config: AzureOpenAIRealtimeConfig,
+        languageHint: String? = nil,
+        promptHint: String? = nil,
         urlSession: URLSession = .shared,
         logger: Logger = Logger(label: "macrec.transcription.azure-realtime")
     ) {
         self.config = config
+        self.languageHint = languageHint
+        self.promptHint = promptHint
         self.urlSession = urlSession
         self.logger = logger
 
@@ -269,16 +282,28 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
         let include: [String]? = config.includeLogprobs
             ? ["item.input_audio_transcription.logprobs"]
             : nil
+        // Language steering wired through from
+        // `AzureOpenAIRealtimeTranscriptionProvider.openStreamingSession(...)`
+        // → init. `AzureLanguageHints.resolve(...)` already collapsed
+        // the user's hint array (e.g. "en,el") into a single
+        // ISO-639-1 code OR a free-form prompt nudge per the
+        // OpenAI guide's recommended workaround.
         let session = RealtimeWireTypes.SessionConfig(
             inputAudioFormat: "pcm16",
             inputAudioTranscription: RealtimeWireTypes.InputAudioTranscriptionConfig(
-                language: nil,  // language hint resolved per-call via TranscriptionOptions; provider-level future hook
-                prompt: nil
+                language: languageHint,
+                prompt: promptHint
             ),
             turnDetection: turnDetection,
             inputAudioNoiseReduction: noiseReduction,
             include: include
         )
+        if let promptHint, !promptHint.isEmpty {
+            logger.info("azure-realtime: sending language prompt hint (\(promptHint.count) chars)")
+        }
+        if let languageHint {
+            logger.info("azure-realtime: pinning language='\(languageHint)'")
+        }
         let envelope = RealtimeWireTypes.TranscriptionSessionUpdate(session: session)
         await sendJSON(envelope)
     }
