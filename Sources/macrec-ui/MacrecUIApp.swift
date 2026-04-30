@@ -39,11 +39,14 @@ struct MacrecUIApp: App {
     var body: some Scene {
         // Per investigation Topic 1 Option 1B: `Settings` is the only
         // `Scene` that does not produce a visible window at launch on
-        // macOS. We declare it with an `EmptyView()` body so the SwiftUI
-        // App lifecycle is fully formed but no window appears. All real
-        // UI is hosted inside an `NSPopover` from `AppDelegate`.
+        // macOS. The popover (Phase D) remains the primary UI; the
+        // Settings scene now hosts plan-007's per-provider configuration
+        // panel (`SettingsRootView`) so the user has a stable, native
+        // place to manage cloud-provider API keys and tuning. ⌘, opens
+        // it automatically; the popover's gear button calls
+        // `EnvironmentValues.openSettings` to open it programmatically.
         Settings {
-            EmptyView()
+            SettingsRootView()
         }
     }
 }

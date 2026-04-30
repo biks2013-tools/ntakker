@@ -42,22 +42,31 @@ public enum EnvFileStore {
     // MARK: - Public API
 
     /// Load every `KEY=VALUE` from `~/.tool-agents/<toolName>/.env`
-    /// into the running process's environment via `setenv`. Existing
-    /// values in the shell environment win; we only set keys that are
-    /// not already present (the four-tier chain places the shell at
-    /// the top of the priority order). Missing file is a silent
-    /// no-op — the bootstrap step seeds an empty file on first run,
-    /// so a real "missing file" only happens if the user has
-    /// physically removed it.
+    /// into the running process's environment via `setenv`,
+    /// **overriding any shell-exported value with the same key**.
+    /// Missing file is a silent no-op — the bootstrap step seeds an
+    /// empty file on first run, so a real "missing file" only happens
+    /// if the user has physically removed it.
+    ///
+    /// Precedence note: `ConfigResolver` documents a four-tier chain
+    /// where the user `.env` (this file) sits ABOVE the shell env
+    /// (`cliOverrides > localEnv > userEnv > shellEnv`). The CLI
+    /// honours that natively because the resolver reads each source
+    /// separately. The UI, by contrast, reads `ProcessInfo` directly
+    /// in many places and therefore needs `loadIntoProcess` to
+    /// reflect the same precedence — the user's stored configuration
+    /// must win over a stale shell-exported value, otherwise the
+    /// Settings panel and the popover diverge (real bug observed
+    /// 2026-04-29: shell-exported `AZURE_OPENAI_DEPLOYMENT=gpt-5.1`
+    /// shadowed a freshly-saved `.env` value).
     @discardableResult
     public static func loadIntoProcess(toolName: String) -> [String: String] {
         let url = ToolAgentsBootstrap.userEnvPath(toolName: toolName)
         guard let parsed = try? parse(at: url) else {
             return [:]
         }
-        let existing = ProcessInfo.processInfo.environment
-        for (k, v) in parsed where existing[k] == nil {
-            setenv(k, v, /*overwrite*/ 0)
+        for (k, v) in parsed {
+            setenv(k, v, /*overwrite*/ 1)
         }
         return parsed
     }

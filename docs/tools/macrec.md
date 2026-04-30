@@ -110,13 +110,14 @@
                                   Live transcription provider. Default: apple
                                   (changed from `none` in v1.5 / plan-005).
                                   Allowed: none | apple | gemini | soniox |
-                                  whisperkit.
+                                  whisperkit | azure | azure-openai-realtime |
+                                  elevenlabs.
                                   (`gemini-live` is accepted as a deprecated
                                   alias for one release; the resolver lowers
                                   it to `gemini` and logs a deprecation
                                   notice.) Env: MACREC_TRANSCRIBE.
                                   (FR-48 / plan-003 / plan-004 / plan-005 /
-                                  plan-006)
+                                  plan-006 / plan-007)
           --soniox-endpoint <url>
                                   Soniox WebSocket endpoint override (for
                                   EU/JP data residency). Default:
@@ -161,11 +162,36 @@
         > never accepted on the command line (they would otherwise leak into
         > shell history, `ps`, and process-tree dumps). The provider-specific
         > vendor-canonical env var (`GOOGLE_API_KEY` for `gemini`,
-        > `SONIOX_API_KEY` for `soniox`) is the only accepted source,
-        > resolved through the four-tier configuration chain. Recommended
-        > storage: `~/.tool-agents/macrec/.env` (mode `0600`). See
+        > `SONIOX_API_KEY` for `soniox`, `AZURE_OPENAI_API_KEY` for `azure`
+        > and `azure-openai-realtime`, `ELEVENLABS_API_KEY` for `elevenlabs`)
+        > is the only accepted source, resolved through the four-tier
+        > configuration chain. Recommended storage:
+        > `~/.tool-agents/macrec/.env` (mode `0600`). See
         > [docs/design/configuration-guide.md](../design/configuration-guide.md)
-        > §2.21 (Gemini) and §2.23 (Soniox).
+        > §2.21 (Gemini), §2.23 (Soniox), §LT-Az (Azure batch),
+        > §LT-Az-RT (Azure realtime), §LT-EL (ElevenLabs).
+        >
+        > **Azure-specific extras.** Both Azure providers also need
+        > `AZURE_OPENAI_ENDPOINT` (e.g.
+        > `https://my-resource.openai.azure.com`) and
+        > `AZURE_OPENAI_DEPLOYMENT` (the user-chosen deployment name
+        > backing `gpt-4o-mini-transcribe`). The api-version is
+        > optional — it falls back to `2025-04-01-preview` (the
+        > documented starter that covers both batch and realtime).
+        >
+        > **Azure realtime session boundary.** Azure caps any single
+        > realtime session at **60 minutes**; the provider transparently
+        > reconnects at **58 min** with a 5 s audio replay so long
+        > recordings continue without user intervention. Close codes
+        > 1006 / 1001 / 1011 (transient transport errors) trigger the
+        > same reconnect-with-replay path with up to 3 attempts.
+        >
+        > **ElevenLabs concurrency cap.** Free / Starter plans cap
+        > concurrent STT requests at 8. When `--transcribe-source both`
+        > produces parallel mic+system requests on a free tier, the
+        > provider may surface `concurrent_limit_exceeded` (HTTP 429)
+        > immediately without retry — see
+        > `configuration-guide.md` §LT-EL for the per-tier table.
 
         Examples:
 
@@ -231,6 +257,33 @@
         export SONIOX_API_KEY=sk_...   # from https://console.soniox.com
         macrec start --transcribe soniox --transcribe-language el,en \
             --output ./talk.m4a --transcribe-format jsonl
+
+        # 11. Azure OpenAI batch (REST) transcription using
+        #     gpt-4o-mini-transcribe. Requires AZURE_OPENAI_API_KEY,
+        #     AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT (find
+        #     the deployment name in Azure Foundry → Models + endpoints).
+        export AZURE_OPENAI_API_KEY=...
+        export AZURE_OPENAI_ENDPOINT=https://my-resource.openai.azure.com
+        export AZURE_OPENAI_DEPLOYMENT=gpt-4o-mini-transcribe
+        macrec start --transcribe azure --transcribe-format jsonl \
+            --output ~/recordings/meeting.m4a
+
+        # 12. Azure OpenAI realtime (WebSocket) transcription with
+        #     `intent=transcription`. Same env vars as #11; produces
+        #     volatile partials + stable finals on the JSONL sidecar.
+        macrec start --transcribe azure-openai-realtime \
+            --transcribe-format jsonl \
+            --output ~/recordings/standup.m4a
+
+        # 13. ElevenLabs Scribe v2 batch transcription with diarization
+        #     and per-word speaker labels. ELEVENLABS_API_KEY must be
+        #     exported (or in ~/.tool-agents/macrec/.env).
+        export ELEVENLABS_API_KEY=sk_...   # from https://elevenlabs.io/app/settings/api-keys
+        export ELEVENLABS_DIARIZE=true
+        export ELEVENLABS_NUM_SPEAKERS=2
+        macrec start --transcribe elevenlabs \
+            --transcribe-format jsonl \
+            --output ~/recordings/interview.m4a
         ```
 
         ### `stop`

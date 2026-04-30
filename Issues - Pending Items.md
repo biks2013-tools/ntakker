@@ -6,6 +6,68 @@
 
 ## Pending items (most critical first)
 
+### PLAN-007-PEND-1 — XCTest suite for plan-007 (Phase E) deferred to follow-up
+Plan-007 ships the production code for Phases 0 + A1 + A2 + B + C + D
+(Azure OpenAI batch + realtime + ElevenLabs + UI + docs) on
+2026-04-29. The Phase E test surface (21 XCTest files + 11 shell
+scripts in plan-007 §E) is deferred to a follow-up commit so the
+production code can land first and be exercised manually against
+real credentials. Owner: next maintenance pass. The acceptance
+criteria (AC-A-*, AC-A2-*, AC-B-*, AC-C-*) remain the contract —
+see the AC tables in plan-007 §6, §A2.11, §B.10, §C.6.
+
+### PLAN-007-PEND-2 — Manual smoke tests against real credentials
+Plan-007 §10.6 requires manual menu-bar smoke for each new provider
+(Azure batch, Azure realtime, ElevenLabs). To execute: launch
+`macrec-ui`, pick the provider, observe the provider-specific
+privacy disclosure on first selection, record 10–30 s of speech,
+and verify the inline transcript panel updates and the
+`*.transcript.jsonl` sidecar is written. Record the outcomes here
+once a key for each provider is on hand.
+
+### PLAN-007-DONE-1 (RESOLVED 2026-04-29) — `.whisperkit` enum case finally added
+Closed by plan-007 Phase 0 Task 0.1. `TranscriptionProviderId`
+(in `Sources/MacrecCore/Config/RecordingOptions.swift`) now
+enumerates `.whisperkit`, `.azure`, `.azureOpenAIRealtime`, and
+`.elevenlabs` so `MACREC_TRANSCRIBE=<id>` resolves cleanly through
+the resolver's `parseEnum` instead of throwing
+`invalidConfigValue`.
+
+### PLAN-007-DONE-2 (RESOLVED 2026-04-29) — `ControlBar.startTapped()` API-key lookup extended for Azure + ElevenLabs
+Closed by plan-007 Phase 0 Task 0.2 (extends SX-PEND-3 below).
+The switch in `Sources/macrec-ui/Views/ControlBar.swift` now
+resolves `AZURE_OPENAI_API_KEY` for `azure` /
+`azure-openai-realtime` and `ELEVENLABS_API_KEY` for
+`elevenlabs`, in addition to the existing Gemini / Soniox cases.
+Azure-specific endpoint / deployment / api-version are also
+forwarded into the new `RecordingOptions` fields when either
+Azure provider is active.
+
+### PLAN-007-DONE-3 (RESOLVED 2026-04-29) — `PrivacyDisclosureSheet` is now per-provider
+Closed by plan-007 Phase 0 Task 0.3.
+`PrivacyDisclosureViewModel` migrates the legacy single boolean
+(and the plan-006 Soniox-specific flag) to per-provider keys
+(`com.local.macrec-ui.transcription.privacy.{providerId}.acknowledged`)
+on first run after upgrade. The sheet's body text is now
+provider-aware (`bodyText(for:)`); switching from one cloud
+provider to another re-shows the disclosure with the new vendor's
+verbatim copy.
+
+### PLAN-007-DONE-4 (RESOLVED 2026-04-29) — `ProviderKeyField` reusable view introduced
+Closed by plan-007 Phase 0 Task 0.4.
+`Sources/macrec-ui/Views/Transcription/ProviderKeyField.swift` is
+the new shared SecureField + Save/Clear row consumed for Azure
+(both batch and realtime) and ElevenLabs in `RootView`. The
+existing `GeminiKeyField` and `SonioxKeyField` are unchanged for
+visual back-compat.
+
+### PLAN-007-DONE-5 (RESOLVED 2026-04-29) — `MultipartFormDataBuilder` shared helper
+Closed by plan-007 Phase 0 Task 0.5.
+`Sources/MacrecCore/Transcription/Net/MultipartFormDataBuilder.swift`
+is the Foundation-only multipart body builder consumed by both
+`AzureOpenAITranscriptionProvider` (Phase A1) and
+`ElevenLabsTranscriptionProvider` (Phase B).
+
 ### SX-PEND-3 (RESOLVED 2026-04-29) — `ControlBar.startTapped()` hardcoded `GOOGLE_API_KEY` regardless of selected provider
 
 - **Symptom (user-reported)**: Picking Soniox in the menu-bar picker, saving a valid `SONIOX_API_KEY` via `SonioxKeyField`, then clicking Start produced `soniox.server_error: invalid or expired API key (401)`. Diagnostic fingerprint logged in `TranscriptionProviderFactory.build` showed the running app was sending the user's `GOOGLE_API_KEY` (prefix `AIzaSy…`) to Soniox.

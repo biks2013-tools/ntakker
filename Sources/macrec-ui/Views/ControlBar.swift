@@ -73,6 +73,23 @@ struct ControlBar: View {
 
     private let logger = Logger(label: "macrec.ui.controlBar")
 
+    /// Resolve an env-var name to its current effective value, preferring
+    /// `~/.tool-agents/macrec-ui/.env` over `ProcessInfo.environment`.
+    /// This matches the documented four-tier precedence chain
+    /// (`localEnv > userEnv > shellEnv` — see `ConfigResolver`) so the
+    /// popover's view of the environment agrees with the Settings panel
+    /// even when a shell-exported value would otherwise override the
+    /// user's stored configuration. Returns `nil` for empty / missing.
+    static func resolvedEnvValue(_ envVar: String) -> String? {
+        if let fromEnvFile = EnvFileStore.read(toolName: "macrec-ui", key: envVar),
+           !fromEnvFile.isEmpty
+        {
+            return fromEnvFile
+        }
+        return ProcessInfo.processInfo.environment[envVar]
+            .flatMap { $0.isEmpty ? nil : $0 }
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             startButton
@@ -251,19 +268,46 @@ struct ControlBar: View {
         //
         // The env-var name is provider-specific (vendor-canonical):
         // GOOGLE_API_KEY for Gemini (also gemini-live alias),
-        // SONIOX_API_KEY for Soniox (plan-006 SX-5 / SX-9).
+        // SONIOX_API_KEY for Soniox (plan-006 SX-5 / SX-9),
+        // AZURE_OPENAI_API_KEY for the Azure batch + realtime providers
+        // (plan-007 Phase A1 + A2),
+        // ELEVENLABS_API_KEY for ElevenLabs (plan-007 Phase B).
         // Apple Speech and WhisperKit are on-device and need no key.
         let resolvedTranscriptionApiKey: String? = {
             guard transcriptionEnabled else { return nil }
             let envVar: String?
             switch (resolvedProviderId ?? "").lowercased() {
-            case "gemini", "gemini-live": envVar = "GOOGLE_API_KEY"
-            case "soniox":                envVar = "SONIOX_API_KEY"
-            default:                      envVar = nil
+            case "gemini", "gemini-live":           envVar = "GOOGLE_API_KEY"
+            case "soniox":                          envVar = "SONIOX_API_KEY"
+            case "azure", "azure-openai-realtime":  envVar = "AZURE_OPENAI_API_KEY"
+            case "elevenlabs":                      envVar = "ELEVENLABS_API_KEY"
+            default:                                envVar = nil
             }
             guard let envVar else { return nil }
-            return ProcessInfo.processInfo.environment[envVar]
-                .flatMap { $0.isEmpty ? nil : $0 }
+            return Self.resolvedEnvValue(envVar)
+        }()
+
+        // Plan-007 Phase A1 / A2: forward Azure-specific fields when
+        // either Azure provider is active. The factory needs all three
+        // (endpoint, deployment, api-version) at build time; missing
+        // endpoint or deployment surfaces as
+        // `MacrecError.transcriptionConfigConflict` BEFORE the recorder
+        // starts. The api-version is optional with a documented starter.
+        let azureProviderActive = transcriptionEnabled
+            && ((resolvedProviderId ?? "").lowercased() == "azure"
+                || (resolvedProviderId ?? "").lowercased() == "azure-openai-realtime")
+        let azureOpenAIEndpoint: URL? = {
+            guard azureProviderActive else { return nil }
+            guard let raw = Self.resolvedEnvValue("AZURE_OPENAI_ENDPOINT") else { return nil }
+            return URL(string: raw)
+        }()
+        let azureOpenAIDeployment: String? = {
+            guard azureProviderActive else { return nil }
+            return Self.resolvedEnvValue("AZURE_OPENAI_DEPLOYMENT")
+        }()
+        let azureOpenAIApiVersion: String? = {
+            guard azureProviderActive else { return nil }
+            return Self.resolvedEnvValue("AZURE_OPENAI_API_VERSION")
         }()
 
         // Build the language-hints array from the two persisted slots
@@ -298,7 +342,10 @@ struct ControlBar: View {
             transcriptionSource: resolvedTranscriptionSource,
             transcriptionFormat: resolvedTranscriptionFormat,
             transcriptionApiKey: resolvedTranscriptionApiKey,
-            transcriptionLanguageHints: resolvedLanguageHints
+            transcriptionLanguageHints: resolvedLanguageHints,
+            azureOpenAIEndpoint: azureOpenAIEndpoint,
+            azureOpenAIDeployment: azureOpenAIDeployment,
+            azureOpenAIApiVersion: azureOpenAIApiVersion
         )
 
         let languageHintsForLog = resolvedLanguageHints.isEmpty

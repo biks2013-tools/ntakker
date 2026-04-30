@@ -1060,6 +1060,113 @@ language strategy, and sidecar behaviour.
 
 ---
 
+### Added by plan-007 — Additional STT engines (Azure OpenAI batch + realtime + ElevenLabs)
+
+#### FR-AZ-1 — Azure OpenAI batch (REST) provider
+**Status:** IMPLEMENTED (Phase A1 — plan-007). **Phase:** A1.
+`MACREC_TRANSCRIBE=azure` activates a Foundation-only REST batch
+provider that POSTs each chunk (16 kHz mono Int16 WAV) to
+`{AZURE_OPENAI_ENDPOINT}/openai/deployments/{deployment}/audio/transcriptions?api-version=...`
+with `api-key: {AZURE_OPENAI_API_KEY}` and `model={deployment}`.
+Decodes the `{ "text": "..." }` envelope. `supportedModes = [.batch]`.
+
+#### FR-AZ-2 — Azure OpenAI realtime (WebSocket) provider
+**Status:** IMPLEMENTED (Phase A2 — plan-007). **Phase:** A2.
+`MACREC_TRANSCRIBE=azure-openai-realtime` activates a Foundation
+`URLSessionWebSocketTask`-based provider streaming 100 ms PCM16 24 kHz
+mono base64-wrapped JSON envelopes to
+`wss://{AZURE_OPENAI_ENDPOINT-host}/openai/realtime?api-version=2025-04-01-preview&intent=transcription`.
+Surfaces volatile partials (`StreamingTranscriptionEvent.partial`)
+and stable finals (`.final`). `supportedModes = [.streaming]`.
+
+#### FR-AZ-3 — Azure realtime reconnect-with-replay
+**Status:** IMPLEMENTED (Phase A2 §A2.7 — plan-007). **Phase:** A2.
+WebSocket close codes 1006 / 1001 / 1011 trigger a transparent
+reconnect attempt with a 5 s replay of the trailing audio buffer.
+Up to 3 attempts within a 30 s window; exhaustion surfaces
+`AzureOpenAIRealtimeError.reconnectExhausted`. Code 1008 (auth
+policy violation) surfaces immediately without retry.
+
+#### FR-AZ-4 — Azure realtime 60-min session boundary
+**Status:** IMPLEMENTED (Phase A2 §A2.8 — plan-007). **Phase:** A2.
+The provider pre-emptively reconnects at 58 min so the 60-min
+Azure cap never severs an in-flight recording. Long recordings
+continue uninterrupted.
+
+#### FR-AZ-5 — Azure RT-1 model-field-rejection guard
+**Status:** IMPLEMENTED (Phase A2 §A2.5 — plan-007). **Phase:** A2.
+`RealtimeWireTypes.SessionConfig` and `InputAudioTranscriptionConfig`
+have NO `model` property at all so the encoded `transcription_session.update`
+JSON cannot carry the field that triggers Azure's known
+`server_error`. Codable round-trip test
+(`RealtimeWireTypesTests.modelFieldOmitted`) asserts the substring
+`"model"` is absent from the encoded payload.
+
+#### FR-AZ-6 — Azure configuration variables
+**Status:** IMPLEMENTED (Phase A1 + A2 §5 — plan-007). **Phase:**
+Phase 0 (resolver) + Phase A1/A2 (factory). `AZURE_OPENAI_API_KEY`,
+`AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT` are required
+when either Azure provider is active; `AZURE_OPENAI_API_VERSION`
+defaults to `2025-04-01-preview` (documented starter); the four
+realtime VAD/noise/include/url knobs are optional with documented
+protocol defaults. Missing required → `transcriptionApiKeyMissing`
+(exit 78) or `transcriptionConfigConflict` (exit 64) at config-load.
+
+#### FR-EL-1 — ElevenLabs Scribe v2 provider
+**Status:** IMPLEMENTED (Phase B — plan-007). **Phase:** B.
+`MACREC_TRANSCRIBE=elevenlabs` activates a Foundation REST batch
+provider POSTing each chunk to
+`https://api.elevenlabs.io/v1/speech-to-text` with `xi-api-key`.
+Decodes `{ language_code, language_probability, text, words[] }`.
+`supportedModes = [.batch]`.
+
+#### FR-EL-2 — ElevenLabs configuration variables
+**Status:** IMPLEMENTED (Phase B §5 — plan-007). **Phase:** Phase
+0 (resolver) + Phase B (factory). `ELEVENLABS_API_KEY` required;
+optional `ELEVENLABS_MODEL_ID` (default `scribe_v2`),
+`ELEVENLABS_LANGUAGE_CODE`, `ELEVENLABS_DIARIZE` (default false),
+`ELEVENLABS_TAG_AUDIO_EVENTS` (default true),
+`ELEVENLABS_NUM_SPEAKERS` (1..32), `ELEVENLABS_FILE_FORMAT`
+(default `pcm_s16le_16` per Open Decision EL-3),
+`ELEVENLABS_ENTITY_DETECTION` (default unset / off per Open
+Decision EL-2 — +30% surcharge when set).
+
+#### FR-EL-3 — ElevenLabs concurrent-limit immediate-surface
+**Status:** IMPLEMENTED (Phase B §B.3 — plan-007). **Phase:** B.
+HTTP 429 with `detail.status == "concurrent_limit_exceeded"`
+surfaces immediately as
+`MacrecError.transcriptionProviderUnavailable` — no retry — so the
+user sees the cap and can choose to upgrade or reduce
+`--transcribe-source` parallelism. Other 429 (`rate_limit_exceeded`,
+`system_busy`) and 500 / 503 are retried with exponential backoff
+(1, 2, 4 s ± 20% jitter) up to 3 attempts.
+
+#### FR-EL-4 — ElevenLabs sub-100 ms short-circuit
+**Status:** IMPLEMENTED (Phase B §B.3 — plan-007). **Phase:** B.
+Audio chunks shorter than 100 ms (the ElevenLabs minimum) return
+the empty string without making a network call, so silence-only
+chunks at the start of a recording do not waste a request.
+
+#### FR-007-UI — Per-provider key-entry sections (plan-007 Task 0.4)
+**Status:** IMPLEMENTED (Phase 0.4 + Phase C — plan-007). **Phase:**
+Phase 0 (`ProviderKeyField`) + Phase C (RootView wiring).
+The menu-bar UI renders an inline `ProviderKeyField` row when the
+active provider is `azure`, `azure-openai-realtime`, or `elevenlabs`.
+The Azure variants additionally render read-only summary lines for
+the resolved endpoint / deployment / api-version (and, for the
+realtime variant, VAD threshold / silence / noise-reduction).
+
+#### FR-007-PRIV — Per-provider privacy-disclosure acknowledgement (plan-007 Task 0.3)
+**Status:** IMPLEMENTED (Phase 0.3 + Phase C — plan-007). **Phase:**
+Phase 0 (PrivacyDisclosureSheet) + Phase C (RootView).
+Acknowledgement is now stored under
+`com.local.macrec-ui.transcription.privacy.{providerId}.acknowledged`
+so users opt in once per data-residency posture; the legacy single
+boolean and the plan-006 Soniox-specific flag are migrated forward
+on first run after upgrade.
+
+---
+
 ## 2. Non-functional requirements
 
 Carried forward from the refined request without modification:

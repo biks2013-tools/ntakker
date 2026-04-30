@@ -75,9 +75,11 @@ struct TranscriptionPicker: View {
     /// `nil` if the provider does not require a key. Exposed as a
     /// `static` helper so unit tests can pin the mapping.
     static func requiredKeyEnvVar(for providerRaw: String) -> String? {
-        switch providerRaw {
-        case "gemini": return "GOOGLE_API_KEY"
-        case "soniox": return "SONIOX_API_KEY"
+        switch providerRaw.lowercased() {
+        case "gemini", "gemini-live":          return "GOOGLE_API_KEY"
+        case "soniox":                          return "SONIOX_API_KEY"
+        case "azure", "azure-openai-realtime": return "AZURE_OPENAI_API_KEY"
+        case "elevenlabs":                      return "ELEVENLABS_API_KEY"
         default: return nil
         }
     }
@@ -104,11 +106,14 @@ struct TranscriptionPicker: View {
                 Text("WhisperKit (on-device, multilingual)").tag("whisperkit")
                 Text("Gemini (cloud)").tag("gemini")
                 Text("Soniox (cloud, multilingual)").tag("soniox")
+                Text("Azure OpenAI (cloud, batch)").tag("azure")
+                Text("Azure OpenAI Realtime (cloud, streaming)").tag("azure-openai-realtime")
+                Text("ElevenLabs Scribe v2 (cloud)").tag("elevenlabs")
                 Text("None").tag("none")
             }
             .pickerStyle(.menu)
             .disabled(isLocked)
-            .help(String(localized: "Live transcription provider for the next recording. WhisperKit is on-device and supports ~99 languages including Greek; Apple Speech is also on-device but limited to locales whose model Apple has shipped to your Mac; Gemini is cloud and requires an API key; Soniox is cloud-based real-time STT optimised for Greek and English; requires SONIOX_API_KEY."))
+            .help(String(localized: "Live transcription provider for the next recording. Apple Speech / WhisperKit are on-device; Gemini, Soniox, Azure OpenAI (batch + realtime) and ElevenLabs are cloud and require their respective API keys."))
 
             // Missing-key affordance — small red-dot badge with the
             // tooltip text. Only visible when the picker selection

@@ -36,6 +36,7 @@
 //     the same position so Phase F/G's environment additions can sit
 //     beside it without conflicts.
 
+import MacrecCore
 import MacrecUIKit
 import SwiftUI
 
@@ -113,6 +114,16 @@ struct RootView: View {
         VStack(spacing: 0) {
             // -- Top band (always visible) --
             VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .center, spacing: 8) {
+                    Spacer()
+                    SettingsLink {
+                        Image(systemName: "gearshape")
+                            .imageScale(.medium)
+                    }
+                    .buttonStyle(.borderless)
+                    .help(String(localized: "Open Settings (⌘,) — manage cloud-provider API keys and tuning"))
+                }
+
                 ErrorBanner()
                     .animation(
                         .easeInOut(duration: 0.2),
@@ -190,6 +201,52 @@ struct RootView: View {
                             // Persists SONIOX_API_KEY to
                             // ~/.tool-agents/macrec-ui/.env (mode 0600).
                             SonioxKeyField()
+                            // Plan-007 Phase C — Azure OpenAI key field
+                            // (shared across both batch and realtime
+                            // surfaces; the env-var name is the same).
+                            // Renders an inline read-only summary of the
+                            // resolved endpoint / deployment / api-version
+                            // so the user can sanity-check what the next
+                            // Start will use.
+                            if Self.normalize(transcribeProviderRaw) == "azure"
+                                || Self.normalize(transcribeProviderRaw) == "azure-openai-realtime"
+                            {
+                                ProviderKeyField(
+                                    providerId: Self.normalize(transcribeProviderRaw),
+                                    envVarName: "AZURE_OPENAI_API_KEY",
+                                    displayLabel: String(localized: "Azure OpenAI API key"),
+                                    helpURL: URL(string: "https://learn.microsoft.com/en-us/azure/ai-services/openai/")
+                                )
+                                Group {
+                                    Text(String(localized: "Endpoint: \(Self.resolved(envVar: "AZURE_OPENAI_ENDPOINT", fallback: "(not set)"))"))
+                                    Text(String(localized: "Deployment: \(Self.resolved(envVar: "AZURE_OPENAI_DEPLOYMENT", fallback: "(not set)"))"))
+                                    Text(String(localized: "API version: \(Self.resolved(envVar: "AZURE_OPENAI_API_VERSION", fallback: "2025-04-01-preview (default)"))"))
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                if Self.normalize(transcribeProviderRaw) == "azure-openai-realtime" {
+                                    Group {
+                                        Text(String(localized: "VAD threshold: \(Self.resolved(envVar: "AZURE_OPENAI_REALTIME_VAD_THRESHOLD", fallback: "0.5 (default)"))"))
+                                        Text(String(localized: "VAD silence (ms): \(Self.resolved(envVar: "AZURE_OPENAI_REALTIME_VAD_SILENCE_MS", fallback: "200 (default)"))"))
+                                        Text(String(localized: "Noise reduction: \(Self.resolved(envVar: "AZURE_OPENAI_REALTIME_NOISE_REDUCTION", fallback: "near_field (default)"))"))
+                                    }
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                }
+                                Text(String(localized: "Edit these values in Settings (⌘,) → Azure OpenAI."))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.top, 2)
+                            }
+                            // Plan-007 Phase C — ElevenLabs API key field.
+                            if Self.normalize(transcribeProviderRaw) == "elevenlabs" {
+                                ProviderKeyField(
+                                    providerId: "elevenlabs",
+                                    envVarName: "ELEVENLABS_API_KEY",
+                                    displayLabel: String(localized: "ElevenLabs API key"),
+                                    helpURL: URL(string: "https://elevenlabs.io/app/settings/api-keys")
+                                )
+                            }
                         }
                     }
                     .padding(.top, 4)
@@ -197,11 +254,15 @@ struct RootView: View {
                 .onChange(of: transcribeProviderRaw) { _, newValue in
                     // Privacy gate: when the user flips the picker into a
                     // CLOUD-touching provider AND has not yet acknowledged
-                    // the disclosure, present the modal sheet. Apple Speech
-                    // is on-device, so it does not need the disclosure
-                    // (plan-005 Phase H).
-                    if Self.isCloudProvider(newValue),
-                       !privacyAcknowledged
+                    // the disclosure FOR THAT PROVIDER, present the modal
+                    // sheet (plan-007 Task 0.3 makes the acknowledgement
+                    // per-provider so the user re-confirms when switching
+                    // between cloud vendors with different residency
+                    // postures). Apple Speech / WhisperKit are on-device
+                    // and do not need the disclosure.
+                    let normalised = Self.normalize(newValue)
+                    if Self.isCloudProvider(normalised),
+                       !Self.hasAcknowledged(provider: normalised)
                     {
                         showPrivacySheet = true
                     }
@@ -278,7 +339,12 @@ struct RootView: View {
         )
         .sheet(isPresented: $showPrivacySheet) {
             PrivacyDisclosureSheet(
+                selectedProvider: Self.normalize(transcribeProviderRaw),
                 onAcknowledge: {
+                    let provider = Self.normalize(transcribeProviderRaw)
+                    Self.persistAcknowledgement(for: provider)
+                    // Mirror to the legacy single boolean for any test
+                    // / consumer that still pins the old AppStorage key.
                     privacyAcknowledged = true
                     showPrivacySheet = false
                 },
@@ -313,17 +379,73 @@ struct RootView: View {
         !(recordingController?.completedSegments.isEmpty ?? true)
     }
 
-    /// Plan-005 Phase H: cloud-touching providers that require the
-    /// privacy disclosure to be acknowledged before they can run.
-    /// `"apple"` is on-device and excluded; the deprecated alias
-    /// `"gemini-live"` is treated the same as `"gemini"` so users
-    /// upgrading from a previous release also see the sheet.
+    /// Plan-005 Phase H + plan-007 Phase C: cloud-touching providers
+    /// that require the privacy disclosure to be acknowledged before
+    /// they can run. `"apple"` and `"whisperkit"` are on-device and
+    /// excluded; the deprecated alias `"gemini-live"` is treated the
+    /// same as `"gemini"` so users upgrading from a previous release
+    /// also see the sheet.
     private static func isCloudProvider(_ raw: String) -> Bool {
         switch raw.lowercased() {
-        case "gemini", "gemini-live", "soniox":
+        case "gemini", "gemini-live", "soniox", "azure", "azure-openai-realtime", "elevenlabs":
             return true
         default:
             return false
         }
+    }
+
+    /// Lowercase + trim — the picker's `@AppStorage` slot may have
+    /// drifted from any persisted value; normalising here keeps the
+    /// rest of the view comparing apples to apples.
+    private static func normalize(_ raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespaces).lowercased()
+    }
+
+    /// Read the canonical resolved value for an env var: prefer the
+    /// `~/.tool-agents/macrec-ui/.env` value (the Settings-managed
+    /// store) over `ProcessInfo` so the popover always shows the same
+    /// value as the Settings panel. Falls back to `ProcessInfo` (which
+    /// may carry a fresh shell-exported value) and finally to
+    /// `fallback` when nothing is set.
+    private static func resolved(envVar: String, fallback: String) -> String {
+        if let fromEnvFile = EnvFileStore.read(toolName: "macrec-ui", key: envVar),
+           !fromEnvFile.isEmpty
+        {
+            return fromEnvFile
+        }
+        if let fromShell = ProcessInfo.processInfo.environment[envVar],
+           !fromShell.isEmpty
+        {
+            return fromShell
+        }
+        return fallback
+    }
+
+    /// Plan-007 Task 0.3 — per-provider acknowledgement check, with
+    /// a back-compat read of the legacy single boolean for the
+    /// Gemini path so a user who upgraded does not see the Gemini
+    /// dialog twice (the migration in
+    /// `PrivacyDisclosureViewModel.migrateLegacyFlagsIfNeeded` will
+    /// also propagate the legacy flag the first time the view-model
+    /// is instantiated, but we read both here in case the view-model
+    /// has never been touched).
+    private static func hasAcknowledged(provider: String) -> Bool {
+        let key = PrivacyDisclosureViewModel.acknowledgedKey(for: provider)
+        if UserDefaults.standard.bool(forKey: key) { return true }
+        // Legacy fallback for `"gemini"` only.
+        if provider == "gemini" {
+            return UserDefaults.standard.bool(forKey: PrivacyDisclosureViewModel.userDefaultsKey)
+        }
+        if provider == "soniox" {
+            return UserDefaults.standard.bool(forKey: PrivacyDisclosureViewModel.sonioxUserDefaultsKey)
+        }
+        return false
+    }
+
+    private static func persistAcknowledgement(for provider: String) {
+        UserDefaults.standard.set(
+            true,
+            forKey: PrivacyDisclosureViewModel.acknowledgedKey(for: provider)
+        )
     }
 }

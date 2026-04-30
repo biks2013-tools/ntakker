@@ -92,7 +92,7 @@ public struct StartCommand: AsyncParsableCommand {
     // (shell → ~/.tool-agents/macrec/.env → ./.env). Putting a key on a
     // command line would leak it into shell history and `ps` output.
 
-    @Option(name: .long, help: "Live transcription provider (none | apple | gemini | whisperkit | soniox). Default: none. Env: MACREC_TRANSCRIBE.")
+    @Option(name: .long, help: "Live transcription provider (none | apple | gemini | whisperkit | soniox | azure | azure-openai-realtime | elevenlabs). Default: apple (per plan-005 Phase H). Env: MACREC_TRANSCRIBE.")
     public var transcribe: String?
 
     @Option(name: .long, help: "Audio source for transcription (system | mic | mixed | both). Default: mixed. Ignored when --transcribe none. Env: MACREC_TRANSCRIBE_SOURCE.")

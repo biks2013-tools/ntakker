@@ -68,14 +68,16 @@ public enum RunMode: String, CaseIterable, Sendable {
 /// resolver lowers it to `"gemini"` and logs a deprecation notice.
 /// `.soniox` selects the Soniox cloud-streaming provider (plan-006 Phase B —
 /// SX-9.1). The resolver keeps the wire form as `"soniox"`.
-///
-/// **Note on the `.whisperkit` anomaly (plan-006 D-SX-1, PEND-SX-2)**: the
-/// `TranscriptionProviderFactory` and the UI picker already dispatch
-/// `whisperkit` as a raw string today; this enum does NOT enumerate it.
-/// Plan-006 deliberately does not regularize this — adding a `.whisperkit`
-/// case is tracked by PEND-SX-2 in `Issues - Pending Items.md`. Soniox is
-/// added as a proper enum case because it is brand-new in plan-006 and has
-/// no pre-existing string-typed call sites.
+/// `.whisperkit` selects the on-device WhisperKit / argmax-oss-swift provider
+/// (originally added in plan-005 Phase H but the enum case landed late;
+/// plan-007 Task 0.1 closes the drift so `MACREC_TRANSCRIBE=whisperkit`
+/// resolves cleanly through `parseEnum(...)` instead of throwing
+/// `invalidConfigValue`).
+/// `.azure` selects the Azure OpenAI `gpt-4o-mini-transcribe` REST batch
+/// provider (plan-007 Phase A1). `.azureOpenAIRealtime` selects the
+/// matching `intent=transcription` realtime WebSocket provider
+/// (plan-007 Phase A2). `.elevenlabs` selects the ElevenLabs
+/// `scribe_v2` REST batch provider (plan-007 Phase B).
 ///
 /// Design §LT-3.1 / D-LT-5. `RecordingOptions.transcriptionProviderId` stores
 /// the lowered `String` form (per D-LT-5) so future external providers don't
@@ -86,8 +88,17 @@ public enum TranscriptionProviderId: String, CaseIterable, Sendable, Codable, Eq
     case apple = "apple"
     case gemini
     case geminiLive = "gemini-live"
+    /// Plan-005 Phase H + plan-007 Task 0.1 — on-device WhisperKit provider.
+    case whisperkit
     /// Plan-006 SX-9.1 — Soniox cloud streaming (WebSocket).
     case soniox
+    /// Plan-007 Phase A1 — Azure OpenAI `gpt-4o-mini-transcribe` REST batch.
+    case azure
+    /// Plan-007 Phase A2 — Azure OpenAI realtime transcription WebSocket
+    /// (`intent=transcription`).
+    case azureOpenAIRealtime = "azure-openai-realtime"
+    /// Plan-007 Phase B — ElevenLabs `scribe_v2` REST batch.
+    case elevenlabs
 }
 
 // `TranscriptionSource` is defined in
@@ -240,6 +251,80 @@ public struct RecordingOptions: Sendable, Equatable {
     /// `nil` — no expiry warning is emitted at recording start (AC-SX-16).
     public let sonioxKeyExpiresAt: Date?
 
+    // MARK: - Azure OpenAI overrides (plan-007 Phase A1 + A2; §5.1 / §A2.4)
+    //
+    // Per the no-fallback rule the resolver throws when these values are
+    // required but missing. The `apiVersion` field carries a documented
+    // starter `2025-04-01-preview` (plan-007 §A2.4) — the resolver
+    // forwards `nil` if the user did not set it, and the Azure providers
+    // apply the documented constant.
+
+    /// Azure OpenAI resource endpoint (e.g.
+    /// `https://my-resource.openai.azure.com`). Required when
+    /// `transcriptionProviderId == "azure" || == "azure-openai-realtime"`.
+    public let azureOpenAIEndpoint: URL?
+
+    /// Azure OpenAI deployment name (NOT the model name). Required for
+    /// both Azure surfaces.
+    public let azureOpenAIDeployment: String?
+
+    /// Azure OpenAI api-version. `nil` lets the providers apply the
+    /// documented starter (`2025-04-01-preview`).
+    public let azureOpenAIApiVersion: String?
+
+    /// Optional ISO-8601 expiry for `AZURE_OPENAI_API_KEY`. Falls back
+    /// to the shared `transcriptionKeyExpiresAt` when unset.
+    public let azureOpenAIApiKeyExpiresAt: Date?
+
+    /// Plan-007 §A2.4 — VAD detection threshold (0.0..1.0). `nil`
+    /// makes the realtime provider apply 0.5.
+    public let azureOpenAIRealtimeVADThreshold: Float?
+
+    /// Plan-007 §A2.4 — VAD prefix-padding ms. `nil` → 300.
+    public let azureOpenAIRealtimeVADPrefixPaddingMS: Int?
+
+    /// Plan-007 §A2.4 — VAD silence ms. `nil` → 200.
+    public let azureOpenAIRealtimeVADSilenceMS: Int?
+
+    /// Plan-007 §A2.4 — `near_field` (default), `far_field`, or `none`.
+    public let azureOpenAIRealtimeNoiseReduction: String?
+
+    /// Plan-007 §A2.4 — when true, request logprobs on transcription
+    /// events.
+    public let azureOpenAIRealtimeIncludeLogprobs: Bool?
+
+    /// Plan-007 §A2.4 — when true, append `&deployment={name}` to the
+    /// realtime WebSocket URL (per OQ-A2-2).
+    public let azureOpenAIRealtimeDeploymentInUrl: Bool?
+
+    // MARK: - ElevenLabs overrides (plan-007 Phase B; §5.1)
+
+    /// Plan-007 §B.7 — model id (`scribe_v2` default).
+    public let elevenLabsModelId: String?
+
+    /// Plan-007 §B.7 — optional ISO-639-1/-3 language code.
+    public let elevenLabsLanguageCode: String?
+
+    /// Plan-007 §B.7 — diarisation toggle (default false).
+    public let elevenLabsDiarize: Bool?
+
+    /// Plan-007 §B.7 — tag non-speech audio events (default true).
+    public let elevenLabsTagAudioEvents: Bool?
+
+    /// Plan-007 §B.7 — optional 1..32 speaker count hint.
+    public let elevenLabsNumSpeakers: Int?
+
+    /// Plan-007 §B.7 — file-format hint. Default `pcm_s16le_16` (low-
+    /// latency fast-path; matches `AudioWAVEncoder` output per §13 EL-3).
+    public let elevenLabsFileFormat: String?
+
+    /// Plan-007 §B.7 — entity-detection mode (`pii` | `phi` | `pci` |
+    /// `all`). Unset = off (default per §13 EL-2).
+    public let elevenLabsEntityDetection: String?
+
+    /// Plan-007 §B.7 — optional ISO-8601 expiry for `ELEVENLABS_API_KEY`.
+    public let elevenLabsApiKeyExpiresAt: Date?
+
     public init(
         output: URL,
         format: OutputFormat = .m4a,
@@ -264,7 +349,25 @@ public struct RecordingOptions: Sendable, Equatable {
         transcriptionModelId: String? = nil,
         transcriptionLanguageHints: [String] = [],
         sonioxEndpoint: URL? = nil,
-        sonioxKeyExpiresAt: Date? = nil
+        sonioxKeyExpiresAt: Date? = nil,
+        azureOpenAIEndpoint: URL? = nil,
+        azureOpenAIDeployment: String? = nil,
+        azureOpenAIApiVersion: String? = nil,
+        azureOpenAIApiKeyExpiresAt: Date? = nil,
+        azureOpenAIRealtimeVADThreshold: Float? = nil,
+        azureOpenAIRealtimeVADPrefixPaddingMS: Int? = nil,
+        azureOpenAIRealtimeVADSilenceMS: Int? = nil,
+        azureOpenAIRealtimeNoiseReduction: String? = nil,
+        azureOpenAIRealtimeIncludeLogprobs: Bool? = nil,
+        azureOpenAIRealtimeDeploymentInUrl: Bool? = nil,
+        elevenLabsModelId: String? = nil,
+        elevenLabsLanguageCode: String? = nil,
+        elevenLabsDiarize: Bool? = nil,
+        elevenLabsTagAudioEvents: Bool? = nil,
+        elevenLabsNumSpeakers: Int? = nil,
+        elevenLabsFileFormat: String? = nil,
+        elevenLabsEntityDetection: String? = nil,
+        elevenLabsApiKeyExpiresAt: Date? = nil
     ) {
         self.output = output
         self.format = format
@@ -290,6 +393,24 @@ public struct RecordingOptions: Sendable, Equatable {
         self.transcriptionLanguageHints = transcriptionLanguageHints
         self.sonioxEndpoint = sonioxEndpoint
         self.sonioxKeyExpiresAt = sonioxKeyExpiresAt
+        self.azureOpenAIEndpoint = azureOpenAIEndpoint
+        self.azureOpenAIDeployment = azureOpenAIDeployment
+        self.azureOpenAIApiVersion = azureOpenAIApiVersion
+        self.azureOpenAIApiKeyExpiresAt = azureOpenAIApiKeyExpiresAt
+        self.azureOpenAIRealtimeVADThreshold = azureOpenAIRealtimeVADThreshold
+        self.azureOpenAIRealtimeVADPrefixPaddingMS = azureOpenAIRealtimeVADPrefixPaddingMS
+        self.azureOpenAIRealtimeVADSilenceMS = azureOpenAIRealtimeVADSilenceMS
+        self.azureOpenAIRealtimeNoiseReduction = azureOpenAIRealtimeNoiseReduction
+        self.azureOpenAIRealtimeIncludeLogprobs = azureOpenAIRealtimeIncludeLogprobs
+        self.azureOpenAIRealtimeDeploymentInUrl = azureOpenAIRealtimeDeploymentInUrl
+        self.elevenLabsModelId = elevenLabsModelId
+        self.elevenLabsLanguageCode = elevenLabsLanguageCode
+        self.elevenLabsDiarize = elevenLabsDiarize
+        self.elevenLabsTagAudioEvents = elevenLabsTagAudioEvents
+        self.elevenLabsNumSpeakers = elevenLabsNumSpeakers
+        self.elevenLabsFileFormat = elevenLabsFileFormat
+        self.elevenLabsEntityDetection = elevenLabsEntityDetection
+        self.elevenLabsApiKeyExpiresAt = elevenLabsApiKeyExpiresAt
     }
 
     // MARK: - Defaults
@@ -368,7 +489,25 @@ extension RecordingOptions {
             transcriptionModelId: transcriptionModelId,
             transcriptionLanguageHints: transcriptionLanguageHints,
             sonioxEndpoint: sonioxEndpoint,
-            sonioxKeyExpiresAt: sonioxKeyExpiresAt
+            sonioxKeyExpiresAt: sonioxKeyExpiresAt,
+            azureOpenAIEndpoint: azureOpenAIEndpoint,
+            azureOpenAIDeployment: azureOpenAIDeployment,
+            azureOpenAIApiVersion: azureOpenAIApiVersion,
+            azureOpenAIApiKeyExpiresAt: azureOpenAIApiKeyExpiresAt,
+            azureOpenAIRealtimeVADThreshold: azureOpenAIRealtimeVADThreshold,
+            azureOpenAIRealtimeVADPrefixPaddingMS: azureOpenAIRealtimeVADPrefixPaddingMS,
+            azureOpenAIRealtimeVADSilenceMS: azureOpenAIRealtimeVADSilenceMS,
+            azureOpenAIRealtimeNoiseReduction: azureOpenAIRealtimeNoiseReduction,
+            azureOpenAIRealtimeIncludeLogprobs: azureOpenAIRealtimeIncludeLogprobs,
+            azureOpenAIRealtimeDeploymentInUrl: azureOpenAIRealtimeDeploymentInUrl,
+            elevenLabsModelId: elevenLabsModelId,
+            elevenLabsLanguageCode: elevenLabsLanguageCode,
+            elevenLabsDiarize: elevenLabsDiarize,
+            elevenLabsTagAudioEvents: elevenLabsTagAudioEvents,
+            elevenLabsNumSpeakers: elevenLabsNumSpeakers,
+            elevenLabsFileFormat: elevenLabsFileFormat,
+            elevenLabsEntityDetection: elevenLabsEntityDetection,
+            elevenLabsApiKeyExpiresAt: elevenLabsApiKeyExpiresAt
         )
     }
 }

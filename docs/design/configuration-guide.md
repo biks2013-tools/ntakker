@@ -547,6 +547,247 @@ is also env-only (no CLI flag exists in v1).
 
 ---
 
+## §LT-Az — Azure OpenAI configuration variables (plan-007 Phase A1, batch REST)
+
+Required when `MACREC_TRANSCRIBE=azure` (or `=azure-openai-realtime`).
+Azure uses **deployment-name routing**, not model-name routing — the
+deployment must be backed by `gpt-4o-mini-transcribe` (or a compatible
+STT model) in the Azure portal. None of the Azure variables are
+accepted via CLI flag (security parity with the other secret-bearing
+providers).
+
+### LT-Az.1 `AZURE_OPENAI_API_KEY` — Azure OpenAI API key
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| CLI flag               | _(none — env-var only)_                                            |
+| Env-var name           | `AZURE_OPENAI_API_KEY`                                             |
+| Type                   | string                                                             |
+| Default                | _(none — required when the active provider is `azure` or `azure-openai-realtime`)_ |
+| Allowed values         | the API key from Azure portal → Resource → Keys & Endpoint         |
+| Recommended storage    | `~/.tool-agents/macrec/.env` (CLI) or `~/.tool-agents/macrec-ui/.env` (UI), mode `0600` |
+| Notes                  | vendor-canonical name (no `MACREC_*` prefix) so the value is shareable with other Azure SDK consumers in the user's shell. Per the project no-fallback rule, missing → `MacrecError.transcriptionApiKeyMissing(provider:)` (exit 78) at config-load time. |
+
+### LT-Az.2 `AZURE_OPENAI_ENDPOINT` — Azure OpenAI resource endpoint
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| CLI flag               | _(none — env-var only)_                                            |
+| Env-var name           | `AZURE_OPENAI_ENDPOINT`                                            |
+| Type                   | URL (https://)                                                     |
+| Default                | _(none — required)_                                                |
+| Allowed values         | `https://{resource-name}.openai.azure.com` (no trailing slash)     |
+| Recommended storage    | next to `AZURE_OPENAI_API_KEY`                                     |
+| Notes                  | the realtime provider rewrites the scheme to `wss://` and the path to `/openai/realtime`; the batch provider POSTs to `/openai/deployments/{deployment}/audio/transcriptions`. Missing → `MacrecError.transcriptionConfigConflict` (exit 64). |
+
+### LT-Az.3 `AZURE_OPENAI_DEPLOYMENT` — Azure OpenAI deployment name
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| CLI flag               | _(none — env-var only)_                                            |
+| Env-var name           | `AZURE_OPENAI_DEPLOYMENT`                                          |
+| Type                   | string                                                             |
+| Default                | _(none — required)_                                                |
+| Allowed values         | the user-chosen deployment name (e.g. `gpt-4o-mini-transcribe`)    |
+| Recommended storage    | next to `AZURE_OPENAI_API_KEY`                                     |
+| Notes                  | this is the **deployment** name (not the model name) — even when the deployment happens to share a string with the model. Find it under Foundry portal → Models + endpoints. Missing → `MacrecError.transcriptionConfigConflict` (exit 64). |
+
+### LT-Az.4 `AZURE_OPENAI_API_VERSION` — Azure OpenAI API version
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| CLI flag               | _(none — env-var only)_                                            |
+| Env-var name           | `AZURE_OPENAI_API_VERSION`                                         |
+| Type                   | string                                                             |
+| Default                | `2025-04-01-preview` (documented starter — covers both batch and realtime per plan-007 §A2.4) |
+| Allowed values         | any Azure OpenAI api-version string matching `^\d{4}-\d{2}-\d{2}(-preview)?$` |
+| Recommended storage    | `~/.tool-agents/macrec/.env`                                       |
+| Notes                  | per Open Decision Az-1, the default is a **config-guide-documented starter**, not a silent fallback for missing secrets. The factory logs the resolved value at `info` level so the user always sees which version is in play. Bump when Microsoft publishes a GA api-version that covers `gpt-4o-mini-transcribe` realtime. |
+
+### LT-Az.5 `AZURE_OPENAI_API_KEY_EXPIRES_AT` — Azure key expiry
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| CLI flag               | _(none — env-var only)_                                            |
+| Env-var name           | `AZURE_OPENAI_API_KEY_EXPIRES_AT`                                  |
+| Type                   | ISO-8601 date string (e.g. `2026-12-31`)                           |
+| Default                | unset — falls back to shared `MACREC_TRANSCRIBE_KEY_EXPIRES_AT`     |
+| Notes                  | per CLAUDE.md `<configuration-guide>` rule. Triggers the standard 7-day soft-warn at recording start. |
+
+---
+
+## §LT-Az-RT — Azure OpenAI Realtime configuration variables (plan-007 Phase A2)
+
+These tune the realtime WebSocket session only. The Azure provider
+applies documented protocol defaults when each is unset (the defaults
+are NOT silent fallbacks for secrets — they are explicit
+known-good protocol values surfaced here for the user). All five base
+variables (`AZURE_OPENAI_*` from §LT-Az above) are required for the
+realtime path too — only the realtime-only knobs below are unique.
+
+> **Session lifetime.** Azure caps any single realtime session at
+> **60 minutes**. The provider transparently reconnects at **58 min**
+> (with audio replay) so long recordings continue without user
+> intervention; close codes 1006 / 1001 / 1011 trigger the same
+> reconnect-with-replay path with up to 3 attempts.
+>
+> **Audio framing.** PCM16 little-endian mono **24 kHz**, base64-
+> encoded inside `input_audio_buffer.append` JSON envelopes. The
+> recorder produces 16 kHz `[Float]` samples; the provider runs each
+> chunk through an `AVAudioConverter`-backed 16→24 kHz resampler
+> before sending. (Diagnostic-only; not user-tunable.)
+
+### LT-Az-RT.1 `AZURE_OPENAI_REALTIME_VAD_THRESHOLD`
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| Type                   | float in `0.0..1.0`                                                |
+| Default                | `0.5`                                                              |
+| Notes                  | Server-side VAD detection threshold. Raise (e.g. `0.7`) when recording desktop audio with background noise; lower (e.g. `0.3`) for quiet environments. Invalid values throw `MacrecError.transcriptionConfigConflict` (exit 64) at provider construction. |
+
+### LT-Az-RT.2 `AZURE_OPENAI_REALTIME_VAD_PREFIX_PADDING_MS`
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| Type                   | non-negative integer                                               |
+| Default                | `300`                                                              |
+| Notes                  | Audio retained before detected speech start. Avoids clipping sentence beginnings. |
+
+### LT-Az-RT.3 `AZURE_OPENAI_REALTIME_VAD_SILENCE_MS`
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| Type                   | non-negative integer                                               |
+| Default                | `200`                                                              |
+| Notes                  | Silence window to trigger end-of-turn. Raise to `500` for slower speakers. |
+
+### LT-Az-RT.4 `AZURE_OPENAI_REALTIME_NOISE_REDUCTION`
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| Type                   | enum: `near_field` \| `far_field` \| `none`                        |
+| Default                | `near_field`                                                       |
+| Notes                  | `near_field` for headset / built-in mic; `far_field` for laptop mic at distance; `none` omits the field entirely. |
+
+### LT-Az-RT.5 `AZURE_OPENAI_REALTIME_INCLUDE_LOGPROBS`
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| Type                   | boolean (`true`/`false`/`1`/`0`/`yes`/`no`)                        |
+| Default                | `false`                                                            |
+| Notes                  | When `true`, the session sends `include: ["item.input_audio_transcription.logprobs"]` so logprobs ride on delta and completed events. Diagnostic-only — the provider does not currently surface logprobs to the sidecar. |
+
+### LT-Az-RT.6 `AZURE_OPENAI_REALTIME_DEPLOYMENT_IN_URL`
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| Type                   | boolean                                                            |
+| Default                | `false` (per OQ-A2-2)                                              |
+| Notes                  | When `true`, the WebSocket URL appends `&deployment={name}`. The default OFF matches the canonical TechCommunity reference; flip to `true` if Azure starts rejecting the parameter-less URL. |
+
+---
+
+## §LT-EL — ElevenLabs configuration variables (plan-007 Phase B)
+
+Required when `MACREC_TRANSCRIBE=elevenlabs`.
+
+### LT-EL.1 `ELEVENLABS_API_KEY` — ElevenLabs API key
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| CLI flag               | _(none — env-var only)_                                            |
+| Env-var name           | `ELEVENLABS_API_KEY`                                               |
+| Type                   | string                                                             |
+| Default                | _(none — required)_                                                |
+| Allowed values         | API key from <https://elevenlabs.io/app/settings/api-keys>         |
+| Recommended storage    | `~/.tool-agents/macrec/.env` (CLI) or `~/.tool-agents/macrec-ui/.env` (UI), mode `0600` |
+| Notes                  | vendor-canonical name. Sent in the `xi-api-key` header. Missing → `MacrecError.transcriptionApiKeyMissing(provider: "elevenlabs")` (exit 78). |
+
+### LT-EL.2 `ELEVENLABS_MODEL_ID`
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| Type                   | enum: `scribe_v2` \| `scribe_v1`                                   |
+| Default                | `scribe_v2`                                                        |
+| Notes                  | `scribe_v1` is accepted for older accounts; `scribe_v2` is the recommended model for all new integrations (research §3.1). |
+
+### LT-EL.3 `ELEVENLABS_LANGUAGE_CODE`
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| Type                   | ISO-639-1 (`en`, `el`) or ISO-639-3 (`eng`, `ell`)                 |
+| Default                | unset (auto-detect)                                                |
+| Notes                  | When unset, ElevenLabs auto-detects the language. Strip BCP-47 region tags before setting (`en-US` → `en`); the provider does this automatically when reading from `MACREC_TRANSCRIBE_LANGUAGE`. |
+
+### LT-EL.4 `ELEVENLABS_DIARIZE`
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| Type                   | boolean                                                            |
+| Default                | `false`                                                            |
+| Notes                  | When `true`, every word in the response carries `speaker_id`; up to 32 speakers. |
+
+### LT-EL.5 `ELEVENLABS_TAG_AUDIO_EVENTS`
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| Type                   | boolean                                                            |
+| Default                | `true`                                                             |
+| Notes                  | When `true`, non-speech events appear inline as `(laughter)`, `(music)`, `(footsteps)`, etc. Set to `false` for clean transcripts (e.g. compliance / legal workflows). |
+
+### LT-EL.6 `ELEVENLABS_NUM_SPEAKERS`
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| Type                   | integer in `1..32`                                                 |
+| Default                | unset (model default)                                              |
+| Notes                  | Hint when speaker count is known. Out-of-range → `MacrecError.transcriptionConfigConflict` (exit 64) at config-load. |
+
+### LT-EL.7 `ELEVENLABS_FILE_FORMAT`
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| Type                   | enum: `pcm_s16le_16` \| `other`                                    |
+| Default                | `pcm_s16le_16` (per Open Decision EL-3 — always-on contract because `AudioWAVEncoder` always produces matching bytes) |
+| Notes                  | `pcm_s16le_16` enables ElevenLabs's lower-latency processing path. |
+
+### LT-EL.8 `ELEVENLABS_ENTITY_DETECTION`
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| Type                   | enum: `pii` \| `phi` \| `pci` \| `all`                             |
+| Default                | unset — entity detection is **OFF** (per Open Decision EL-2)        |
+| Notes                  | Enabling entity detection adds **+30%** to ElevenLabs's per-hour pricing. Useful for compliance / call-recording workflows; OFF by default to avoid surprise costs for the common screen-recording case. |
+
+### LT-EL.9 `ELEVENLABS_API_KEY_EXPIRES_AT`
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| Type                   | ISO-8601 date string                                               |
+| Default                | unset — falls back to shared `MACREC_TRANSCRIBE_KEY_EXPIRES_AT`     |
+| Notes                  | per CLAUDE.md `<configuration-guide>` rule. |
+
+### ElevenLabs concurrency caps (research §9.2)
+
+| Plan       | Max concurrent STT requests |
+|------------|------------------------------|
+| Free       | 8                            |
+| Starter    | 8                            |
+| Creator    | 16                           |
+| Pro        | 30                           |
+| Scale      | 50                           |
+| Business   | 50                           |
+| Enterprise | negotiated                   |
+
+When `MACREC_TRANSCRIBE_SOURCE=both` produces parallel mic+system
+requests on the free tier, the provider may surface
+`concurrent_limit_exceeded` (HTTP 429 with
+`detail.status == "concurrent_limit_exceeded"`) — this surfaces
+**immediately** without retry so the user sees the cap and can choose
+to upgrade or fall back to a single-source recording.
+
+---
+
 ## 3. Recommended storage strategy
 
 | Variable             | Suggested tier              | Rationale                                                         |

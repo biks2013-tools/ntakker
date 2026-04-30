@@ -1002,7 +1002,27 @@ public final class RecordingSession: @unchecked Sendable {
             modelId: options.transcriptionModelId,
             languageHints: options.transcriptionLanguageHints,
             logger: providerLogger,
-            keyExpiresAt: options.transcriptionKeyExpiresAt
+            keyExpiresAt: options.transcriptionKeyExpiresAt,
+            // Plan-007 Phase A1 / A2 — Azure OpenAI fields.
+            azureOpenAIEndpoint: options.azureOpenAIEndpoint,
+            azureOpenAIDeployment: options.azureOpenAIDeployment,
+            azureOpenAIApiVersion: options.azureOpenAIApiVersion,
+            azureOpenAIApiKeyExpiresAt: options.azureOpenAIApiKeyExpiresAt,
+            azureOpenAIRealtimeVADThreshold: options.azureOpenAIRealtimeVADThreshold,
+            azureOpenAIRealtimeVADPrefixPaddingMS: options.azureOpenAIRealtimeVADPrefixPaddingMS,
+            azureOpenAIRealtimeVADSilenceMS: options.azureOpenAIRealtimeVADSilenceMS,
+            azureOpenAIRealtimeNoiseReduction: options.azureOpenAIRealtimeNoiseReduction,
+            azureOpenAIRealtimeIncludeLogprobs: options.azureOpenAIRealtimeIncludeLogprobs,
+            azureOpenAIRealtimeDeploymentInUrl: options.azureOpenAIRealtimeDeploymentInUrl,
+            // Plan-007 Phase B — ElevenLabs fields.
+            elevenLabsModelId: options.elevenLabsModelId,
+            elevenLabsLanguageCode: options.elevenLabsLanguageCode,
+            elevenLabsDiarize: options.elevenLabsDiarize,
+            elevenLabsTagAudioEvents: options.elevenLabsTagAudioEvents,
+            elevenLabsNumSpeakers: options.elevenLabsNumSpeakers,
+            elevenLabsFileFormat: options.elevenLabsFileFormat,
+            elevenLabsEntityDetection: options.elevenLabsEntityDetection,
+            elevenLabsApiKeyExpiresAt: options.elevenLabsApiKeyExpiresAt
         )
         do {
             return try TranscriptionProviderFactory.build(input)

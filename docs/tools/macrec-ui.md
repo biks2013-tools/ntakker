@@ -212,8 +212,9 @@
 
         Dropdown labelled **"Live transcription"** with one entry per
         registered provider. The picker order (top to bottom) is:
-        **Apple / WhisperKit / Gemini / Soniox / None** — locked by
-        plan-006 D-SX-1.
+        **Apple / WhisperKit / Gemini / Soniox / Azure OpenAI (cloud, batch)
+        / Azure OpenAI Realtime (cloud, streaming) / ElevenLabs Scribe v2
+        (cloud) / None** — locked by plan-007 §C.1 (extends plan-006 D-SX-1).
 
         - **Apple Speech (on-device)** *(default on first launch as of
           v1.5 / plan-005)* — Apple SpeechAnalyzer running on-device.
@@ -237,6 +238,29 @@
           <https://console.soniox.com>). Default language hints are
           `el,en` (Greek + English bilingual). Cloud-streamed audio
           is documented in the privacy-disclosure sheet (see below).
+        - **Azure OpenAI (cloud, batch)** *(plan-007 Phase A1)* — Azure
+          OpenAI `gpt-4o-mini-transcribe` REST batch. Requires
+          `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, and
+          `AZURE_OPENAI_DEPLOYMENT`; the api-version is optional with
+          a documented starter `2025-04-01-preview`. Microsoft
+          contractually commits no model training on user audio (see
+          the Azure-batch privacy-disclosure variant below).
+        - **Azure OpenAI Realtime (cloud, streaming)** *(plan-007 Phase A2)* —
+          Azure OpenAI realtime WebSocket with `intent=transcription`.
+          Same env vars as the batch variant (`AZURE_OPENAI_*`); adds
+          optional VAD / noise-reduction tuning knobs documented under
+          **§LT-Az-RT** in `configuration-guide.md`. Sessions cap at
+          60 min; the provider transparently reconnects at 58 min with
+          a 5 s audio replay so long recordings continue without user
+          intervention. The disclosure copy is distinct from the batch
+          variant (real-time stream vs. file upload).
+        - **ElevenLabs Scribe v2 (cloud)** *(plan-007 Phase B)* —
+          ElevenLabs batch REST. Requires `ELEVENLABS_API_KEY` (obtain
+          at <https://elevenlabs.io/app/settings/api-keys>). Optional
+          `ELEVENLABS_DIARIZE`, `ELEVENLABS_NUM_SPEAKERS`,
+          `ELEVENLABS_TAG_AUDIO_EVENTS`, `ELEVENLABS_LANGUAGE_CODE`,
+          `ELEVENLABS_ENTITY_DETECTION` (off by default — +30%
+          surcharge per `configuration-guide.md` §LT-EL.8).
         - **None** — no transcription work happens, no permissions are
           requested, no network connections are opened (AC-LT-1).
 
@@ -246,13 +270,29 @@
         missing from the resolved config chain, the dropdown displays a
         red **"Key not configured"** badge (red dot); clicking the badge
         opens an inline help popover that names the env var
-        (`GOOGLE_API_KEY` for Gemini; `SONIOX_API_KEY` for Soniox) and
-        the recommended path (`~/.tool-agents/macrec-ui/.env`). For
-        Soniox specifically, the tooltip text is **"Set SONIOX_API_KEY
-        in ~/.tool-agents/macrec-ui/.env"**. The Start button remains
+        (`GOOGLE_API_KEY` for Gemini, `SONIOX_API_KEY` for Soniox,
+        `AZURE_OPENAI_API_KEY` for both Azure providers,
+        `ELEVENLABS_API_KEY` for ElevenLabs) and the recommended path
+        (`~/.tool-agents/macrec-ui/.env`). The Start button remains
         enabled — pressing Start in this state surfaces
         `MacrecError.transcriptionApiKeyMissing(provider:)` inline
         without crashing the recording (AC-LT-8 / AC-SX-8).
+
+        ### Provider-specific key-entry sections (plan-007 Task 0.4)
+
+        The picker is followed by a generic `ProviderKeyField` row
+        rendered conditionally based on the active provider. The
+        helper view writes to `~/.tool-agents/macrec-ui/.env` (mode
+        `0600`) and `setenv`s the new value into the running process so
+        the next Start picks it up without an app restart. When the
+        active provider is `azure` or `azure-openai-realtime`, three
+        read-only summary lines render below the field showing the
+        currently-resolved `AZURE_OPENAI_ENDPOINT`,
+        `AZURE_OPENAI_DEPLOYMENT`, and `AZURE_OPENAI_API_VERSION`. When
+        the active provider is `azure-openai-realtime`, three
+        additional read-only lines render the resolved VAD threshold,
+        VAD silence (ms), and noise-reduction profile (defaults shown
+        when the env vars are unset).
 
         Live transcription is also supported in the CLI's `--detach`
         background mode (parity with the foreground UI path). The
@@ -362,6 +402,73 @@
         <https://console.soniox.com> to obtain a key see the missing-key
         red-dot badge first and only reach the disclosure after
         populating `~/.tool-agents/macrec-ui/.env`.
+
+        #### Per-provider acknowledgement keys (plan-007 Task 0.3)
+
+        Plan-007 reshapes the disclosure model from a single shared
+        boolean into **one acknowledgement flag per provider id** so
+        users opt in once per data-residency posture rather than once
+        forever. Switching from Gemini to Azure (or Azure to
+        ElevenLabs, or batch Azure to realtime Azure) re-shows the
+        sheet with provider-specific copy. The persistence keys are:
+
+        | Provider id              | UserDefaults key                                                                |
+        |--------------------------|--------------------------------------------------------------------------------|
+        | `gemini`                  | `com.local.macrec-ui.transcription.privacy.gemini.acknowledged`                |
+        | `soniox`                  | `com.local.macrec-ui.transcription.privacy.soniox.acknowledged`                |
+        | `azure`                   | `com.local.macrec-ui.transcription.privacy.azure.acknowledged`                 |
+        | `azure-openai-realtime`   | `com.local.macrec-ui.transcription.privacy.azure-openai-realtime.acknowledged` |
+        | `elevenlabs`              | `com.local.macrec-ui.transcription.privacy.elevenlabs.acknowledged`            |
+
+        On first run after upgrade, the legacy single boolean
+        (`com.local.macrec-ui.transcription.privacyDisclosureAcknowledged`)
+        and the plan-006 Soniox-specific key
+        (`com.local.macrec-ui.transcription.hasAcceptedSonioxDisclosure`)
+        are migrated forward to the corresponding per-provider keys
+        and removed, so existing users do not see the dialog twice
+        for Gemini or Soniox.
+
+        #### Azure OpenAI batch disclosure copy (plan-007 §7.1)
+
+        > *"Audio will be sent to Microsoft Azure OpenAI Service for
+        > transcription. Microsoft contractually commits that your audio
+        > and transcripts are never used to train AI models and are
+        > never shared with OpenAI or other parties. Data is processed
+        > in the Azure region associated with your resource (currently
+        > Global Standard, which may route through East US 2). A Data
+        > Processing Agreement covers this transfer. For full details,
+        > see Microsoft's Azure OpenAI data privacy documentation at
+        > https://learn.microsoft.com/en-us/azure/ai-services/openai/concepts/data-privacy
+        > and the Microsoft Online Services DPA at https://aka.ms/DPA."*
+
+        #### Azure OpenAI Realtime disclosure copy (plan-007 §A2.9)
+
+        > *"Audio will be streamed live to Microsoft Azure OpenAI
+        > Service for transcription over a secure WebSocket. Microsoft
+        > contractually commits that your audio and transcripts are
+        > never used to train AI models and are never shared with
+        > OpenAI or other parties. Audio is processed in real time and
+        > is NOT retained per Azure data privacy policy. The session
+        > is capped at 60 minutes — recordings longer than that will
+        > reconnect transparently. Data is processed in the Azure
+        > region associated with your resource (currently Global
+        > Standard, which may route through East US 2). For full
+        > details, see Microsoft's Azure OpenAI data privacy
+        > documentation at
+        > https://learn.microsoft.com/en-us/azure/ai-services/openai/concepts/data-privacy
+        > and the Microsoft Online Services DPA at https://aka.ms/DPA."*
+
+        #### ElevenLabs disclosure copy (plan-007 §7.2)
+
+        > *"Audio will be sent to ElevenLabs (US-based, SOC 2 Type II
+        > certified, ISO 27001, GDPR-compliant). By default ElevenLabs
+        > retains audio and transcripts for service operation;
+        > Enterprise customers can enable Zero Retention mode
+        > (`enable_logging=false`). Audio is not used to train models
+        > without explicit opt-in. EU data residency is available on
+        > Enterprise tier through account settings. For full details,
+        > see ElevenLabs' privacy policy at https://elevenlabs.io/privacy
+        > and the Data Processing Addendum at https://elevenlabs.io/dpa."*
 
         ### Cost / latency display
 

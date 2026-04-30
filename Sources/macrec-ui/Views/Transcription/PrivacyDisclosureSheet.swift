@@ -1,22 +1,27 @@
-// macrec-ui/Views/Transcription/PrivacyDisclosureSheet.swift — see
-// project-design.md §LT-8.2 (FR-53, AC-LT-9) and plan-003 Phase G,
-// extended in plan-006 Phase H for the Soniox cloud streaming
-// provider.
+// macrec-ui/Views/Transcription/PrivacyDisclosureSheet.swift —
+// project-design.md §LT-8.2 (FR-53, AC-LT-9), originally added in
+// plan-003 Phase G, extended in plan-006 Phase H (Soniox), and
+// re-shaped in plan-007 Phase 0 / Task 0.3 to be fully per-provider:
 //
-// Modal sheet shown ONCE per app install before the user enables
-// live transcription for the first time. Persists a flag in
-// `UserDefaults` so subsequent sessions skip the alert.
+//   * The body text is provider-specific (`bodyText(for:)`).
+//   * The acknowledgement flag is per-provider
+//     (`UserDefaults` key
+//     `com.local.macrec-ui.transcription.privacy.{providerId}.acknowledged`)
+//     so users opt in once per data-residency posture rather than once
+//     forever — selecting Azure for the first time after Gemini was
+//     already acknowledged correctly re-shows the dialog.
+//   * The legacy single boolean
+//     (`com.local.macrec-ui.transcription.privacyDisclosureAcknowledged`)
+//     is migrated on first run after upgrade to the Gemini-specific
+//     key so existing users do not see the dialog a second time for
+//     Gemini.
+//   * The plan-006 Soniox-specific flag
+//     (`com.local.macrec-ui.transcription.hasAcceptedSonioxDisclosure`)
+//     is migrated to the per-provider key for Soniox.
 //
-// Per the design §LT-8.2 the privacy disclosure remains
-// discoverable via a separate help popover (the `?` icon next to
-// the picker — covered by `TranscriptionPicker`'s `.help(...)`).
-//
-// plan-006 Phase H: a parallel Soniox-specific disclosure section is
-// now rendered when the user selects the `"soniox"` provider for the
-// first time. It is gated by its own UserDefaults flag
-// (`hasAcceptedSonioxDisclosure`) so each cloud provider has an
-// independent acceptance state. The original combined flow remains
-// intact for the Gemini path.
+// Per the design §LT-8.2 the privacy disclosure remains discoverable
+// via a separate help popover (the `?` icon next to the picker —
+// covered by `TranscriptionPicker`'s `.help(...)`).
 
 import SwiftUI
 
@@ -24,72 +29,116 @@ import SwiftUI
 /// `UserDefaults` instance to verify the persistence behavior.
 public final class PrivacyDisclosureViewModel {
 
-    /// Canonical UserDefaults key for the acknowledged flag. Locked
-    /// by the design §LT-8.2.
+    /// Legacy single-boolean key from plan-003 / plan-005. Retained
+    /// for the migration path on first-run-after-upgrade. Reads here
+    /// continue to work for back-compat callers; new code MUST use
+    /// `acknowledgedKey(for:)`.
     public static let userDefaultsKey =
         "com.local.macrec-ui.transcription.privacyDisclosureAcknowledged"
 
-    /// Canonical UserDefaults key for the Soniox-specific disclosure
-    /// acknowledgement (plan-006 Phase H). Independent of the legacy
-    /// combined flag so providers can be acknowledged separately.
+    /// Legacy plan-006 Soniox-specific key. Retained for the migration
+    /// path; new code MUST use `acknowledgedKey(for: "soniox")`.
     public static let sonioxUserDefaultsKey =
         "com.local.macrec-ui.transcription.hasAcceptedSonioxDisclosure"
+
+    /// Per-provider key (plan-007 Task 0.3). Use this for Azure,
+    /// Azure Realtime, ElevenLabs, and any future cloud provider.
+    /// Returns the `UserDefaults` key under which the per-provider
+    /// acknowledgement boolean is stored.
+    public static func acknowledgedKey(for providerId: String) -> String {
+        "com.local.macrec-ui.transcription.privacy.\(providerId).acknowledged"
+    }
 
     private let defaults: UserDefaults
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        migrateLegacyFlagsIfNeeded()
     }
 
-    /// Whether the user has already acknowledged the disclosure.
-    public var hasAcknowledged: Bool {
-        defaults.bool(forKey: Self.userDefaultsKey)
+    /// Whether the user has already acknowledged the disclosure for
+    /// `providerId`. Reads the per-provider key; the legacy keys are
+    /// migrated on the first call.
+    public func hasAcknowledged(provider providerId: String) -> Bool {
+        defaults.bool(forKey: Self.acknowledgedKey(for: providerId))
     }
 
-    /// Persist the acknowledgement.
-    public func acknowledge() {
-        defaults.set(true, forKey: Self.userDefaultsKey)
+    /// Persist the acknowledgement for `providerId`.
+    public func acknowledge(provider providerId: String) {
+        defaults.set(true, forKey: Self.acknowledgedKey(for: providerId))
     }
 
     /// Reset the acknowledgement (testing / debug only).
+    public func reset(provider providerId: String) {
+        defaults.removeObject(forKey: Self.acknowledgedKey(for: providerId))
+    }
+
+    // MARK: - Back-compat (legacy combined-flag callers)
+
+    /// Legacy boolean retained for the existing RootView wiring and any
+    /// tests that pinned it. Mirrors the Gemini-specific per-provider
+    /// key so a first-run-after-upgrade user does not see the Gemini
+    /// dialog twice.
+    public var hasAcknowledged: Bool {
+        defaults.bool(forKey: Self.acknowledgedKey(for: "gemini"))
+    }
+
+    public func acknowledge() {
+        defaults.set(true, forKey: Self.acknowledgedKey(for: "gemini"))
+    }
+
     public func reset() {
-        defaults.removeObject(forKey: Self.userDefaultsKey)
+        defaults.removeObject(forKey: Self.acknowledgedKey(for: "gemini"))
     }
 
-    /// Whether the user has already acknowledged the Soniox-specific
-    /// disclosure (plan-006 Phase H).
     public var hasAcknowledgedSoniox: Bool {
-        defaults.bool(forKey: Self.sonioxUserDefaultsKey)
+        defaults.bool(forKey: Self.acknowledgedKey(for: "soniox"))
     }
 
-    /// Persist the Soniox-specific acknowledgement.
     public func acknowledgeSoniox() {
-        defaults.set(true, forKey: Self.sonioxUserDefaultsKey)
+        defaults.set(true, forKey: Self.acknowledgedKey(for: "soniox"))
     }
 
-    /// Reset the Soniox-specific acknowledgement (testing / debug only).
     public func resetSoniox() {
+        defaults.removeObject(forKey: Self.acknowledgedKey(for: "soniox"))
+    }
+
+    // MARK: - Migration
+
+    /// Plan-007 Task 0.3 migration: when `defaults` carries either
+    /// of the two legacy flags AND the corresponding per-provider key
+    /// is unset, copy the truthy state across and remove the legacy
+    /// key. Idempotent — subsequent calls observe a clean state.
+    private func migrateLegacyFlagsIfNeeded() {
+        // Gemini: legacy combined flag → gemini-specific per-provider key.
+        if defaults.bool(forKey: Self.userDefaultsKey),
+           !defaults.bool(forKey: Self.acknowledgedKey(for: "gemini"))
+        {
+            defaults.set(true, forKey: Self.acknowledgedKey(for: "gemini"))
+        }
+        defaults.removeObject(forKey: Self.userDefaultsKey)
+
+        // Soniox: legacy plan-006 flag → soniox-specific per-provider key.
+        if defaults.bool(forKey: Self.sonioxUserDefaultsKey),
+           !defaults.bool(forKey: Self.acknowledgedKey(for: "soniox"))
+        {
+            defaults.set(true, forKey: Self.acknowledgedKey(for: "soniox"))
+        }
         defaults.removeObject(forKey: Self.sonioxUserDefaultsKey)
     }
 }
 
 /// Modal sheet that presents the privacy disclosure text. Shown by
 /// `RootView` via `.sheet(isPresented: $showSheet)` when the
-/// transcription picker first flips from `none` to a real provider
-/// AND `hasAcknowledged == false`.
+/// transcription picker first flips into a cloud provider AND the
+/// per-provider acknowledgement boolean for that provider is `false`.
 struct PrivacyDisclosureSheet: View {
 
-    /// The provider id that the user is enabling. When `"soniox"`,
-    /// the Soniox-specific section is rendered in addition to the
-    /// generic disclosure. Defaults to `nil` for backward compatibility
-    /// with the original single-flow call sites (Gemini path).
+    /// The provider id that the user is enabling. The sheet's title
+    /// and body text are selected from this; if `nil`, the generic
+    /// pre-plan-007 copy is rendered (and acknowledgement falls back
+    /// to the Gemini key for back-compat).
     var selectedProvider: String? = nil
-
-    /// Persisted Soniox-specific acknowledgement flag (plan-006 Phase
-    /// H). Reads/writes the same UserDefaults key exposed by
-    /// `PrivacyDisclosureViewModel.sonioxUserDefaultsKey`.
-    @AppStorage("com.local.macrec-ui.transcription.hasAcceptedSonioxDisclosure")
-    private var hasAcceptedSonioxDisclosure: Bool = false
 
     /// Closure invoked when the user taps "I understand".
     let onAcknowledge: () -> Void
@@ -98,70 +147,137 @@ struct PrivacyDisclosureSheet: View {
     /// (resets the picker to `none`).
     let onCancel: () -> Void
 
-    /// Whether the Soniox-specific section should be rendered. The
-    /// caller selected `"soniox"` AND has not yet acknowledged the
-    /// Soniox disclosure.
-    private var showSonioxSection: Bool {
-        selectedProvider == "soniox" && !hasAcceptedSonioxDisclosure
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Live transcription sends audio to a third-party API")
+            Text(Self.headline(for: selectedProvider))
                 .font(.headline)
 
-            Text(Self.bodyText)
+            Text(Self.bodyText(for: selectedProvider))
                 .font(.body)
                 .fixedSize(horizontal: false, vertical: true)
-
-            // -- Soniox-specific disclosure (plan-006 Phase H) --
-            // Rendered as a parallel section below the generic
-            // disclosure when the user is enabling the Soniox
-            // provider and has not yet acknowledged it.
-            if showSonioxSection {
-                Divider()
-
-                Text("Soniox real-time transcription")
-                    .font(.headline)
-
-                Text(Self.sonioxBodyText)
-                    .font(.body)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
 
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel, action: onCancel)
                 Button("I understand") {
-                    // Mark Soniox as acknowledged too if the section
-                    // was visible — keeps the per-provider flag in
-                    // sync with the user's affirmative tap.
-                    if showSonioxSection {
-                        hasAcceptedSonioxDisclosure = true
-                    }
                     onAcknowledge()
                 }
                 .keyboardShortcut(.defaultAction)
             }
         }
         .padding(20)
-        .frame(width: 420)
+        .frame(width: 460)
     }
 
-    /// Locked body text (design §LT-8.2). Verbatim — NOT translated;
-    /// the user's prompt requires this exact wording.
-    static let bodyText = """
+    // MARK: - Per-provider copy (locked verbatim — design §LT-8.2 +
+    //         plan-007 §7.1 / §7.2 / §A2.9)
+
+    /// Sheet title. Provider-aware to make the dialog unambiguous when
+    /// a user toggles between cloud providers.
+    static func headline(for providerId: String?) -> String {
+        switch providerId?.lowercased() {
+        case "azure":
+            return "Live transcription will use Microsoft Azure OpenAI Service (batch)"
+        case "azure-openai-realtime":
+            return "Live transcription will stream to Microsoft Azure OpenAI Realtime"
+        case "elevenlabs":
+            return "Live transcription will use ElevenLabs Scribe v2"
+        case "soniox":
+            return "Live transcription will use Soniox real-time STT"
+        case "gemini", "gemini-live":
+            return "Live transcription will use Google's Gemini API"
+        default:
+            return "Live transcription sends audio to a third-party API"
+        }
+    }
+
+    /// Provider-specific body copy. Locked verbatim per plan-007 §7
+    /// and §A2.9. The Azure copy makes the no-training contract
+    /// explicit; the ElevenLabs copy points users at the Zero
+    /// Retention enterprise option.
+    static func bodyText(for providerId: String?) -> String {
+        switch providerId?.lowercased() {
+        case "azure":
+            return azureBodyText
+        case "azure-openai-realtime":
+            return azureRealtimeBodyText
+        case "elevenlabs":
+            return elevenLabsBodyText
+        case "soniox":
+            return sonioxBodyText
+        case "gemini", "gemini-live":
+            return geminiBodyText
+        default:
+            return legacyCombinedBodyText
+        }
+    }
+
+    /// Legacy pre-plan-007 copy. Retained for the `selectedProvider == nil`
+    /// fallback so existing call sites that did not pass a provider id
+    /// keep rendering the original wording.
+    static let legacyCombinedBodyText = """
         When live transcription is enabled, your audio is sent to a third-party service \
         (e.g., Google's Gemini API) for processing. Audio leaves your machine. Do not \
         enable transcription for sensitive conversations. Click 'I understand' to continue.
         """
 
-    /// Soniox-specific disclosure copy block (plan-006 Phase H).
-    /// Locked verbatim — the user's prompt requires this exact wording.
+    /// Legacy alias retained so existing tests / call sites pinning the
+    /// raw `bodyText` static continue to compile. New code must use
+    /// `bodyText(for:)` instead.
+    static let bodyText = legacyCombinedBodyText
+
+    // MARK: - Per-provider verbatim copy
+
+    static let geminiBodyText = """
+        Audio is sent to Google's Gemini API for transcription. Audio leaves your \
+        machine. Per Google's published terms, paid Gemini API audio is not used to \
+        improve Google's models without your explicit consent; the free tier may be \
+        used for product improvement (see Google AI privacy policy). For details see \
+        https://ai.google.dev/gemini-api/terms and https://ai.google.dev/gemini-api/docs/privacy.
+        """
+
+    static let azureBodyText = """
+        Audio will be sent to Microsoft Azure OpenAI Service for transcription. \
+        Microsoft contractually commits that your audio and transcripts are never \
+        used to train AI models and are never shared with OpenAI or other parties. \
+        Data is processed in the Azure region associated with your resource \
+        (currently Global Standard, which may route through East US 2). A Data \
+        Processing Agreement covers this transfer. For full details, see Microsoft's \
+        Azure OpenAI data privacy documentation at \
+        https://learn.microsoft.com/en-us/azure/ai-services/openai/concepts/data-privacy \
+        and the Microsoft Online Services DPA at https://aka.ms/DPA.
+        """
+
+    static let azureRealtimeBodyText = """
+        Audio will be streamed live to Microsoft Azure OpenAI Service for transcription \
+        over a secure WebSocket. Microsoft contractually commits that your audio and \
+        transcripts are never used to train AI models and are never shared with OpenAI \
+        or other parties. Audio is processed in real time and is NOT retained per Azure \
+        data privacy policy. The session is capped at 60 minutes — recordings longer \
+        than that will reconnect transparently. Data is processed in the Azure region \
+        associated with your resource (currently Global Standard, which may route \
+        through East US 2). For full details, see Microsoft's Azure OpenAI data privacy \
+        documentation at \
+        https://learn.microsoft.com/en-us/azure/ai-services/openai/concepts/data-privacy \
+        and the Microsoft Online Services DPA at https://aka.ms/DPA.
+        """
+
+    static let elevenLabsBodyText = """
+        Audio will be sent to ElevenLabs (US-based, SOC 2 Type II certified, ISO 27001, \
+        GDPR-compliant). By default ElevenLabs retains audio and transcripts for service \
+        operation; Enterprise customers can enable Zero Retention mode \
+        (`enable_logging=false`). Audio is not used to train models without explicit \
+        opt-in. EU data residency is available on Enterprise tier through account \
+        settings. For full details, see ElevenLabs' privacy policy at \
+        https://elevenlabs.io/privacy and the Data Processing Addendum at \
+        https://elevenlabs.io/dpa.
+        """
+
     static let sonioxBodyText = """
-        Audio is streamed to Soniox cloud servers (default `wss://stt-rt.soniox.com/transcribe-websocket`; \
-        EU/JP regional endpoints available via `MACREC_SONIOX_ENDPOINT`). Soniox does not store audio by \
-        default; configure retention in your Soniox console. See https://soniox.com/docs/stt/data-residency \
-        and https://soniox.com/privacy.
+        Audio is streamed to Soniox cloud servers (default \
+        `wss://stt-rt.soniox.com/transcribe-websocket`; EU/JP regional endpoints \
+        available via `MACREC_SONIOX_ENDPOINT`). Soniox does not store audio by \
+        default; configure retention in your Soniox console. See \
+        https://soniox.com/docs/stt/data-residency and https://soniox.com/privacy.
         """
 }
