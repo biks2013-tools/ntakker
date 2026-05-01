@@ -794,10 +794,12 @@ public struct ConfigResolver {
         /// list so logprobs ride on delta / completed events.
         public static let azureOpenAIRealtimeIncludeLogprobs    = "AZURE_OPENAI_REALTIME_INCLUDE_LOGPROBS"
 
-        /// When true, the WebSocket URL appends `&deployment={name}` —
-        /// per OQ-A2-2 the default is OFF (matches the canonical
-        /// TechCommunity reference). Flip on if Azure starts rejecting
-        /// the parameter-less URL.
+        /// When true, the WebSocket URL appends `&deployment={name}`.
+        /// Default flipped to ON 2026-05-01 after field repro: most
+        /// Azure tenants reject the parameter-less URL with an
+        /// immediate close=1000 + "Socket is not connected". OQ-A2-2's
+        /// original `false` default matched the early TechCommunity
+        /// sample but turned out not to generalise.
         public static let azureOpenAIRealtimeDeploymentInUrl    = "AZURE_OPENAI_REALTIME_DEPLOYMENT_IN_URL"
 
         // -- ElevenLabs provider (plan-007 Phase B; §5.2) --

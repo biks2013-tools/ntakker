@@ -38,6 +38,14 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
     private let languageHint: String?
     private let promptHint: String?
 
+    /// Transcription model id sent in
+    /// `session.input_audio_transcription.model`. REQUIRED on
+    /// Azure's transcription intent (field repro 2026-05-01).
+    /// Resolved by the provider from `TranscriptionOptions.modelId`
+    /// (i.e. `MACREC_TRANSCRIBE_MODEL`) or the documented default
+    /// (`gpt-4o-mini-transcribe`).
+    private let transcriptionModel: String
+
     private var wsTask: URLSessionWebSocketTask?
     private var receiveLoopTask: Task<Void, Never>?
     private var preemptiveReconnectTask: Task<Void, Never>?
@@ -59,6 +67,14 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
     private var isClosed = false
     private var userInitiatedClose = false
     private var reconnectAttempts = 0
+    /// True once Azure's `session.created` server event has arrived.
+    /// Used by `handleClose` to distinguish a handshake/upgrade failure
+    /// (which Foundation reports as `closeCode == .normalClosure` with
+    /// `error == "Socket is not connected"` — see field-repro
+    /// 2026-05-01) from a clean session end mid-recording. Reset to
+    /// `false` on every fresh `connectAndConfigure(...)` so reconnect
+    /// attempts get a clean slate.
+    private var didCompleteHandshake = false
 
     /// Maximum reconnect attempts within a 30 s window (plan-007 §A2.7).
     private static let maxReconnectAttempts = 3
@@ -67,12 +83,14 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
 
     public init(
         config: AzureOpenAIRealtimeConfig,
+        transcriptionModel: String,
         languageHint: String? = nil,
         promptHint: String? = nil,
         urlSession: URLSession = .shared,
         logger: Logger = Logger(label: "macrec.transcription.azure-realtime")
     ) {
         self.config = config
+        self.transcriptionModel = transcriptionModel
         self.languageHint = languageHint
         self.promptHint = promptHint
         self.urlSession = urlSession
@@ -140,11 +158,18 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
         guard let url = config.websocketURL() else {
             throw AzureOpenAIRealtimeError.audioFormatMismatch(reason: "Could not build WebSocket URL from endpoint")
         }
+        // Surface the WS URL at INFO so the log makes it obvious which
+        // shape (with / without `&deployment=`) is being attempted —
+        // critical for diagnosing connection-vs-handshake failures
+        // (added 2026-05-01 after the `transcription_session.created`
+        // discriminator-routing repro).
+        logger.info("azure-realtime: opening WS to \(url.absoluteString) (deploymentInUrl=\(config.deploymentInUrl))")
         var request = URLRequest(url: url)
         request.addValue(config.apiKey, forHTTPHeaderField: "api-key")
         let task = urlSession.webSocketTask(with: request)
         wsTask = task
         sessionStart = Date()
+        didCompleteHandshake = false
         task.resume()
 
         // Start the receive loop in a child task so the actor can
@@ -199,6 +224,7 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
         switch event {
         case .sessionCreated(let payload):
             logger.info("azure-realtime: session.created (id=\(payload.session?.id ?? "?"))")
+            didCompleteHandshake = true
             await sendSessionConfig()
 
         case .sessionUpdated:
@@ -244,12 +270,13 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
             let errorType = payload.error.type ?? "unknown"
             let message = payload.error.message ?? "(no message)"
             metrics.errorCount += 1
-            // RT-1 model-field bug detection.
-            if message.lowercased().contains("model") {
-                await emit(.error(detail: "Azure realtime: model field appears in session update — RT-1 bug. \(message)"))
-            } else {
-                await emit(.error(detail: "Azure realtime \(errorType): \(message)"))
-            }
+            // 2026-05-01 field repro retired the RT-1 detection: Azure
+            // transcription REQUIRES `input_audio_transcription.model`,
+            // so a "Missing required parameter: …model" surface used
+            // to be mis-labelled as the (now-debunked) RT-1 bug.
+            // Surface the raw Azure error verbatim instead — the
+            // message itself is precise and actionable.
+            await emit(.error(detail: "Azure realtime \(errorType): \(message)"))
 
         case .rateLimitsUpdated(let payload):
             if let limits = payload.rateLimits {
@@ -267,13 +294,15 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
 
     /// Send the configured `transcription_session.update` payload.
     private func sendSessionConfig() async {
+        // `create_response` / `interrupt_response` intentionally OMITTED
+        // — Azure transcription returns invalid_request_error if either
+        // appears under `transcription_session.update` (field repro
+        // 2026-05-01). See note in RealtimeWireTypes.TurnDetectionConfig.
         let turnDetection = RealtimeWireTypes.TurnDetectionConfig(
             type: "server_vad",
             threshold: config.vadThreshold,
             prefixPaddingMS: config.vadPrefixPaddingMS,
-            silenceDurationMS: config.vadSilenceMS,
-            createResponse: false,
-            interruptResponse: false
+            silenceDurationMS: config.vadSilenceMS
         )
         let noiseReduction: RealtimeWireTypes.NoiseReductionConfig? = {
             guard config.noiseReduction != "none" else { return nil }
@@ -291,6 +320,7 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
         let session = RealtimeWireTypes.SessionConfig(
             inputAudioFormat: "pcm16",
             inputAudioTranscription: RealtimeWireTypes.InputAudioTranscriptionConfig(
+                model: transcriptionModel,
                 language: languageHint,
                 prompt: promptHint
             ),
@@ -298,6 +328,7 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
             inputAudioNoiseReduction: noiseReduction,
             include: include
         )
+        logger.info("azure-realtime: setting transcription model='\(transcriptionModel)'")
         if let promptHint, !promptHint.isEmpty {
             logger.info("azure-realtime: sending language prompt hint (\(promptHint.count) chars)")
         }
@@ -323,6 +354,24 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
 
         switch code {
         case .normalClosure:
+            // Foundation's `URLSessionWebSocketTask.closeCode` defaults
+            // to `.normalClosure` (1000) when the upgrade handshake
+            // failed before any close frame ever arrived (field repro
+            // 2026-05-01: Azure 4xx during upgrade surfaces as
+            // close=1000 + error="Socket is not connected"). Detect
+            // that by checking whether `session.created` was ever
+            // received — if not, this is a connection failure and we
+            // MUST surface it to the user instead of silently finishing
+            // the events stream.
+            if !didCompleteHandshake {
+                let detail = error.localizedDescription
+                logger.error("azure-realtime: handshake failed before session.created — \(detail)")
+                metrics.errorCount += 1
+                await emit(.error(detail: "Azure realtime: connection failed before handshake completed — \(detail). Common causes: wrong endpoint, missing &deployment= on URL (toggle 'Append &deployment= to URL' in Settings → Azure OpenAI Realtime), wrong api-version, expired API key."))
+                eventsContinuation.finish()
+                isClosed = true
+                return
+            }
             // Clean close at < 60 min: end the session. At ≥ 58 min,
             // treat as session-expired and reconnect-with-replay.
             let age = Date().timeIntervalSince(sessionStart ?? Date())

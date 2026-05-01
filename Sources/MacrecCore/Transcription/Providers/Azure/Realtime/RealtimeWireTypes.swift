@@ -64,14 +64,25 @@ public enum RealtimeWireTypes {
         }
     }
 
-    /// `input_audio_transcription` sub-object. **Has NO `model` field**
-    /// (the Azure bug is rooted here too — the model is implied by
-    /// the deployment specified at connection time).
+    /// `input_audio_transcription` sub-object.
+    ///
+    /// 2026-05-01 field repro: Azure's `intent=transcription` endpoint
+    /// REQUIRES `model` here — sending the session update without it
+    /// is rejected with `invalid_request_error: Missing required
+    /// parameter: 'session.input_audio_transcription.model'`. The
+    /// earlier "RT-1 model field bug" claim in
+    /// `docs/research/azure-openai-realtime-transcription-wire-schema.md`
+    /// only applies to the conversational (`gpt-realtime`) intent;
+    /// for the transcription intent, the model name is mandatory and
+    /// must match one of Azure's transcription models
+    /// (`gpt-4o-mini-transcribe`, `gpt-4o-transcribe`, `whisper-1`).
     public struct InputAudioTranscriptionConfig: Encodable, Sendable {
+        public let model: String?
         public let language: String?
         public let prompt: String?
 
-        public init(language: String? = nil, prompt: String? = nil) {
+        public init(model: String?, language: String? = nil, prompt: String? = nil) {
+            self.model = model
             self.language = language
             self.prompt = prompt
         }
@@ -82,31 +93,38 @@ public enum RealtimeWireTypes {
         public let threshold: Float?
         public let prefixPaddingMS: Int?
         public let silenceDurationMS: Int?
-        public let createResponse: Bool?         // false in transcription mode
-        public let interruptResponse: Bool?
+
+        // NOTE (2026-05-01 field repro): `create_response` and
+        // `interrupt_response` are CONVERSATIONAL realtime fields
+        // (intent=conversation). Azure's transcription endpoint
+        // (intent=transcription) returns
+        // `invalid_request_error: Unknown parameter:
+        // 'session.turn_detection.interrupt_response'` (and the same
+        // for `create_response`) when they appear under
+        // `transcription_session.update`. Curl-probe of Azure's
+        // default `transcription_session.created` payload echoed
+        // ONLY type / threshold / prefix_padding_ms /
+        // silence_duration_ms. Do NOT add the two response-control
+        // fields back here — they belong on a future
+        // `RealtimeWireTypes.ConversationalTurnDetectionConfig`
+        // type if the conversational intent is ever wired in.
 
         public init(
             type: String = "server_vad",
             threshold: Float? = nil,
             prefixPaddingMS: Int? = nil,
-            silenceDurationMS: Int? = nil,
-            createResponse: Bool? = false,
-            interruptResponse: Bool? = false
+            silenceDurationMS: Int? = nil
         ) {
             self.type = type
             self.threshold = threshold
             self.prefixPaddingMS = prefixPaddingMS
             self.silenceDurationMS = silenceDurationMS
-            self.createResponse = createResponse
-            self.interruptResponse = interruptResponse
         }
 
         public enum CodingKeys: String, CodingKey {
             case type, threshold
             case prefixPaddingMS = "prefix_padding_ms"
             case silenceDurationMS = "silence_duration_ms"
-            case createResponse = "create_response"
-            case interruptResponse = "interrupt_response"
         }
     }
 
@@ -169,14 +187,22 @@ public enum RealtimeWireTypes {
             let container = try decoder.container(keyedBy: DiscriminatorKeys.self)
             let type = try container.decode(String.self, forKey: .type)
             switch type {
-            case "session.created":
+            case "session.created", "transcription_session.created":
+                // Field-verified 2026-05-01 against
+                // biksaiservice-east-us-2.openai.azure.com: the actual
+                // first server event for `intent=transcription` is
+                // `transcription_session.created`, NOT `session.created`
+                // as the early wire-schema research note claimed.
+                // Treat both the same so `handleEvent(.sessionCreated)`
+                // fires `sendSessionConfig()` regardless of which name
+                // Azure decides to use. Without this, the session sat
+                // open with `input_audio_transcription: null` and Azure
+                // never emitted any transcription deltas.
                 self = .sessionCreated(try SessionCreated(from: decoder))
-            case "session.updated":
-                self = .sessionUpdated(try SessionUpdated(from: decoder))
-            case "transcription_session.created", "transcription_session.updated":
-                // Transcription-flavoured update events. We carry the
-                // type name so logs distinguish them; same payload as
-                // session.updated.
+            case "session.updated", "transcription_session.updated":
+                // Acknowledgement of our `transcription_session.update`.
+                // Same payload shape; we keep both names mapped to the
+                // same case for log uniformity.
                 self = .sessionUpdated(try SessionUpdated(from: decoder))
             case "input_audio_buffer.speech_started":
                 self = .speechStarted(try SpeechStarted(from: decoder))

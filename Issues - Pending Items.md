@@ -6,6 +6,243 @@
 
 ## Pending items (most critical first)
 
+### PLAN-007-DONE-12 (RESOLVED 2026-05-01) — Azure OpenAI Realtime: `Missing required parameter: 'session.input_audio_transcription.model'` — RT-1 was inverted
+**Symptom (user-reported 2026-05-01, after PLAN-007-DONE-11 landed).**
+After dropping `create_response` / `interrupt_response`, the next
+`transcription_session.update` round-tripped to a different Azure
+error:
+
+> *Azure realtime: model field appears in session update — RT-1 bug.
+> Missing required parameter: 'session.input_audio_transcription.model'.*
+
+(The "RT-1 bug" prefix was added by our own error handler — see
+`AzureOpenAIRealtimeSession.handleEvent(.sessionError)` heuristic
+that fired on any error message containing the substring "model".)
+
+**Root cause.** Two layered bugs:
+
+1. *Wire-types omitted a required field.* The
+   `RealtimeWireTypes.InputAudioTranscriptionConfig` struct exposed
+   only `language` + `prompt`. The "RT-1 model field bug" entry in
+   `docs/research/azure-openai-realtime-transcription-wire-schema.md`
+   §5.6 claimed Azure rejects the `model` field on
+   `transcription_session.update`. That note is empirically wrong —
+   it conflated the **conversational** intent (`gpt-realtime`),
+   which does reject the field, with the **transcription** intent
+   (`gpt-4o-mini-transcribe` family), which **requires** it. With
+   the field absent Azure replied with the missing-parameter error
+   above and never accepted the session config — so no transcription
+   deltas ever flowed.
+
+2. *Error-mislabeling heuristic compounded the confusion.* The
+   `case .sessionError(let payload)` branch wrapped any error message
+   containing `"model"` with a misleading "appears in session update
+   — RT-1 bug" prefix, hiding the actual Azure message
+   ("Missing required parameter: …").
+
+**Fixes landed.**
+- `Sources/MacrecCore/Transcription/Providers/Azure/Realtime/RealtimeWireTypes.swift` —
+  added `model: String?` to `InputAudioTranscriptionConfig` (with
+  doc comment retracting the RT-1 claim and pointing back here).
+- `Sources/MacrecCore/Transcription/Providers/Azure/Realtime/AzureOpenAIRealtimeSession.swift` —
+  added a `transcriptionModel: String` init parameter; populated
+  the new `model` field in the `transcription_session.update`
+  payload; added an INFO log showing which model is being set;
+  retired the RT-1 error-mislabeling heuristic so Azure errors are
+  surfaced verbatim.
+- `Sources/MacrecCore/Transcription/Providers/Azure/Realtime/AzureOpenAIRealtimeTranscriptionProvider.swift` —
+  added `defaultTranscriptionModel = "gpt-4o-mini-transcribe"` plus
+  a `knownTranscriptionModels` allow-list (info-warning only,
+  unknown values still pass through). `openStreamingSession` now
+  resolves the model via `MACREC_TRANSCRIBE_MODEL > default` and
+  forwards it to the session.
+
+**Behaviour after the fix.** A user with no `MACREC_TRANSCRIBE_MODEL`
+gets `model: "gpt-4o-mini-transcribe"`. A user whose deployment is
+backed by `gpt-4o-transcribe` or `whisper-1` can opt in via
+`MACREC_TRANSCRIBE_MODEL=…` in their `~/.tool-agents/macrec-ui/.env`
+(or via the Settings UI's MACREC_TRANSCRIBE_MODEL field once that
+panel exposes it). Surface-error wording now reads
+`"Azure realtime invalid_request_error: <verbatim Azure message>"`.
+
+**Follow-up.**
+- Update `docs/research/azure-openai-realtime-transcription-wire-schema.md`
+  §5.6 to retract the RT-1 claim for the transcription intent and
+  document that `input_audio_transcription.model` is REQUIRED,
+  with the three accepted values.
+- Optional: surface a dedicated "Azure transcription model" picker in
+  Settings → Azure OpenAI Realtime so users on `gpt-4o-transcribe`
+  or `whisper-1` deployments don't have to reach for the env var
+  directly.
+
+### PLAN-007-DONE-11 (RESOLVED 2026-05-01) — Azure OpenAI Realtime: `transcription_session.update` rejected with `Unknown parameter: 'session.turn_detection.interrupt_response'`
+**Symptom (user-reported 2026-05-01, after PLAN-007-DONE-10 landed).**
+With the discriminator fix from PLAN-007-DONE-10 applied,
+`sendSessionConfig()` finally fired — and Azure immediately answered
+with `error` of type `invalid_request_error`:
+
+> *Azure realtime invalid_request_error: Unknown parameter:
+> 'session.turn_detection.interrupt_response'.*
+
+The popover surfaced this correctly via the existing `error`
+event handler — but transcription still produced no output because
+the session update was rejected.
+
+**Root cause.** `RealtimeWireTypes.TurnDetectionConfig` modelled
+`create_response` and `interrupt_response`. Both are
+**conversational realtime** fields (intent=conversation) — they
+control whether the model auto-responds to detected speech and
+whether incoming user audio interrupts a model response. They have
+no meaning under `intent=transcription`, and Azure's transcription
+endpoint flags them as `invalid_request_error` rather than ignoring
+them. The earlier curl probe of `transcription_session.created`'s
+default echo confirmed Azure's own `turn_detection` payload
+contains only `type` / `threshold` / `prefix_padding_ms` /
+`silence_duration_ms`.
+
+**Fix landed.**
+- `Sources/MacrecCore/Transcription/Providers/Azure/Realtime/RealtimeWireTypes.swift` —
+  removed `createResponse` + `interruptResponse` properties (and
+  their `CodingKeys`) from `TurnDetectionConfig`. Added a
+  prominent comment documenting the conversational-vs-transcription
+  field split so a future contributor doesn't re-add them.
+- `Sources/MacrecCore/Transcription/Providers/Azure/Realtime/AzureOpenAIRealtimeSession.swift` —
+  `sendSessionConfig()` no longer passes the two arguments;
+  comment cross-references the wire-types note.
+
+**Follow-up.**
+- Update
+  `docs/research/azure-openai-realtime-transcription-wire-schema.md`
+  §5.4 turn-detection table to mark `create_response` /
+  `interrupt_response` as **CONVERSATIONAL ONLY — DO NOT SEND ON
+  intent=transcription** (mirroring the `model` field bug in §5.6).
+- If conversational realtime is ever wired in, introduce a
+  separate `ConversationalTurnDetectionConfig` rather than
+  expanding the transcription type.
+
+### PLAN-007-DONE-10 (RESOLVED 2026-05-01) — Azure OpenAI Realtime: `transcription_session.created` mis-routed to `.sessionUpdated`, no session config ever sent
+**Symptom (user-reported 2026-05-01, after PLAN-007-DONE-9 landed).**
+With the deployment-in-URL fix from PLAN-007-DONE-9 applied, the WS
+no longer closed prematurely, but transcription still produced no
+output. The popover showed the recording running with audio-meter
+activity, no error banner, and no transcript ever arrived.
+
+**Root cause.** Field probe with `curl` against
+`biksaiservice-east-us-2.openai.azure.com` confirmed:
+- The WS upgrade returns `HTTP/1.1 101 Switching Protocols` for both
+  URL forms (with and without `&deployment=`).
+- Azure's first server event for `intent=transcription` is
+  `{"type":"transcription_session.created", …}` — NOT
+  `{"type":"session.created", …}` as the wire-schema research note
+  (`docs/research/azure-openai-realtime-transcription-wire-schema.md`
+  §3 "First Server Event After Connect") claimed.
+
+The discriminator switch in
+`Sources/MacrecCore/Transcription/Providers/Azure/Realtime/RealtimeWireTypes.swift:176`
+routed `"transcription_session.created"` to the `.sessionUpdated`
+case (intentionally, per the comment "same payload as
+session.updated"), which the session handler treats as a no-op debug
+log. As a result `handleEvent(.sessionCreated)` — the only call
+site for `sendSessionConfig()` — never fires. Without a
+`transcription_session.update` from the client, Azure's session
+keeps `input_audio_transcription: null` (visible in the curl
+output), so it captures audio but emits zero
+`conversation.item.input_audio_transcription.delta/completed` events.
+
+The `didCompleteHandshake` flag added in PLAN-007-DONE-9 also
+remained false, so the connection eventually expired silently
+(close=1000) instead of producing an actionable error.
+
+**Fixes landed.**
+- `Sources/MacrecCore/Transcription/Providers/Azure/Realtime/RealtimeWireTypes.swift` —
+  re-routed the discriminator so both `"session.created"` and
+  `"transcription_session.created"` decode to `.sessionCreated`, and
+  both `"session.updated"` and `"transcription_session.updated"`
+  decode to `.sessionUpdated`. This restores the
+  `handleEvent(.sessionCreated) → sendSessionConfig()` path, which
+  is what unlocks transcription.
+- `Sources/MacrecCore/Transcription/Providers/Azure/Realtime/AzureOpenAIRealtimeSession.swift` —
+  `connectAndConfigure(...)` now logs the resolved WS URL +
+  `deploymentInUrl` flag at INFO so future "WS hangs" repros are
+  diagnosable from the log without curl.
+
+**Follow-up.**
+- Update
+  `docs/research/azure-openai-realtime-transcription-wire-schema.md`
+  §3.4 / §5.1 to record the empirical event name
+  (`transcription_session.created`) and to retract the "NOT
+  `transcription_session.created` — there is no
+  `transcription_session.created` event type" claim.
+- Add an XCTest fixture under the deferred Phase E test surface
+  (PLAN-007-PEND-1) decoding a real `transcription_session.created`
+  payload and asserting it lands on `.sessionCreated`.
+
+### PLAN-007-DONE-9 (RESOLVED 2026-05-01) — Azure OpenAI Realtime: silent transcription failure when `&deployment=` missing from URL
+**Symptom (user-reported 2026-05-01).** Selecting `Azure OpenAI Realtime
+(cloud, streaming)` in the popover started a recording but produced
+**zero** transcription output and **no** error feedback in the UI. The
+recording itself succeeded.
+
+**Root cause — two bugs combining.**
+
+1. *URL shape.* `AzureOpenAIRealtimeConfig.websocketURL()` built
+   `wss://{resource}.openai.azure.com/openai/realtime?api-version=…&intent=transcription`
+   with no `&deployment=…` query parameter. The OQ-A2-2 decision in
+   `docs/research/azure-openai-realtime-transcription-wire-schema.md`
+   speculatively defaulted `deploymentInUrl=false` based on an early
+   TechCommunity sample. In practice most Azure tenants reject the
+   parameter-less URL — the upgrade handshake fails before any frame
+   is exchanged.
+2. *Error swallowed.* When the upgrade fails,
+   `URLSessionWebSocketTask.closeCode` defaults to `.normalClosure`
+   (1000) because no real close frame ever arrived from the server.
+   `AzureOpenAIRealtimeSession.handleClose`'s `.normalClosure` branch
+   treated this as a clean session end and silently called
+   `eventsContinuation.finish()`, so no `.error(...)` event ever
+   reached the UI banner. The log carried the receive-loop's
+   "Socket is not connected" warning but the surface was silent.
+
+**Evidence in field logs.** `~/.tool-agents/macrec-ui/macrec-ui.log`
+showed every Azure realtime attempt exiting the receive loop with
+`close=1000, error=The operation couldn't be completed. Socket is
+not connected` — repeated across 2026-04-29 and 2026-05-01
+sessions — followed by no error event in the popover.
+
+**Fixes landed.**
+- `Sources/MacrecCore/Transcription/Providers/Azure/Realtime/AzureOpenAIRealtimeConfig.swift:99` —
+  flipped `self.deploymentInUrl = deploymentInUrl ?? true` (was `?? false`).
+- `Sources/MacrecCore/Transcription/Providers/Azure/Realtime/AzureOpenAIRealtimeSession.swift` —
+  added `didCompleteHandshake` flag (set when `session.created` arrives,
+  reset in `connectAndConfigure()`), and made `handleClose`'s
+  `.normalClosure` branch emit an explanatory
+  `.error(detail: …)` event when the handshake never completed,
+  before finishing the events stream.
+- `Sources/macrec-ui/Settings/Sections/AzureRealtimeSettingsView.swift:78` —
+  Settings toggle "Append &deployment= to URL" `defaultValue: true`
+  with refreshed helper text.
+- `Sources/MacrecCore/Config/ConfigResolver.swift:797` and
+  `Sources/MacrecCore/Transcription/Providers/TranscriptionProviderFactory.swift:38` —
+  doc comments updated to record the 2026-05-01 default flip.
+
+**Behaviour after the fix.**
+- `wss://…/openai/realtime?api-version=…&intent=transcription&deployment={name}`
+  is now the default URL shape; users can opt out via
+  `AZURE_OPENAI_REALTIME_DEPLOYMENT_IN_URL=false` if their tenant
+  rejects the deployment parameter (rare).
+- A failed handshake now surfaces in the popover's `ErrorBanner` as
+  *"Azure realtime: connection failed before handshake completed —
+  &lt;underlying NSError description&gt;. Common causes: wrong
+  endpoint, missing &deployment= on URL …, wrong api-version,
+  expired API key."* instead of failing silently.
+
+**Follow-up.** Update
+`docs/research/azure-openai-realtime-transcription-wire-schema.md`
+§"Decision for v1" to document that the empirical default flipped to
+`deployment=` ON, and add an XCTest covering the
+`!didCompleteHandshake` branch of `handleClose` (currently
+unexercised because Phase E test surface is deferred per
+PLAN-007-PEND-1).
+
 ### PLAN-008-PEND-1 — Pre-existing test failures re-confirmed during plan-008 Phase 7 review (catalogued 2026-04-30)
 Three pre-existing failures (untouched by any plan-008 file under review)
 were re-verified during the Phase 7 code review of the UI-redesign +

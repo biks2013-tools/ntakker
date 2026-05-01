@@ -74,8 +74,8 @@ struct AzureRealtimeSettingsView: View {
                 SettingsToggleRow(
                     label: String(localized: "Append &deployment= to URL"),
                     envVarName: "AZURE_OPENAI_REALTIME_DEPLOYMENT_IN_URL",
-                    helpText: String(localized: "OFF by default per OQ-A2-2 (matches the canonical TechCommunity reference). Flip ON if Azure starts rejecting the parameter-less URL."),
-                    defaultValue: false
+                    helpText: String(localized: "ON by default — most Azure tenants reject the parameter-less URL with an immediate WebSocket close (close=1000, 'Socket is not connected'). Flip OFF only if your tenant requires the deployment-less form (rare, matches the early TechCommunity sample)."),
+                    defaultValue: true
                 )
 
                 Spacer(minLength: 24)

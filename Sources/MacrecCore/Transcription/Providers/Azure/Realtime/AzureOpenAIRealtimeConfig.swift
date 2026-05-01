@@ -17,7 +17,15 @@ public struct AzureOpenAIRealtimeConfig: Sendable, Equatable {
     public let vadSilenceMS: Int              // ≥ 0 (default 200)
     public let noiseReduction: String         // "near_field" | "far_field" | "none"
     public let includeLogprobs: Bool          // default false
-    public let deploymentInUrl: Bool          // default false (per OQ-A2-2)
+    public let deploymentInUrl: Bool          // default true — Azure realtime
+                                              // transcription rejects the
+                                              // deployment-less URL on most
+                                              // tenants (close=1000 with
+                                              // "Socket is not connected"
+                                              // before any frame is exchanged).
+                                              // Reverted from OQ-A2-2's
+                                              // speculative `false` after
+                                              // 2026-05-01 field repro.
 
     public static let defaultVADThreshold: Float = 0.5
     public static let defaultVADPrefixPaddingMS: Int = 300
@@ -96,7 +104,7 @@ public struct AzureOpenAIRealtimeConfig: Sendable, Equatable {
         self.vadSilenceMS = vadSilenceMS ?? Self.defaultVADSilenceMS
         self.noiseReduction = (noiseReduction?.lowercased() ?? Self.defaultNoiseReduction)
         self.includeLogprobs = includeLogprobs ?? false
-        self.deploymentInUrl = deploymentInUrl ?? false
+        self.deploymentInUrl = deploymentInUrl ?? true
     }
 
     /// Compose the WebSocket URL from the config. Always wss://, with

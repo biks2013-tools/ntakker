@@ -35,7 +35,8 @@ public struct TranscriptionProviderFactoryInput: Sendable {
     /// Realtime-only — request logprobs (default false).
     public let azureOpenAIRealtimeIncludeLogprobs: Bool?
     /// Realtime-only — append `&deployment={name}` to URL (default
-    /// false per OQ-A2-2).
+    /// true after 2026-05-01 field repro; OQ-A2-2's original `false`
+    /// caused immediate close=1000 on most tenants).
     public let azureOpenAIRealtimeDeploymentInUrl: Bool?
 
     // -- Plan-007 Phase B §B.7 — ElevenLabs fields --
