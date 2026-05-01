@@ -22,6 +22,8 @@
     <true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>macrec-ui records the microphone alongside system audio. Audio is written only to the file path you choose. Nothing is sent over the network.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>macrec-ui uses Apple Speech Recognition to transcribe captured audio. When the on-device speech model for your chosen locale is unavailable, audio is sent to Apple's servers for processing (per Apple's Speech Recognition privacy policy).</string>
     <key>NSScreenCaptureUsageDescription</key>
     <string>macrec-ui uses the Screen Recording permission to capture system audio (the audio output of all running applications) via ScreenCaptureKit. No video frames are saved; only audio is recorded.</string>
     <key>NSScreenCaptureDescription</key>

@@ -35,10 +35,22 @@ public struct ElevenLabsConfig: Sendable, Equatable {
     /// which is why §13 EL-2 picks off as the v1 default).
     public let entityDetection: String?
 
+    /// 2026-05-01 — `keyterms[]` form-field added by ElevenLabs on
+    /// 2026-01-12. Each value biases the model toward the supplied
+    /// vocabulary; useful for disambiguating a bilingual recording
+    /// (Greek + English) where the model would otherwise drift into
+    /// neighbouring languages (Italian, French) on phonetic
+    /// confusion. Hard limits per the keyterm-prompting guide:
+    /// at most 50 entries, each at most 20 characters. Empty array
+    /// means "no keyterms" (the form-field is simply not sent).
+    public let keyterms: [String]
+
     /// Plan-007 §B.7 — optional ISO-8601 expiry for the API key.
     public let apiKeyExpiresAt: Date?
 
     public static let defaultModelId = "scribe_v2"
+    public static let maxKeyterms = 50
+    public static let maxKeytermLength = 20
 
     public init(
         apiKey: String,
@@ -49,6 +61,7 @@ public struct ElevenLabsConfig: Sendable, Equatable {
         numSpeakers: Int? = nil,
         fileFormat: String = "pcm_s16le_16",
         entityDetection: String? = nil,
+        keyterms: [String] = [],
         apiKeyExpiresAt: Date? = nil
     ) throws {
         guard !apiKey.isEmpty else {
@@ -80,6 +93,30 @@ public struct ElevenLabsConfig: Sendable, Equatable {
             }
         }
 
+        // Validate keyterms: trim each entry, drop empties, dedupe in
+        // first-appearance order. Cap at Self.maxKeyterms entries; cap
+        // each entry at Self.maxKeytermLength characters. Per ElevenLabs'
+        // keyterm-prompting guide.
+        var seenKeyterms: Set<String> = []
+        var sanitisedKeyterms: [String] = []
+        for raw in keyterms {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            guard trimmed.count <= Self.maxKeytermLength else {
+                throw MacrecError.transcriptionConfigConflict(
+                    reason: "ELEVENLABS_KEYTERMS entries must be at most \(Self.maxKeytermLength) characters (got '\(trimmed)' = \(trimmed.count) chars)"
+                )
+            }
+            if seenKeyterms.insert(trimmed).inserted {
+                sanitisedKeyterms.append(trimmed)
+            }
+        }
+        guard sanitisedKeyterms.count <= Self.maxKeyterms else {
+            throw MacrecError.transcriptionConfigConflict(
+                reason: "ELEVENLABS_KEYTERMS must contain at most \(Self.maxKeyterms) entries (got \(sanitisedKeyterms.count))"
+            )
+        }
+
         self.apiKey = apiKey
         self.modelId = trimmedModel
         self.languageCode = languageCode
@@ -88,6 +125,7 @@ public struct ElevenLabsConfig: Sendable, Equatable {
         self.numSpeakers = numSpeakers
         self.fileFormat = normalisedFileFormat
         self.entityDetection = entityDetection?.lowercased()
+        self.keyterms = sanitisedKeyterms
         self.apiKeyExpiresAt = apiKeyExpiresAt
     }
 }

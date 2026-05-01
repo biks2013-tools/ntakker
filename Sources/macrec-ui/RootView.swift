@@ -277,7 +277,7 @@ struct RootView: View {
     /// be acknowledged. `"apple"` and `"whisperkit"` are on-device.
     private static func isCloudProvider(_ raw: String) -> Bool {
         switch raw.lowercased() {
-        case "gemini", "gemini-live", "soniox", "azure", "azure-openai-realtime", "elevenlabs":
+        case "gemini", "gemini-live", "soniox", "azure", "azure-openai-realtime", "elevenlabs", "apple-cloud":
             return true
         default:
             return false

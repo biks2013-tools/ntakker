@@ -322,6 +322,14 @@ public struct RecordingOptions: Sendable, Equatable {
     /// `all`). Unset = off (default per §13 EL-2).
     public let elevenLabsEntityDetection: String?
 
+    /// 2026-05-01 — `keyterms[]` form-field added by ElevenLabs on
+    /// 2026-01-12. Comma-separated entries in `ELEVENLABS_KEYTERMS`
+    /// are parsed and forwarded as repeated `keyterms` form-fields to
+    /// bias the model toward target vocabulary (mitigates
+    /// Italian/French phonetic confusion when transcribing bilingual
+    /// Greek+English content). Empty / `nil` means no bias.
+    public let elevenLabsKeyterms: [String]?
+
     /// Plan-007 §B.7 — optional ISO-8601 expiry for `ELEVENLABS_API_KEY`.
     public let elevenLabsApiKeyExpiresAt: Date?
 
@@ -367,6 +375,7 @@ public struct RecordingOptions: Sendable, Equatable {
         elevenLabsNumSpeakers: Int? = nil,
         elevenLabsFileFormat: String? = nil,
         elevenLabsEntityDetection: String? = nil,
+        elevenLabsKeyterms: [String]? = nil,
         elevenLabsApiKeyExpiresAt: Date? = nil
     ) {
         self.output = output
@@ -410,6 +419,7 @@ public struct RecordingOptions: Sendable, Equatable {
         self.elevenLabsNumSpeakers = elevenLabsNumSpeakers
         self.elevenLabsFileFormat = elevenLabsFileFormat
         self.elevenLabsEntityDetection = elevenLabsEntityDetection
+        self.elevenLabsKeyterms = elevenLabsKeyterms
         self.elevenLabsApiKeyExpiresAt = elevenLabsApiKeyExpiresAt
     }
 
@@ -507,6 +517,7 @@ extension RecordingOptions {
             elevenLabsNumSpeakers: elevenLabsNumSpeakers,
             elevenLabsFileFormat: elevenLabsFileFormat,
             elevenLabsEntityDetection: elevenLabsEntityDetection,
+            elevenLabsKeyterms: elevenLabsKeyterms,
             elevenLabsApiKeyExpiresAt: elevenLabsApiKeyExpiresAt
         )
     }

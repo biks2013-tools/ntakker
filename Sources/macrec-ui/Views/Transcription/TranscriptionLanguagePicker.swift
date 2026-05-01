@@ -66,13 +66,23 @@ struct TranscriptionLanguagePicker: View {
     @AppStorage("com.macrec.ui.transcribeLanguage")
     private var primaryRaw: String = ""
 
-    /// Persisted optional secondary locale id (Apple dual-locale). Empty
-    /// string means "single-locale".
+    /// Persisted optional secondary locale id. Empty string means
+    /// "single-locale" (or, for ElevenLabs, that the user has only
+    /// picked one language so far).
     @AppStorage("com.macrec.ui.transcribeLanguage2")
     private var secondaryRaw: String = ""
 
+    /// 2026-05-01 — third optional locale slot. Used by the ElevenLabs
+    /// path. Empty string means "no third language picked".
+    /// `ControlBar.startTapped` reads this via the same
+    /// `transcribeLanguage3` `@AppStorage` slot so picker writes flow
+    /// straight into `RecordingOptions.transcriptionLanguageHints`.
+    @AppStorage("com.macrec.ui.transcribeLanguage3")
+    private var tertiaryRaw: String = ""
+
     /// Mirrors `TranscriptionPicker`'s slot — used so this picker only
-    /// shows the dual-locale toggle for the Apple provider.
+    /// shows the extra-locale toggles for providers that actually
+    /// consume them.
     @AppStorage("com.macrec.ui.transcribeProvider")
     private var providerRaw: String = "apple"
 
@@ -96,8 +106,25 @@ struct TranscriptionLanguagePicker: View {
         }
     }
 
+    /// Both Apple (dual-locale parallel recognizers) and ElevenLabs
+    /// (multi-language soft-hint mode) accept a second slot.
     private var supportsDualLocale: Bool {
-        providerRaw.lowercased() == "apple"
+        let p = providerRaw.lowercased()
+        return p == "apple" || p == "elevenlabs"
+    }
+
+    /// 2026-05-01 — only ElevenLabs accepts a third slot today. Apple's
+    /// `SpeechAnalyzer` API is hard-capped at two locales; if exposed
+    /// here for Apple the third value would silently drop inside the
+    /// provider.
+    private var supportsTertiaryLocale: Bool {
+        providerRaw.lowercased() == "elevenlabs"
+    }
+
+    /// True only for ElevenLabs — drives the helper text that explains
+    /// the API has no hard language allow-list.
+    private var isElevenLabsProvider: Bool {
+        providerRaw.lowercased() == "elevenlabs"
     }
 
     /// Current primary selection rendered into the Picker's tag space.
@@ -131,6 +158,26 @@ struct TranscriptionLanguagePicker: View {
                     secondaryRaw = ""
                 } else {
                     secondaryRaw = newValue
+                }
+                // De-dup against tertiary the same way the primary
+                // setter de-dups against secondary.
+                if !tertiaryRaw.isEmpty,
+                   tertiaryRaw == secondaryRaw || tertiaryRaw == primaryRaw
+                {
+                    tertiaryRaw = ""
+                }
+            }
+        )
+    }
+
+    private var tertiaryBinding: Binding<String> {
+        Binding(
+            get: { tertiaryRaw.isEmpty ? kSystemDefaultLocaleSentinel : tertiaryRaw },
+            set: { newValue in
+                if newValue == kSystemDefaultLocaleSentinel {
+                    tertiaryRaw = ""
+                } else {
+                    tertiaryRaw = newValue
                 }
             }
         )
@@ -175,12 +222,16 @@ struct TranscriptionLanguagePicker: View {
 
             if supportsDualLocale {
                 Toggle(
-                    String(localized: "Add a second language (Apple dual-locale)"),
+                    isElevenLabsProvider
+                        ? String(localized: "Add more languages (ElevenLabs auto-detect)")
+                        : String(localized: "Add a second language (Apple dual-locale)"),
                     isOn: dualToggleBinding
                 )
                 .toggleStyle(.checkbox)
                 .disabled(isLocked || supportedLocales.isEmpty)
-                .help(String(localized: "Apple Speech can run two recognizers in parallel and reconcile per-utterance results across them. Useful for bilingual recordings."))
+                .help(isElevenLabsProvider
+                    ? String(localized: "ElevenLabs accepts up to 3 languages. With 2+ languages selected, the provider switches off the single-language hint and lets Scribe v2 auto-detect (code-switching mode), which is what the docs recommend for bilingual content.")
+                    : String(localized: "Apple Speech can run two recognizers in parallel and reconcile per-utterance results across them. Useful for bilingual recordings."))
 
                 if dualToggleBinding.wrappedValue {
                     Picker(
@@ -199,8 +250,36 @@ struct TranscriptionLanguagePicker: View {
                     }
                     .pickerStyle(.menu)
                     .disabled(isLocked || supportedLocales.isEmpty)
-                    .help(String(localized: "Optional second language. The provider runs both recognizers in parallel and picks the best per-utterance result."))
+                    .help(isElevenLabsProvider
+                        ? String(localized: "Second target language. Adding a second language hides the single-language hint from the API and switches to auto-detect.")
+                        : String(localized: "Optional second language. The provider runs both recognizers in parallel and picks the best per-utterance result."))
+
+                    if supportsTertiaryLocale {
+                        Picker(
+                            String(localized: "Third language"),
+                            selection: tertiaryBinding
+                        ) {
+                            Text(String(localized: "(none)"))
+                                .tag(kSystemDefaultLocaleSentinel)
+                            if !supportedLocales.isEmpty {
+                                Divider()
+                                ForEach(tertiaryCandidates(), id: \.identifier) { locale in
+                                    Text(displayName(for: locale))
+                                        .tag(locale.identifier)
+                                }
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .disabled(isLocked || supportedLocales.isEmpty || secondaryRaw.isEmpty)
+                        .help(String(localized: "Optional third target language (ElevenLabs only — Apple's API caps at two)."))
+                    }
                 }
+            }
+
+            if isElevenLabsProvider {
+                Text(String(localized: "ElevenLabs has no hard language allow-list — Scribe v2 may still emit other languages it recognises in the audio. Use the keyterms field in Settings → ElevenLabs to bias the model toward your target vocabulary."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             if supportedLocales.isEmpty {
@@ -292,6 +371,16 @@ struct TranscriptionLanguagePicker: View {
         let primaryId = primaryRaw
         guard !primaryId.isEmpty else { return supportedLocales }
         return supportedLocales.filter { $0.identifier != primaryId }
+    }
+
+    /// The supported set, less whatever the primary AND secondary
+    /// pickers are currently pinned to. Used by the ElevenLabs-only
+    /// third slot.
+    private func tertiaryCandidates() -> [Locale] {
+        var excluded: Set<String> = []
+        if !primaryRaw.isEmpty   { excluded.insert(primaryRaw) }
+        if !secondaryRaw.isEmpty { excluded.insert(secondaryRaw) }
+        return supportedLocales.filter { !excluded.contains($0.identifier) }
     }
 
     private func sortedLocales() -> [Locale] {

@@ -6,6 +6,188 @@
 
 ## Pending items (most critical first)
 
+### PLAN-007-DONE-14 (RESOLVED 2026-05-01) — Apple Cloud STT provider added (`apple-cloud`) for Greek + 57 other locales
+**Background.** The on-device `apple` provider (macOS 26 `SpeechAnalyzer`) does
+NOT include Greek (`el-GR`) in its 42-locale launch set, and the
+download-on-demand asset is unavailable on the user's Mac. The user asked
+specifically for an Apple-branded *online* / cloud STT path that supports
+Greek. Investigation
+(`docs/reference/apple-cloud-stt-investigation-2026-05.md`) confirmed:
+
+- Apple does NOT publish a public REST/WebSocket STT endpoint.
+- The legacy `SFSpeechRecognizer` API exposes a cloud path through the
+  framework when `requiresOnDeviceRecognition = false`, audio is tunnelled
+  to Apple's private ASR servers.
+- That cloud path supports Greek (`el-GR`) and ~57 other locales (Apple
+  Dev QA1951 + `SFSpeechRecognizer.supportedLocales()`).
+- Quotas: 1,000 requests / hour / device, ~60 s of audio per task.
+
+**What landed.**
+- New file
+  `Sources/MacrecCore/Transcription/Providers/AppleCloudTranscriptionProvider.swift`
+  containing both the provider struct (id `apple-cloud`,
+  `displayName = "Apple Cloud"`, streaming-only) and the
+  `AppleCloudStreamingSession` actor.
+  - Resolves the locale from
+    `TranscriptionOptions.languageHints.first` → `Locale.current` fallback.
+  - Validates the locale against
+    `SFSpeechRecognizer.supportedLocales()` and surfaces a clear
+    `transcriptionConfigConflict` for unsupported codes.
+  - Reads `SpeechPermission.current()` and surfaces an actionable error
+    when status is `notDetermined` or `denied` — deliberately does NOT
+    call `SFSpeechRecognizer.requestAuthorization(_:)` because the
+    existing `SpeechPermission.ensureGranted` notes confirm that call
+    SIGABRTs ad-hoc-signed CLIs on macOS 26 (the user's run mode).
+  - Streaming session uses `SFSpeechAudioBufferRecognitionRequest`
+    with `requiresOnDeviceRecognition = false` and
+    `taskHint = .dictation`. Wraps incoming 16 kHz mono Float32
+    chunks into `AVAudioPCMBuffer` and `append(_:)`s them.
+  - Auto-rotates the recognition task at 55 s (`taskRotationSeconds`)
+    by calling `endAudio()` on the active request and starting a fresh
+    one in the result handler — leaves the in-flight final result
+    intact across the seam (uses a fresh `utteranceId` so the manager
+    treats the next window as a new utterance, not a revision).
+  - Maps Apple's typical informational errors (`kAFAssistantErrorDomain`
+    code 1110 "no speech detected", code 216 "session ended") to log-only
+    so a quiet recording doesn't spam the UI; auth-revoked (1101) and
+    network errors close the events stream.
+- `TranscriptionProviderFactory.build(...)`:
+  added `case "apple-cloud"`; updated the unknown-provider error message.
+- `Sources/macrec-ui/Views/Transcription/TranscriptionPicker.swift`:
+  added `Apple Cloud (cloud, streaming, Greek + 57 locales)` to the
+  popover picker; help text updated.
+- `Sources/macrec-ui/RootView.swift`: added `apple-cloud` to
+  `isCloudProvider(_:)` so the privacy disclosure sheet fires on first
+  selection.
+- `Sources/macrec-ui/Views/Transcription/PrivacyDisclosureSheet.swift`:
+  new `appleCloudBodyText` + headline branch explaining the audio is
+  sent to Apple's servers, the system Speech Recognition prompt
+  appears the first time, and the 1,000 req/hr + ~60 s/task quotas.
+- `Resources/MacrecUI-Info.plist`: added
+  `NSSpeechRecognitionUsageDescription` (the `.app` packaging script
+  copies this plist; the in-tree dev binary inherits the macrec-ui
+  bundle's plist when launched directly).
+
+**Follow-up / known caveats.**
+- Run mode caveat. The user typically launches macrec-ui via the raw
+  binary at `.build/.../macrec-ui` (ad-hoc signed). On macOS 26 that
+  triggers `SFSpeechRecognizer.requestAuthorization` to SIGABRT — which
+  is why we deliberately do NOT call it. To use this provider, the
+  user must either (a) repackage and launch from the
+  `dist/macrec-ui.app` (Developer-ID or even ad-hoc-signed `.app`
+  bundles do NOT exhibit the SIGABRT), or (b) once the binary is in
+  the Speech Recognition allow-list (added by macOS automatically the
+  first time a properly-signed bundle calls `recognitionTask`),
+  subsequent CLI launches will read `authorized` and proceed.
+- The `dist/macrec-ui.app` bundle is from 2026-04-29 and does NOT
+  include any of the recent fixes. If the user wants to actually
+  exercise this provider end-to-end they'll need to repackage. The
+  packaging script lives outside the source tree (last-known location:
+  the developer's local scripts); not regenerated as part of this
+  change to avoid surprising the user.
+- No XCTest fixture yet (deferred under PLAN-007-PEND-1). Manual
+  smoke: select `Apple Cloud` in the popover, pick `el-GR` as the
+  primary language, record a few seconds of Greek speech, expect the
+  inline transcript panel to update with partials → finals.
+
+### PLAN-007-DONE-13 (RESOLVED 2026-05-01) — ElevenLabs Scribe v2: speaker turns missing, language confusion, no multi-language picker
+**Symptom (user-reported 2026-05-01).**
+- The transcript was a continuous wall of text with no marker for who said what — even when the user had toggled `ELEVENLABS_DIARIZE=true`.
+- Scribe v2 occasionally emitted Italian / French snippets in a recording the user described as "Greek + English only".
+- The popover language picker only allowed at most 2 locales (Apple's `SpeechAnalyzer` cap), with no path for the ElevenLabs user who wants up to 3.
+
+**Root-cause investigation.** Saved as
+`docs/reference/elevenlabs-scribe-multilang-diarization-2026-05.md`
+after a `technical-researcher` pass over the official ElevenLabs API
+reference, the Python SDK schema, and the changelog. Findings:
+
+- The `speech-to-text` endpoint returns `words[].speaker_id` (e.g.
+  `"speaker_0"`, `"speaker_1"`) when `diarize=true`. There is **no**
+  `segments[]` or `utterances[]` in the response — clients must
+  group consecutive same-speaker words themselves.
+  `ElevenLabsTranscriptionProvider.transcribe` was returning
+  `decoded.text` and discarding the diarization payload entirely.
+- `language_code` is documented as a **soft hint**, not a hard lock.
+  There is **no `language_codes[]`, `additional_languages`,
+  `allowed_languages`, `restrict_languages` parameter, and no
+  per-segment language field**. The closest available controls are
+  (a) omit `language_code` to enable Scribe's native code-switching
+  auto-detect, and (b) supply `keyterms[]` (added 2026-01-12, ≤50
+  entries × ≤20 chars) to bias the model toward target vocabulary.
+- The `diarize=true` default in
+  `TranscriptionProviderFactory` was `false`, so even users who
+  expected speaker turns would get the wall-of-text behaviour
+  unless they manually flipped `ELEVENLABS_DIARIZE`.
+
+**Fixes landed.**
+
+1. **Speaker-turn formatter** —
+   `Sources/MacrecCore/Transcription/Providers/ElevenLabs/ElevenLabsTranscriptionProvider.swift`:
+   added `formatDiarizedTranscript(words:)` that groups consecutive
+   same-`speaker_id` words and emits `[Speaker N] …` lines.
+   Re-numbers ElevenLabs' opaque `speaker_0`/`speaker_1`/… into
+   `Speaker 1`/`Speaker 2`/… in first-appearance order.
+   `transcribe(...)` now returns the formatted version when
+   `diarize` is on AND the response carries any `speaker_id`s, and
+   falls back to the legacy flat text otherwise.
+2. **Multi-language soft-hint logic** — same provider:
+   - Explicit `ELEVENLABS_LANGUAGE_CODE` always wins (back-compat).
+   - Otherwise: send `language_code` only when EXACTLY ONE language
+     hint was selected; ≥2 hints → omit (Scribe's native
+     code-switching auto-detect mode, the docs' recommended path
+     for bilingual content). Logs which path was taken at INFO.
+3. **Keyterms wired end-to-end** — added
+   `ElevenLabsConfig.keyterms: [String]` (with ≤50 / ≤20-char
+   validation), `RecordingOptions.elevenLabsKeyterms`,
+   `TranscriptionProviderFactoryInput.elevenLabsKeyterms`,
+   `ConfigResolver.Keys.elevenLabsKeyterms` (env-var
+   `ELEVENLABS_KEYTERMS`, comma-separated parser with the same
+   validation), and the `ControlBar.startTapped` reader. The
+   provider now appends one `keyterms` form-field per entry so
+   Scribe biases its acoustic model toward the user's target
+   vocabulary (the closest available proxy for "no
+   Italian/French" given the API's lack of a hard allow-list).
+4. **Up to 3 language slots in the popover picker** —
+   `Sources/macrec-ui/Views/Transcription/TranscriptionLanguagePicker.swift`
+   added a third `@AppStorage("com.macrec.ui.transcribeLanguage3")`
+   slot and a third `Picker`, gated on `supportsTertiaryLocale`
+   (true only for ElevenLabs; Apple's `SpeechAnalyzer` is hard-
+   capped at two). `ControlBar.startTapped` now packs three
+   slots into `transcriptionLanguageHints` (still de-duped /
+   trim-empty filtered).
+5. **`diarize` default flipped to `true`** in
+   `TranscriptionProviderFactory.build(...)` (was `false`) and in
+   the Settings panel toggle (`ElevenLabsSettingsView`); helper
+   text updated.
+6. **Helper text in UI** —
+   `TranscriptionLanguagePicker` shows under the picker:
+   *"ElevenLabs has no hard language allow-list — Scribe v2 may
+   still emit other languages it recognises. Use the keyterms
+   field in Settings → ElevenLabs to bias the model toward your
+   target vocabulary."*
+   `ElevenLabsSettingsView` adds a `SettingsHelperText` block
+   explaining the 1-vs-2+ language behaviour, plus a new
+   `Keyterms` text field.
+
+**API limits we documented for the user (NOT fixable by us).**
+- ElevenLabs cannot hard-lock the model to a set of N languages.
+  The user explicitly asked for "no output from other languages
+  than those I have selected" — that is not exposed by the
+  Scribe v2 API. Best mitigations are the multi-language soft-hint
+  switch + keyterms; for true hard locking the user would need to
+  switch to Soniox (which does support explicit per-language
+  enabling) — flagged as a follow-up investigation.
+
+**Follow-up.**
+- Investigate Soniox multi-language hard-lock as an alternative
+  provider for users who require strict language restriction.
+- If/when ElevenLabs adds a `language_codes[]` parameter, simplify
+  the multi-language path: drop the omit-when-≥2 logic and just
+  forward the array.
+- Consider replacing `[Speaker 1]` text markers with structured
+  diarization events on the streaming surface once
+  `scribe_v2_realtime` is wired.
+
 ### PLAN-007-DONE-12 (RESOLVED 2026-05-01) — Azure OpenAI Realtime: `Missing required parameter: 'session.input_audio_transcription.model'` — RT-1 was inverted
 **Symptom (user-reported 2026-05-01, after PLAN-007-DONE-11 landed).**
 After dropping `create_response` / `interrupt_response`, the next

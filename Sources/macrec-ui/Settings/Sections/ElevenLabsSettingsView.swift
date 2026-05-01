@@ -41,8 +41,15 @@ struct ElevenLabsSettingsView: View {
                     label: String(localized: "Language code"),
                     envVarName: "ELEVENLABS_LANGUAGE_CODE",
                     placeholder: "(auto-detect)",
-                    helpText: String(localized: "ISO-639-1 (en, el) or ISO-639-3 (eng, ell). Empty = auto-detect.")
+                    helpText: String(localized: "ISO-639-1 (en, el) or ISO-639-3 (eng, ell). Empty = auto-detect. Setting a value here ALWAYS wins over the popover language picker.")
                 )
+                SettingsTextRow(
+                    label: String(localized: "Keyterms"),
+                    envVarName: "ELEVENLABS_KEYTERMS",
+                    placeholder: "Marinos, Athens, Kubernetes",
+                    helpText: String(localized: "Comma-separated bias terms (≤50 entries, ≤20 chars each). Use to nudge Scribe toward your target vocabulary — names, jargon, brand words. Mitigates the model drifting into Italian / French phonetic confusion when transcribing bilingual Greek+English audio. ElevenLabs has no hard language allow-list, so this is the closest available control.")
+                )
+                SettingsHelperText("ElevenLabs has no multi-language allow-list. Pick 1 language → it's sent as a soft hint. Pick 2 or 3 in the popover → the hint is omitted and Scribe v2 auto-detects code-switching across languages it knows.")
 
                 Divider().padding(.vertical, 4)
 
@@ -50,8 +57,8 @@ struct ElevenLabsSettingsView: View {
                 SettingsToggleRow(
                     label: String(localized: "Diarize"),
                     envVarName: "ELEVENLABS_DIARIZE",
-                    helpText: String(localized: "When ON, every word in the response carries speaker_id (up to 32 speakers)."),
-                    defaultValue: false
+                    helpText: String(localized: "ON by default 2026-05-01 — produces a [Speaker N] turn-tagged transcript instead of one wall of text. Set OFF only if your deployment doesn't support diarization."),
+                    defaultValue: true
                 )
                 SettingsIntRow(
                     label: String(localized: "Number of speakers"),

@@ -70,16 +70,47 @@ public struct ElevenLabsTranscriptionProvider: TranscriptionProvider {
             mimeType: "audio/wav",
             data: wavData
         )
+        // Language-code policy — research note 2026-05 (see
+        // `docs/reference/elevenlabs-scribe-multilang-diarization-2026-05.md`):
+        //   * ElevenLabs has NO multi-language allow-list — `language_code`
+        //     is a single string and acts as a SOFT hint.
+        //   * Setting `language_code=el` for bilingual Greek+English audio
+        //     biases the model so heavily it sometimes drops the English
+        //     turns. Our user wants both.
+        //   * The official guidance for code-switching content is to omit
+        //     `language_code` and let auto-detect handle it.
+        // Therefore:
+        //   * Explicit `ELEVENLABS_LANGUAGE_CODE` env override (carried
+        //     in `config.languageCode`) ALWAYS wins.
+        //   * Otherwise: send `language_code` only when the user picked
+        //     EXACTLY ONE language hint; ≥2 hints → omit (auto-detect
+        //     code-switching mode).
         if let langConfig = config.languageCode, !langConfig.isEmpty {
             multipart.append(field: "language_code", value: langConfig)
-        } else if let hint = options.languageHints.first.flatMap(Self.stripBCP47Region(_:)) {
-            multipart.append(field: "language_code", value: hint)
+            logger.info("elevenlabs: pinning language_code='\(langConfig)' (explicit env override)")
+        } else if options.languageHints.count == 1,
+                  let single = options.languageHints.first.flatMap(Self.stripBCP47Region(_:))
+        {
+            multipart.append(field: "language_code", value: single)
+            logger.info("elevenlabs: pinning language_code='\(single)' (single hint)")
+        } else if options.languageHints.count >= 2 {
+            let stripped = options.languageHints
+                .compactMap(Self.stripBCP47Region(_:))
+                .joined(separator: ",")
+            logger.info("elevenlabs: omitting language_code — \(options.languageHints.count) hints (\(stripped)) → auto-detect code-switching mode (ElevenLabs has no hard language allow-list).")
         }
         if config.diarize {
             multipart.append(field: "diarize", value: "true")
         }
         if let n = config.numSpeakers {
             multipart.append(field: "num_speakers", value: String(n))
+        }
+        // `keyterms` form-field — bias the model toward target vocabulary
+        // (added 2026-01-12 to Scribe v2). Limits per the keyterm-prompting
+        // guide: ≤50 entries, each ≤20 chars. `ElevenLabsConfig` already
+        // enforces those limits at construction time.
+        for term in config.keyterms {
+            multipart.append(field: "keyterms", value: term)
         }
         multipart.append(
             field: "tag_audio_events",
@@ -111,10 +142,83 @@ public struct ElevenLabsTranscriptionProvider: TranscriptionProvider {
         // 8. Decode response.
         do {
             let decoded = try JSONDecoder().decode(ElevenLabsResponse.self, from: data)
+            // When diarization is on AND the response actually carried
+            // per-word `speaker_id`s, format the transcript as
+            // `[Speaker N] …` turns instead of returning the flat
+            // `decoded.text` (which discards the speaker information
+            // entirely — the visible "wall of text" bug from
+            // 2026-05-01).
+            if config.diarize, let words = decoded.words,
+               words.contains(where: { $0.speakerId != nil })
+            {
+                return Self.formatDiarizedTranscript(words: words)
+            }
             return decoded.text.trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
             throw ElevenLabsSTTError.decodingFailure(underlying: error).toMacrecError()
         }
+    }
+
+    /// Group consecutive `words[]` entries by `speaker_id` and emit a
+    /// `[Speaker N] …` line per turn. Re-numbers ElevenLabs' opaque
+    /// speaker labels (`speaker_0`, `speaker_1`, …) into 1-based,
+    /// human-friendly indices in first-appearance order. Words with
+    /// no `speaker_id` (e.g. `audio_event` rows or rare untagged
+    /// segments) attach to the most recent speaker rather than
+    /// breaking the turn. Spacing rows ("type":"spacing") are
+    /// preserved to keep punctuation natural.
+    static func formatDiarizedTranscript(words: [ElevenLabsResponse.Word]) -> String {
+        struct Turn {
+            var speakerLabel: String
+            var pieces: [String] = []
+        }
+        var turns: [Turn] = []
+        var labelByRawSpeaker: [String: String] = [:]
+        var nextLabelNumber = 1
+
+        // Convert ElevenLabs' opaque `speaker_0` → `Speaker 1`, etc.,
+        // in first-appearance order so the user sees consistent
+        // numbering across recordings.
+        func label(forRaw raw: String?) -> String? {
+            guard let raw else { return nil }
+            if let existing = labelByRawSpeaker[raw] { return existing }
+            let label = "Speaker \(nextLabelNumber)"
+            nextLabelNumber += 1
+            labelByRawSpeaker[raw] = label
+            return label
+        }
+
+        for word in words {
+            // Drop pure-spacing leading entries that don't have any
+            // visible text content yet — they would otherwise create
+            // an empty leading turn.
+            let resolved = label(forRaw: word.speakerId)
+            switch (turns.last, resolved) {
+            case (nil, let lbl?):
+                turns.append(Turn(speakerLabel: lbl, pieces: [word.text]))
+            case (nil, nil):
+                // First word has no speaker_id — bucket under
+                // "Unknown" so we don't drop it.
+                turns.append(Turn(speakerLabel: "Speaker ?", pieces: [word.text]))
+            case (.some(var last), let lbl?):
+                if last.speakerLabel == lbl {
+                    last.pieces.append(word.text)
+                    turns[turns.count - 1] = last
+                } else {
+                    turns.append(Turn(speakerLabel: lbl, pieces: [word.text]))
+                }
+            case (.some(var last), nil):
+                last.pieces.append(word.text)
+                turns[turns.count - 1] = last
+            }
+        }
+
+        let lines = turns.map { turn -> String in
+            let body = turn.pieces.joined()
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return "[\(turn.speakerLabel)] \(body)"
+        }
+        return lines.joined(separator: "\n")
     }
 
     public func openStreamingSession(

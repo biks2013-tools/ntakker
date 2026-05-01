@@ -79,6 +79,14 @@ struct ControlBar: View {
     private var transcribeLanguagePrimaryRaw: String = ""
     @AppStorage("com.macrec.ui.transcribeLanguage2")
     private var transcribeLanguageSecondaryRaw: String = ""
+    /// 2026-05-01 — third language slot. Used by the ElevenLabs path
+    /// (the user explicitly asked for up to 3 selectable languages
+    /// when transcribing bilingual / trilingual content). The Apple
+    /// `SpeechAnalyzer` path still consumes only the first two
+    /// (its dual-locale API is hard-capped); a third value is dropped
+    /// silently inside its provider.
+    @AppStorage("com.macrec.ui.transcribeLanguage3")
+    private var transcribeLanguageTertiaryRaw: String = ""
 
     private let logger = Logger(label: "macrec.ui.controlBar")
 
@@ -343,7 +351,11 @@ struct ControlBar: View {
             guard transcriptionActive else { return [] }
             var seen: Set<String> = []
             var out: [String] = []
-            for raw in [transcribeLanguagePrimaryRaw, transcribeLanguageSecondaryRaw] {
+            for raw in [
+                transcribeLanguagePrimaryRaw,
+                transcribeLanguageSecondaryRaw,
+                transcribeLanguageTertiaryRaw,
+            ] {
                 let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { continue }
                 if seen.insert(trimmed).inserted {
@@ -351,6 +363,47 @@ struct ControlBar: View {
                 }
             }
             return out
+        }()
+
+        // ElevenLabs forwarding (2026-05-01). When the active provider
+        // is `elevenlabs`, read the optional knobs from the merged
+        // env file so the keyterms / num_speakers / diarize toggle
+        // edits in Settings actually affect the recording. For every
+        // other provider these stay nil and the factory's documented
+        // defaults apply.
+        let elevenLabsActive = transcriptionActive
+            && (resolvedProviderId ?? "").lowercased() == "elevenlabs"
+        let elevenLabsKeyterms: [String]? = {
+            guard elevenLabsActive,
+                  let raw = Self.resolvedEnvValue("ELEVENLABS_KEYTERMS"),
+                  !raw.isEmpty
+            else { return nil }
+            var seen: Set<String> = []
+            var out: [String] = []
+            for piece in raw.split(separator: ",") {
+                let trimmed = piece.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty, seen.insert(trimmed).inserted {
+                    out.append(trimmed)
+                }
+            }
+            return out.isEmpty ? nil : out
+        }()
+        let elevenLabsNumSpeakers: Int? = {
+            guard elevenLabsActive,
+                  let raw = Self.resolvedEnvValue("ELEVENLABS_NUM_SPEAKERS"),
+                  let n = Int(raw), (1...32).contains(n)
+            else { return nil }
+            return n
+        }()
+        let elevenLabsDiarize: Bool? = {
+            guard elevenLabsActive,
+                  let raw = Self.resolvedEnvValue("ELEVENLABS_DIARIZE")?.lowercased()
+            else { return nil }
+            switch raw {
+            case "1", "true", "yes", "on":  return true
+            case "0", "false", "no", "off": return false
+            default: return nil
+            }
         }()
 
         let options = RecordingOptions(
@@ -365,7 +418,10 @@ struct ControlBar: View {
             transcriptionLanguageHints: resolvedLanguageHints,
             azureOpenAIEndpoint: azureOpenAIEndpoint,
             azureOpenAIDeployment: azureOpenAIDeployment,
-            azureOpenAIApiVersion: azureOpenAIApiVersion
+            azureOpenAIApiVersion: azureOpenAIApiVersion,
+            elevenLabsDiarize: elevenLabsDiarize,
+            elevenLabsNumSpeakers: elevenLabsNumSpeakers,
+            elevenLabsKeyterms: elevenLabsKeyterms
         )
 
         let languageHintsForLog = resolvedLanguageHints.isEmpty

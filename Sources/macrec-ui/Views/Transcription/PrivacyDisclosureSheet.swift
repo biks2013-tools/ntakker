@@ -186,6 +186,8 @@ struct PrivacyDisclosureSheet: View {
             return "Live transcription will use Soniox real-time STT"
         case "gemini", "gemini-live":
             return "Live transcription will use Google's Gemini API"
+        case "apple-cloud":
+            return "Live transcription will use Apple's Speech Recognition cloud"
         default:
             return "Live transcription sends audio to a third-party API"
         }
@@ -207,6 +209,8 @@ struct PrivacyDisclosureSheet: View {
             return sonioxBodyText
         case "gemini", "gemini-live":
             return geminiBodyText
+        case "apple-cloud":
+            return appleCloudBodyText
         default:
             return legacyCombinedBodyText
         }
@@ -279,5 +283,19 @@ struct PrivacyDisclosureSheet: View {
         available via `MACREC_SONIOX_ENDPOINT`). Soniox does not store audio by \
         default; configure retention in your Soniox console. See \
         https://soniox.com/docs/stt/data-residency and https://soniox.com/privacy.
+        """
+
+    static let appleCloudBodyText = """
+        macrec-ui will send your captured audio to Apple's Speech Recognition \
+        servers via the system `SFSpeechRecognizer` API. macOS prompts you for \
+        permission the first time the API is used (the system Speech Recognition \
+        toggle). No API key is required and no third-party billing is involved; \
+        Apple enforces a device-wide quota of approximately 1,000 requests per \
+        hour and roughly 60 seconds of audio per request — macrec automatically \
+        rotates the underlying recognition task every 55 seconds to stay inside \
+        that limit. Apple states recognition data is processed under their \
+        privacy policy; see https://support.apple.com/guide/iphone/control-access-\
+        to-information-in-apps-iph251e92810/ios and Apple's Privacy Policy at \
+        https://www.apple.com/legal/privacy/ for the current terms.
         """
 }

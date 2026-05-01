@@ -103,6 +103,7 @@ struct TranscriptionPicker: View {
         HStack(spacing: 6) {
             Picker(String(localized: "Transcribe"), selection: $providerRaw) {
                 Text("Apple Speech (on-device)").tag("apple")
+                Text("Apple Cloud (cloud, streaming, Greek + 57 locales)").tag("apple-cloud")
                 Text("WhisperKit (on-device, multilingual)").tag("whisperkit")
                 Text("Gemini (cloud)").tag("gemini")
                 Text("Soniox (cloud, multilingual)").tag("soniox")
@@ -113,7 +114,7 @@ struct TranscriptionPicker: View {
             }
             .pickerStyle(.menu)
             .disabled(isLocked)
-            .help(String(localized: "Live transcription provider for the next recording. Apple Speech / WhisperKit are on-device; Gemini, Soniox, Azure OpenAI (batch + realtime) and ElevenLabs are cloud and require their respective API keys."))
+            .help(String(localized: "Live transcription provider for the next recording. Apple Speech / WhisperKit are on-device; Apple Cloud uses Apple's private ASR servers (no API key, ~1000 req/hr quota); Gemini, Soniox, Azure OpenAI (batch + realtime) and ElevenLabs are cloud and require their respective API keys."))
 
             // Missing-key affordance — small red-dot badge with the
             // tooltip text. Only visible when the picker selection

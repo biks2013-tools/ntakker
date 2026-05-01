@@ -47,6 +47,7 @@ public struct TranscriptionProviderFactoryInput: Sendable {
     public let elevenLabsNumSpeakers: Int?
     public let elevenLabsFileFormat: String?
     public let elevenLabsEntityDetection: String?
+    public let elevenLabsKeyterms: [String]?
     public let elevenLabsApiKeyExpiresAt: Date?
 
     public init(
@@ -73,6 +74,7 @@ public struct TranscriptionProviderFactoryInput: Sendable {
         elevenLabsNumSpeakers: Int? = nil,
         elevenLabsFileFormat: String? = nil,
         elevenLabsEntityDetection: String? = nil,
+        elevenLabsKeyterms: [String]? = nil,
         elevenLabsApiKeyExpiresAt: Date? = nil
     ) {
         self.providerId = providerId
@@ -98,6 +100,7 @@ public struct TranscriptionProviderFactoryInput: Sendable {
         self.elevenLabsNumSpeakers = elevenLabsNumSpeakers
         self.elevenLabsFileFormat = elevenLabsFileFormat
         self.elevenLabsEntityDetection = elevenLabsEntityDetection
+        self.elevenLabsKeyterms = elevenLabsKeyterms
         self.elevenLabsApiKeyExpiresAt = elevenLabsApiKeyExpiresAt
     }
 }
@@ -147,6 +150,16 @@ public enum TranscriptionProviderFactory {
                 throw MacrecError.transcriptionConfigConflict(
                     reason: "Apple Speech requires macOS 26+; this build is running on an older OS")
             }
+        case "apple-cloud":
+            // 2026-05-01 — Apple's CLOUD Speech-to-Text path via
+            // `SFSpeechRecognizer` with `requiresOnDeviceRecognition =
+            // false`. Available on macOS 14+, supports Greek (`el-GR`)
+            // and ~57 other locales the on-device SpeechAnalyzer
+            // doesn't ship assets for. Audio leaves the device — see
+            // `docs/reference/apple-cloud-stt-investigation-2026-05.md`.
+            // Per-task audio cap ~60s (we rotate at 55s); device-wide
+            // 1000 req/hr quota.
+            return AppleCloudTranscriptionProvider(logger: input.logger)
         case "whisperkit":
             // On-device, multilingual fallback for locales whose Apple
             // Speech asset is not downloadable (e.g. el-GR confirmed
@@ -258,15 +271,21 @@ public enum TranscriptionProviderFactory {
                 throw MacrecError.transcriptionApiKeyMissing(provider: "elevenlabs")
             }
             input.logger.info("elevenlabs: building provider for model '\(input.elevenLabsModelId ?? ElevenLabsConfig.defaultModelId)'")
+            // 2026-05-01 — `diarize` default flipped to true so the
+            // user gets per-speaker turn markers out of the box; the
+            // visible "wall of text" bug was the dominant complaint.
+            // Users on a deployment that does not support diarization
+            // can opt out via `ELEVENLABS_DIARIZE=false`.
             let elConfig = try ElevenLabsConfig(
                 apiKey: key,
                 modelId: input.elevenLabsModelId ?? ElevenLabsConfig.defaultModelId,
                 languageCode: input.elevenLabsLanguageCode,
-                diarize: input.elevenLabsDiarize ?? false,
+                diarize: input.elevenLabsDiarize ?? true,
                 tagAudioEvents: input.elevenLabsTagAudioEvents ?? true,
                 numSpeakers: input.elevenLabsNumSpeakers,
                 fileFormat: input.elevenLabsFileFormat ?? "pcm_s16le_16",
                 entityDetection: input.elevenLabsEntityDetection,
+                keyterms: input.elevenLabsKeyterms ?? [],
                 apiKeyExpiresAt: input.elevenLabsApiKeyExpiresAt ?? input.keyExpiresAt
             )
             return ElevenLabsTranscriptionProvider(
@@ -275,7 +294,7 @@ public enum TranscriptionProviderFactory {
             )
         default:
             // TODO(plan-004 Phase G): use .transcriptionInvalidConfigValue(field:value:)
-            throw MacrecError.transcriptionConfigConflict(reason: "transcribe value '\(normalized)' invalid (allowed: 'none', 'apple', 'gemini', 'whisperkit', 'soniox', 'azure', 'azure-openai-realtime', 'elevenlabs')")
+            throw MacrecError.transcriptionConfigConflict(reason: "transcribe value '\(normalized)' invalid (allowed: 'none', 'apple', 'apple-cloud', 'gemini', 'whisperkit', 'soniox', 'azure', 'azure-openai-realtime', 'elevenlabs')")
         }
     }
 }

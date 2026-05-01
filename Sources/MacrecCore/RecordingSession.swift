@@ -1022,6 +1022,7 @@ public final class RecordingSession: @unchecked Sendable {
             elevenLabsNumSpeakers: options.elevenLabsNumSpeakers,
             elevenLabsFileFormat: options.elevenLabsFileFormat,
             elevenLabsEntityDetection: options.elevenLabsEntityDetection,
+            elevenLabsKeyterms: options.elevenLabsKeyterms,
             elevenLabsApiKeyExpiresAt: options.elevenLabsApiKeyExpiresAt
         )
         do {

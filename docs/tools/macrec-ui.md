@@ -222,6 +222,23 @@
           (see Permissions section below); no API key, no network. This
           replaces `None` as the default; users who prefer the
           true-no-op behaviour can still select **None**.
+        - **Apple Cloud (cloud, streaming, Greek + 57 locales)**
+          *(2026-05-01)* — Apple's cloud Speech-to-Text path via
+          `SFSpeechRecognizer` with `requiresOnDeviceRecognition =
+          false`. No API key, no third-party billing — audio is
+          tunnelled through the system framework to Apple's private
+          ASR servers. Supports `el-GR` and ~57 other locales the
+          on-device `SpeechAnalyzer` doesn't ship assets for.
+          Quotas: 1,000 requests / hour / device, ~60 s of audio per
+          recognition task — provider auto-rotates the underlying
+          task at 55 s. Requires `NSSpeechRecognitionUsageDescription`
+          (already in the bundle plist) and the user to approve the
+          system Speech Recognition prompt the first time the API is
+          called from a Developer-ID-signed `.app`. (See
+          `docs/reference/apple-cloud-stt-investigation-2026-05.md`
+          for the full investigation; see PLAN-007-DONE-14 in
+          `Issues - Pending Items.md` for the run-mode caveat with
+          ad-hoc CLI binaries.)
         - **WhisperKit (on-device)** — WhisperKit running on Apple
           silicon CoreML.  No API key, no network.
         - **Gemini** — Google Gemini REST batch API (plan-004). Requires

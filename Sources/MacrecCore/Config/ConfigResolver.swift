@@ -611,6 +611,39 @@ public struct ConfigResolver {
             }
             return lower
         }()
+        // 2026-05-01 — `ELEVENLABS_KEYTERMS` parser. Comma-separated
+        // form. Each entry trimmed; empties + duplicates dropped.
+        // Hard limits (≤50 entries, ≤20 chars each) are enforced both
+        // here AND inside `ElevenLabsConfig.init` so the CLI can fail
+        // fast with a clear message before the recorder opens.
+        let elevenLabsKeyterms: [String]? = try {
+            guard let raw = value(Keys.elevenLabsKeyterms),
+                  !raw.isEmpty else { return nil }
+            var seen: Set<String> = []
+            var out: [String] = []
+            for piece in raw.split(separator: ",") {
+                let trimmed = piece.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { continue }
+                if trimmed.count > ElevenLabsConfig.maxKeytermLength {
+                    throw MacrecError.invalidConfigValue(
+                        key: Keys.elevenLabsKeyterms,
+                        value: trimmed,
+                        expected: "each entry ≤ \(ElevenLabsConfig.maxKeytermLength) chars"
+                    )
+                }
+                if seen.insert(trimmed).inserted {
+                    out.append(trimmed)
+                }
+            }
+            guard out.count <= ElevenLabsConfig.maxKeyterms else {
+                throw MacrecError.invalidConfigValue(
+                    key: Keys.elevenLabsKeyterms,
+                    value: raw,
+                    expected: "at most \(ElevenLabsConfig.maxKeyterms) comma-separated entries"
+                )
+            }
+            return out.isEmpty ? nil : out
+        }()
         let elevenLabsApiKeyExpiresAt: Date? = try {
             if let perProvider = try parseOptionalISO8601Date(
                 key: Keys.elevenLabsApiKeyExpiresAt,
@@ -676,6 +709,7 @@ public struct ConfigResolver {
             elevenLabsNumSpeakers: elevenLabsNumSpeakers,
             elevenLabsFileFormat: elevenLabsFileFormat,
             elevenLabsEntityDetection: elevenLabsEntityDetection,
+            elevenLabsKeyterms: elevenLabsKeyterms,
             elevenLabsApiKeyExpiresAt: elevenLabsApiKeyExpiresAt
         )
     }
@@ -836,6 +870,13 @@ public struct ConfigResolver {
         /// Entity-detection mode (`pii`, `phi`, `pci`, `all`). Unset =
         /// off (plan-007 §13 EL-2 default; +30% surcharge when enabled).
         public static let elevenLabsEntityDetection    = "ELEVENLABS_ENTITY_DETECTION"
+
+        /// 2026-05-01 — comma-separated list of bias terms forwarded as
+        /// repeated `keyterms` form-fields. Helps disambiguate
+        /// bilingual content (Greek+English) by biasing the model
+        /// toward target-language vocabulary. Hard limits: ≤50 entries,
+        /// each ≤20 characters. Empty / unset disables the bias.
+        public static let elevenLabsKeyterms           = "ELEVENLABS_KEYTERMS"
 
         /// Optional ISO-8601 expiry timestamp for `ELEVENLABS_API_KEY`.
         public static let elevenLabsApiKeyExpiresAt    = "ELEVENLABS_API_KEY_EXPIRES_AT"
