@@ -46,22 +46,27 @@ final class PopoverController {
 
     private let logger: Logger
 
-    /// KVO observer on the persisted popover-height key. The user
-    /// drags `ResizeHandle` (in `RootView`) → SwiftUI `@AppStorage`
-    /// writes the new value to UserDefaults → this observer fires →
-    /// we push `NSPopover.contentSize` so the AppKit frame updates.
-    private var heightObserver: NSObjectProtocol?
+    /// KVO observer on the persisted popover-size keys (height + width).
+    /// The user drags `ResizeHandle` (in `RootView`) → SwiftUI
+    /// `@AppStorage` writes the new value(s) to UserDefaults → this
+    /// observer fires → we push `NSPopover.contentSize` so the AppKit
+    /// frame updates. A single observer covers both axes because
+    /// `UserDefaults.didChangeNotification` does not carry a key —
+    /// we re-read both keys and re-clamp on every fire.
+    private var sizeObserver: NSObjectProtocol?
 
-    /// Default height when no user choice has been persisted yet.
-    /// Matches the previous fixed cap so first-run users see no
-    /// behavioural change.
+    /// Default size + clamp range when no user choice has been
+    /// persisted yet. Matches `ResizeHandle.{min,max}{Height,Width}`
+    /// so the SwiftUI clamp and the AppKit clamp agree.
     /// `nonisolated` so the `@Sendable` closure passed to
     /// `NotificationCenter.addObserver(forName:object:queue:using:)`
     /// can read them without an actor hop.
     nonisolated static let defaultHeight: CGFloat = 600
     nonisolated static let minHeight: CGFloat = 360
     nonisolated static let maxHeight: CGFloat = 1100
-    nonisolated static let popoverWidth: CGFloat = 360
+    nonisolated static let defaultWidth: CGFloat = 420
+    nonisolated static let minWidth: CGFloat = 360
+    nonisolated static let maxWidth: CGFloat = 720
 
     /// Constructs the popover and wires its `contentViewController` to
     /// an `NSHostingController<AnyView>`. Behavior defaults to
@@ -129,35 +134,49 @@ final class PopoverController {
         self.hostingController = hosting
         popover.contentViewController = hosting
 
-        // Apply the persisted popover height (vertical-resize feature).
-        // Reading from `UserDefaults.standard` matches what SwiftUI's
-        // `@AppStorage(RootView.popoverHeightKey)` writes to. If the
-        // user has not set a value yet, fall back to `defaultHeight`.
-        let persisted = UserDefaults.standard.object(forKey: RootView.popoverHeightKey) as? Double
-        let initialHeight = Self.clamp(CGFloat(persisted ?? Double(Self.defaultHeight)))
-        popover.contentSize = NSSize(width: Self.popoverWidth, height: initialHeight)
+        // Apply the persisted popover size (both axes resizable —
+        // plan-008-followup-1). Reading from `UserDefaults.standard`
+        // matches what SwiftUI's `@AppStorage(RootView.popoverHeightKey)`
+        // and `@AppStorage(RootView.popoverWidthKey)` write to. If the
+        // user has not set a value yet for either axis, fall back to
+        // the matching default constant.
+        let persistedH = UserDefaults.standard.object(forKey: RootView.popoverHeightKey) as? Double
+        let persistedW = UserDefaults.standard.object(forKey: RootView.popoverWidthKey)  as? Double
+        let initialHeight = Self.clampHeight(CGFloat(persistedH ?? Double(Self.defaultHeight)))
+        let initialWidth  = Self.clampWidth (CGFloat(persistedW ?? Double(Self.defaultWidth)))
+        popover.contentSize = NSSize(width: initialWidth, height: initialHeight)
 
-        // Subscribe to subsequent height changes so a drag on the
+        // Subscribe to subsequent size changes so a drag on the
         // resize handle propagates to the AppKit popover frame in
         // real time. We use `UserDefaults.didChangeNotification`
         // (rather than KVO via key-path) to avoid having to expose a
         // `@objc dynamic` property on a `UserDefaults` extension —
         // SwiftUI's `@AppStorage` only writes through a plain string
         // key, which the notification observes uniformly.
-        heightObserver = NotificationCenter.default.addObserver(
+        //
+        // A single observer covers both axes: on every fire we re-read
+        // both keys, re-clamp, and only push to `contentSize` if either
+        // dimension materially differs from the current frame. This
+        // avoids the "two writes → two pushes" jitter that would otherwise
+        // happen on a diagonal drag (the gesture writes both keys on
+        // the same SwiftUI tick, but the notification fires twice).
+        sizeObserver = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification,
             object: UserDefaults.standard,
             queue: .main
         ) { [weak popover] _ in
-            let newValue = UserDefaults.standard.double(forKey: RootView.popoverHeightKey)
-            guard newValue > 0 else { return }
-            let clamped = Self.clamp(CGFloat(newValue))
             guard let popover else { return }
-            // Avoid spurious churn when the value did not actually
-            // change for THIS key (the notification fires for every
-            // defaults write).
-            if abs(popover.contentSize.height - clamped) < 0.5 { return }
-            popover.contentSize = NSSize(width: Self.popoverWidth, height: clamped)
+            let rawH = UserDefaults.standard.double(forKey: RootView.popoverHeightKey)
+            let rawW = UserDefaults.standard.double(forKey: RootView.popoverWidthKey)
+            let h: CGFloat = rawH > 0 ? Self.clampHeight(CGFloat(rawH)) : popover.contentSize.height
+            let w: CGFloat = rawW > 0 ? Self.clampWidth (CGFloat(rawW)) : popover.contentSize.width
+            // Avoid spurious churn when neither dimension actually
+            // changed for THIS key (the notification fires for every
+            // defaults write across the whole process).
+            let dh = abs(popover.contentSize.height - h)
+            let dw = abs(popover.contentSize.width  - w)
+            if dh < 0.5 && dw < 0.5 { return }
+            popover.contentSize = NSSize(width: w, height: h)
         }
 
         logger.debug("PopoverController initialized (behavior=.transient, contentSize=\(popover.contentSize))")
@@ -165,14 +184,18 @@ final class PopoverController {
 
     deinit {
         // KVO observation token is released automatically.
-        _ = heightObserver
+        _ = sizeObserver
     }
 
-    /// Clamp helper — centralised so the init path and the observer
+    /// Clamp helpers — centralised so the init path and the observer
     /// path agree on the bounds. `nonisolated` for the same reason
-    /// as the static height bounds.
-    nonisolated private static func clamp(_ value: CGFloat) -> CGFloat {
+    /// as the static size bounds.
+    nonisolated private static func clampHeight(_ value: CGFloat) -> CGFloat {
         min(max(value, minHeight), maxHeight)
+    }
+
+    nonisolated private static func clampWidth(_ value: CGFloat) -> CGFloat {
+        min(max(value, minWidth), maxWidth)
     }
 
     /// Open or close the popover, anchored to the supplied status-bar

@@ -94,6 +94,20 @@ struct RootView: View {
     /// the same key without re-deriving the string.
     static let popoverHeightKey = "com.macrec.ui.popoverHeight"
 
+    /// User-chosen popover width (horizontal resizable popover, added
+    /// plan-008-followup-1). The `ResizeHandle` at the bottom of the
+    /// popover applies horizontal drag translation to this binding;
+    /// `PopoverController` observes the key and pushes the new
+    /// `NSPopover.contentSize.width` so the AppKit frame grows/shrinks.
+    /// Default 420 matches `PopoverController.defaultWidth` so first-run
+    /// users see the same width as before this feature landed.
+    @AppStorage(RootView.popoverWidthKey)
+    private var popoverWidth: Double = 420
+
+    /// UserDefaults key for the persisted popover width. Same exposure
+    /// pattern as `popoverHeightKey`.
+    static let popoverWidthKey = "com.macrec.ui.popoverWidth"
+
     var body: some View {
         VStack(spacing: 0) {
 
@@ -193,9 +207,11 @@ struct RootView: View {
                     .padding(.vertical, 8)
             }
 
-            ResizeHandle(height: $popoverHeight)
+            ResizeHandle(width: $popoverWidth, height: $popoverHeight)
         }
-        .frame(width: 360)
+        .frame(
+            width:  min(max(popoverWidth,  ResizeHandle.minWidth),  ResizeHandle.maxWidth)
+        )
         .frame(
             height: min(max(popoverHeight, ResizeHandle.minHeight), ResizeHandle.maxHeight),
             alignment: .top
