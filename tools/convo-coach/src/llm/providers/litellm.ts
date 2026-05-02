@@ -1,14 +1,9 @@
-// src/llm/providers/litellm.ts — LiteLLM proxy via @ai-sdk/openai-compatible.
+// src/llm/providers/litellm.ts — LiteLLM proxy provider module (LangChain).
 //
 // Required env: LITELLM_PROXY_URL (alias: LITELLM_API_BASE).
-// Optional env: LITELLM_MASTER_KEY (alias: LITELLM_API_KEY) — some
-//               LiteLLM proxies are deployed without auth; pass empty
-//               string in that case.
-//
-// No static default model — LiteLLM's whole point is multi-provider
-// routing, so the user must pass --model. See sdk research §3.3.
+// Optional env: LITELLM_MASTER_KEY (alias: LITELLM_API_KEY).
 
-import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
+import { ChatOpenAI } from '@langchain/openai';
 
 import { ConfigError, type LanguageModel, type LlmProviderModule } from '../../types.js';
 import { resolveModel } from '../default-models.js';
@@ -28,19 +23,19 @@ export const litellmProvider: LlmProviderModule = {
         const baseURL = proxyUrlRaw.trim().replace(/\/+$/, '');
 
         // Master key is optional; some LiteLLM proxies tolerate an empty
-        // bearer (no-auth deployments). The SDK requires the field; pass
-        // '' if absent.
-        const masterKey = config.get('LITELLM_MASTER_KEY') ?? '';
-
-        const provider = createOpenAICompatible({
-            name: 'litellm',
-            baseURL,
-            apiKey: masterKey,
-            includeUsage: true,
-        });
+        // bearer (no-auth deployments). LangChain's ChatOpenAI requires a
+        // non-empty apiKey, so we substitute a documented placeholder.
+        const masterKey = config.get('LITELLM_MASTER_KEY');
+        const apiKey = masterKey && masterKey.length > 0 ? masterKey : 'dummy';
 
         const modelId = resolveModel('litellm', modelOverride, config);
-        return provider.languageModel(modelId);
+
+        return new ChatOpenAI({
+            apiKey,
+            model: modelId,
+            configuration: { baseURL },
+            streamUsage: true,
+        });
     },
 };
 

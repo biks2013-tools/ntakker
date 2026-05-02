@@ -4,13 +4,12 @@
 //   AZURE_AI_INFERENCE_KEY        (alias: ANTHROPIC_FOUNDRY_API_KEY)
 //   AZURE_AI_INFERENCE_ENDPOINT   (alias: ANTHROPIC_FOUNDRY_ENDPOINT)
 //
-// Routed through @ai-sdk/openai-compatible against Foundry's
-// `/openai/v1` endpoint (GA since Aug 2025; the older `/models` endpoint
-// retires Aug 26, 2026). See sdk research §2.2.
+// Routed through LangChain's ChatOpenAI against Foundry's `/openai/v1`
+// OpenAI-compatible endpoint (GA since Aug 2025).
 //
 // No static default model — the user must pass --model.
 
-import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
+import { ChatOpenAI } from '@langchain/openai';
 
 import { ConfigError, type LanguageModel, type LlmProviderModule } from '../../types.js';
 import { resolveModel } from '../default-models.js';
@@ -20,7 +19,7 @@ import { resolveModel } from '../default-models.js';
  * endpoint does not already end with it (or with a bare `/v1`). Trailing
  * slashes are stripped.
  */
-function normaliseFoundryBaseUrl(endpoint: string): string {
+export function normaliseFoundryBaseUrl(endpoint: string): string {
     let url = endpoint.trim().replace(/\/+$/, '');
     if (/\/openai\/v1$/.test(url)) return url;
     if (/\/v1$/.test(url)) return url;
@@ -50,16 +49,14 @@ export const azureAiInferenceProvider: LlmProviderModule = {
         }
 
         const baseURL = normaliseFoundryBaseUrl(endpoint);
-
-        const provider = createOpenAICompatible({
-            name: 'azure-ai-inference',
-            baseURL,
-            apiKey,
-            includeUsage: true,
-        });
-
         const modelId = resolveModel('azure-ai-inference', modelOverride, config);
-        return provider.languageModel(modelId);
+
+        return new ChatOpenAI({
+            apiKey,
+            model: modelId,
+            configuration: { baseURL },
+            streamUsage: true,
+        });
     },
 };
 

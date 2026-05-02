@@ -522,98 +522,48 @@ test('streamToSinks: sink write() throws — error propagates to caller', async 
 // runOneAdvice — minimal contract test via a stubbed LanguageModel
 // ---------------------------------------------------------------------------
 
-// runOneAdvice wraps `streamText` from the `ai` package, which requires a real
-// LanguageModel object. We build a minimal stub that mimics the shape expected
-// by the Vercel AI SDK v6.x `streamText()` return value and intercept it by
-// injecting a faked model.
-//
-// Because `streamText` validates the model shape at call time, we stub at the
-// import level by using dynamic import interception. The simplest approach that
-// avoids modifying production code is to supply a mock LanguageModel whose
-// `doStream` method returns the expected async-iterable shape.
+// runOneAdvice now wraps LangChain's BaseChatModel.stream(messages) — much
+// easier to stub than the ai SDK's doStream contract. Any object exposing
+// an async `.stream()` method that returns an async-iterable of objects with
+// a `content` string and an optional `usage_metadata` field on the final
+// chunk satisfies the contract.
 
 test('runOneAdvice: returns { usage, ttftMs, latencyMs } with correct shape from a stub model', async () => {
     const { runOneAdvice } = await import('../src/output/stream.js');
 
-    // Build a minimal LanguageModel stub that satisfies the ai SDK v6 doStream contract.
-    // Modelled after the ai package's LanguageModelV2 interface; only the fields
-    // that `streamText` actually accesses are populated.
+    async function* fakeStream(): AsyncIterable<{
+        content: string;
+        usage_metadata?: { input_tokens: number; output_tokens: number; total_tokens: number };
+    }> {
+        yield { content: 'stub ' };
+        yield { content: 'advice' };
+        yield {
+            content: '',
+            usage_metadata: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+        };
+    }
+
     const stubModel = {
-        specificationVersion: 'v2',
-        modelId: 'stub-model',
-        provider: 'test-provider',
-        defaultObjectGenerationMode: undefined,
-        supportsUrl: undefined,
-        supportsImageUrls: undefined,
-        doGenerate: async () => {
-            throw new Error('doGenerate not implemented in stub');
-        },
-        doStream: async () => {
-            let done = false;
-            const textStream = {
-                [Symbol.asyncIterator]() {
-                    return {
-                        async next() {
-                            if (done) return { done: true as const, value: undefined };
-                            done = true;
-                            // Emit a single text-delta then a finish event.
-                            return {
-                                done: false as const,
-                                value: { type: 'text-delta' as const, textDelta: 'stub advice' },
-                            };
-                        },
-                    };
-                },
-            };
-            return {
-                stream: textStream,
-                rawCall: { rawPrompt: null, rawSettings: {} },
-                usage: Promise.resolve({ inputTokens: 10, outputTokens: 5, totalTokens: 15 }),
-            };
-        },
+        stream: async () => fakeStream(),
     };
 
     const collector = new CollectorSink();
-    let result: Awaited<ReturnType<typeof runOneAdvice>> | undefined;
+    const result = await runOneAdvice({
+        model: stubModel as unknown as import('../src/types.js').LanguageModel,
+        system: 'You are a coach.',
+        user: 'What should I say?',
+        sinks: [collector],
+    });
 
-    // The ai SDK's streamText() wraps the model's doStream result in a
-    // ReadableStream pipeline (pipeThrough, etc.) that our minimal object
-    // literal cannot satisfy — it expects a full Web Streams API ReadableStream.
-    // Constructing a spec-compliant ReadableStream in test would require either
-    // the real SDK's test helpers (not available without modifying shared infra)
-    // or a network call to a real provider. We therefore catch the known error
-    // surfaces and treat them as an "infrastructure too complex to mock" finding.
-    const KNOWN_SDK_ERRORS = ['pipeThrough', 'doStream', 'streamText', 'specificationVersion', 'ReadableStream'];
-
-    try {
-        result = await runOneAdvice({
-            model: stubModel as unknown as import('../src/types.js').LanguageModel,
-            system: 'You are a coach.',
-            user: 'What should I say?',
-            sinks: [collector],
-        });
-    } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (KNOWN_SDK_ERRORS.some((kw) => msg.includes(kw))) {
-            // Known gap: the ai SDK's internal stream plumbing (ReadableStream.pipeThrough)
-            // cannot be satisfied by a plain object-literal stub. A conformant stub
-            // would require constructing a real Web Streams ReadableStream — which in
-            // turn requires either a real provider or modifying shared test infra.
-            // Diagnosis: test infrastructure gap, NOT an implementation bug in runOneAdvice.
-            // See report §7 Implementation Gaps for detail.
-            console.warn(
-                '[output-sinks] runOneAdvice stub rejected by ai SDK (ReadableStream required). ' +
-                'Skipping shape assertion. Gap logged in test report.',
-            );
-            return;
-        }
-        throw err;
-    }
-
-    // If we reach here the SDK accepted our stub (future SDK version may relax the constraint).
-    assert.ok(result !== undefined, 'result must be defined if no error was thrown');
     assert.ok(typeof result.ttftMs === 'number', `ttftMs must be a number, got ${typeof result.ttftMs}`);
     assert.ok(typeof result.latencyMs === 'number', `latencyMs must be a number, got ${typeof result.latencyMs}`);
     assert.ok(typeof result.usage === 'object', 'usage must be an object');
     assert.ok(result.latencyMs >= 0, 'latencyMs must be non-negative');
+    // The stub yields aggregated `usage_metadata` only on the final chunk;
+    // LangChain's `concat` carries it forward so runOneAdvice should surface
+    // it on the result.
+    assert.equal(result.usage.inputTokens, 10);
+    assert.equal(result.usage.outputTokens, 5);
+    assert.equal(result.usage.totalTokens, 15);
+    assert.equal(collector.received.join(''), 'stub advice');
 });

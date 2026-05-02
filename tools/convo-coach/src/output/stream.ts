@@ -1,11 +1,17 @@
-// src/output/stream.ts — streamText loop + StdoutWriter sink + fan-out helper.
+// src/output/stream.ts — LangChain `model.stream()` loop + StdoutWriter sink
+// + fan-out helper.
 //
-// Owned by U7 (plan-011 Phase 6c). See plan-011 §U7 and CC-DSGN-6 for the
-// signature contracts. Implementation pattern lifted from
-// `docs/research/vercel-ai-sdk-v5-multiprovider.md` §1.7.
+// Owned by U7 (plan-011 Phase 6c). LangChain refactor: replaces the previous
+// `streamText` Vercel-AI-SDK pipeline with `BaseChatModel.stream(messages)`
+// returning `AsyncIterable<AIMessageChunk>`. Per-chunk text is read from
+// `chunk.content`; aggregated `usage_metadata` lives on the final concatenated
+// chunk. Cancellation flows through the `signal` option of `.stream()`.
 
 import { performance } from 'node:perf_hooks';
-import { streamText } from 'ai';
+
+import type { AIMessageChunk } from '@langchain/core/messages';
+import { HumanMessage, SystemMessage } from '@langchain/core/messages';
+import { concat } from '@langchain/core/utils/stream';
 
 import {
     ProviderError,
@@ -26,7 +32,9 @@ export class StdoutWriter implements StreamSink {
 }
 
 // ---------------------------------------------------------------------------
-// streamToSinks — fan deltas to every sink in lock-step, then close them.
+// streamToSinks — fan deltas to every sink in lock-step. Closing the sinks
+// remains the orchestrator's responsibility (it appends sidecar metrics
+// after the loop).
 // ---------------------------------------------------------------------------
 
 export interface StreamFanOutResult {
@@ -37,10 +45,7 @@ export interface StreamFanOutResult {
 
 /**
  * Iterate `textStream`, writing each chunk to every sink in parallel via
- * `Promise.all`. Closing the sinks is the CALLER's responsibility — the
- * orchestrator typically appends metrics to the sidecar after the stream
- * finishes, then closes everything itself. Errors propagate to the
- * caller verbatim.
+ * `Promise.all`. Errors propagate to the caller verbatim.
  */
 export async function streamToSinks(
     textStream: AsyncIterable<string>,
@@ -60,6 +65,47 @@ export async function streamToSinks(
 }
 
 // ---------------------------------------------------------------------------
+// Internal: convert LangChain's AIMessageChunk.content (string | array) to
+// a plain string. The `content` field is `MessageContent` which is either a
+// string or an array of `MessageContentText | MessageContentImageUrl | …`
+// blocks. For chat completions we only ever see text blocks.
+// ---------------------------------------------------------------------------
+
+function chunkText(chunk: AIMessageChunk): string {
+    const c = chunk.content;
+    if (typeof c === 'string') return c;
+    if (Array.isArray(c)) {
+        let out = '';
+        for (const block of c) {
+            if (block && typeof block === 'object' && 'type' in block && block.type === 'text' && typeof (block as { text?: unknown }).text === 'string') {
+                out += (block as { text: string }).text;
+            }
+        }
+        return out;
+    }
+    return '';
+}
+
+// ---------------------------------------------------------------------------
+// Internal: project LangChain's UsageMetadata onto our flat AdviceUsage shape.
+// ---------------------------------------------------------------------------
+
+interface UsageMetadataLike {
+    input_tokens?: number;
+    output_tokens?: number;
+    total_tokens?: number;
+}
+
+function projectUsage(meta: UsageMetadataLike | undefined): AdviceUsage {
+    if (meta === undefined) return {};
+    const out: AdviceUsage = {};
+    if (typeof meta.input_tokens === 'number') out.inputTokens = meta.input_tokens;
+    if (typeof meta.output_tokens === 'number') out.outputTokens = meta.output_tokens;
+    if (typeof meta.total_tokens === 'number') out.totalTokens = meta.total_tokens;
+    return out;
+}
+
+// ---------------------------------------------------------------------------
 // runOneAdvice — full single-shot streaming pipeline.
 // ---------------------------------------------------------------------------
 
@@ -74,9 +120,9 @@ export interface RunOneAdviceInput {
 }
 
 export interface AdviceUsage {
-    readonly inputTokens?: number;
-    readonly outputTokens?: number;
-    readonly totalTokens?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
 }
 
 export interface RunOneAdviceResult {
@@ -86,69 +132,62 @@ export interface RunOneAdviceResult {
 }
 
 /**
- * Run one streamText call, fan deltas to `sinks`, await usage, return
- * timing + token metrics. All errors thrown inside the stream are wrapped
- * in `ProviderError` (exit 70) with the original message preserved.
+ * Stream one chat completion via LangChain's `model.stream()`, fanning text
+ * deltas into `sinks` and aggregating usage metadata from the final chunk.
+ * All errors are wrapped in `ProviderError` (exit 70) with the original
+ * message preserved.
  */
 export async function runOneAdvice(
     input: RunOneAdviceInput,
 ): Promise<RunOneAdviceResult> {
     const start = performance.now();
 
-    // Capture errors emitted via onError callback as well — some
-    // provider errors (e.g. auth failures on first byte) surface there in
-    // ai@6.x rather than via the textStream iterator.
-    let onErrorCapture: unknown;
+    const messages = [
+        new SystemMessage(input.system),
+        new HumanMessage(input.user),
+    ];
 
-    let result: ReturnType<typeof streamText>;
+    const callOptions: { signal?: AbortSignal; maxTokens?: number } = {};
+    if (input.abortSignal !== undefined) callOptions.signal = input.abortSignal;
+    if (input.maxOutputTokens !== undefined) callOptions.maxTokens = input.maxOutputTokens;
+
+    let stream: AsyncIterable<AIMessageChunk>;
     try {
-        result = streamText({
-            model: input.model,
-            system: input.system,
-            prompt: input.user,
-            maxOutputTokens: input.maxOutputTokens ?? 2048,
-            ...(input.abortSignal !== undefined && { abortSignal: input.abortSignal }),
-            onError: ({ error }: { error: unknown }) => {
-                if (onErrorCapture === undefined) onErrorCapture = error;
-            },
-        });
+        stream = await input.model.stream(messages, callOptions);
     } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        throw new ProviderError(`streamText setup failed: ${message}`);
+        throw new ProviderError(`stream setup failed: ${message}`);
     }
 
     let ttftMs: number | undefined;
+    let aggregate: AIMessageChunk | undefined;
+
     try {
-        const fanOut = await streamToSinks(result.textStream, input.sinks);
-        ttftMs = fanOut.ttftMs;
+        for await (const chunk of stream) {
+            const text = chunkText(chunk);
+            if (text.length > 0 && ttftMs === undefined) {
+                ttftMs = performance.now() - start;
+            }
+            if (text.length > 0) {
+                await Promise.all(
+                    input.sinks.map((sink) => Promise.resolve(sink.write(text))),
+                );
+            }
+            aggregate = aggregate === undefined ? chunk : concat(aggregate, chunk);
+        }
     } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        throw new ProviderError(`stream failed: ${message}`);
-    }
-
-    if (onErrorCapture !== undefined) {
-        const message = onErrorCapture instanceof Error
-            ? onErrorCapture.message
-            : String(onErrorCapture);
         throw new ProviderError(`stream failed: ${message}`);
     }
 
     const latencyMs = performance.now() - start;
 
-    // Resolve usage AFTER the stream loop ends — per Vercel AI SDK §1.4.
-    let usage: AdviceUsage;
-    try {
-        const raw = await result.usage;
-        usage = {
-            ...(typeof raw.inputTokens === 'number' && { inputTokens: raw.inputTokens }),
-            ...(typeof raw.outputTokens === 'number' && { outputTokens: raw.outputTokens }),
-            ...(typeof raw.totalTokens === 'number' && { totalTokens: raw.totalTokens }),
-        };
-    } catch {
-        // Some providers (Ollama, MLX, certain Azure deployments) don't
-        // populate usage. Leave it empty rather than failing the request.
-        usage = {};
-    }
+    // Usage lives on the final aggregated chunk; some providers
+    // (Ollama, MLX, certain Azure deployments) don't populate it. The
+    // top-level usage_metadata field is the standard cross-provider place.
+    const usage = projectUsage(
+        aggregate?.usage_metadata as UsageMetadataLike | undefined,
+    );
 
     return {
         usage,

@@ -1,32 +1,27 @@
-// src/llm/providers/azure-openai.ts — Azure OpenAI provider module.
+// src/llm/providers/azure-openai.ts — Azure OpenAI provider module (LangChain).
 //
 // Required env:
 //   AZURE_OPENAI_API_KEY      → apiKey
-//   AZURE_OPENAI_ENDPOINT     → resourceName (derived; see deriveResourceName)
+//   AZURE_OPENAI_ENDPOINT     → resourceName (derived) or v1 baseURL
 //   AZURE_OPENAI_DEPLOYMENT   → consumed by resolveModel as the modelId
 //
 // Optional env:
 //   AZURE_OPENAI_API_VERSION  → apiVersion override.
-//                               * When UNSET (recommended for current models
-//                                 such as gpt-5.x): the SDK uses its 'v1'
-//                                 default and routes to Azure's GA endpoint
+//                               * UNSET (recommended for current models like
+//                                 gpt-5.x): the provider uses ChatOpenAI
+//                                 against the v1 GA endpoint
 //                                 https://<resource>.openai.azure.com/openai/v1/...
-//                                 No dated api-version is needed.
-//                               * When SET to a dated preview value (e.g.
-//                                 '2025-04-01-preview'): the provider also
-//                                 enables `useDeploymentBasedUrls: true`,
-//                                 switching to the legacy URL pattern
+//                                 No dated api-version is needed; the
+//                                 deployment name is the model id.
+//                               * SET to a dated preview value (e.g.
+//                                 '2025-04-01-preview'): falls back to the
+//                                 LangChain `AzureChatOpenAI` integration
+//                                 which uses the legacy deployment-based URL
 //                                 https://<resource>.openai.azure.com/openai/deployments/<deployment>/<path>?api-version=<x>.
-//                                 Use this only for older deployments that
-//                                 require the legacy route. Setting a dated
-//                                 api-version against the v1 URL pattern
-//                                 would yield "API version not supported".
-//
-// No static default model — the deployment name IS the model id.
-//
-// See docs/research/vercel-ai-sdk-v5-multiprovider.md §2.1 and §6 gotcha 11.
+//                                 Useful only for older deployments that
+//                                 still require a dated api-version.
 
-import { createAzure } from '@ai-sdk/azure';
+import { AzureChatOpenAI, ChatOpenAI } from '@langchain/openai';
 
 import { ConfigError, type LanguageModel, type LlmProviderModule } from '../../types.js';
 import { resolveModel } from '../default-models.js';
@@ -39,17 +34,11 @@ import { resolveModel } from '../default-models.js';
  *   https://my-res.openai.azure.com/        → my-res
  *   my-res.openai.azure.com                  → my-res
  *   my-res                                   → my-res   (already a bare name)
- *
- * Throws `ConfigError` if the input cannot be reduced to a non-empty
- * resource name.
  */
 export function deriveResourceName(endpoint: string): string {
     let host = endpoint.trim();
-    // Strip URL scheme.
     host = host.replace(/^https?:\/\//i, '');
-    // Strip trailing slash and any path.
     host = host.replace(/\/.*$/, '');
-    // Strip the .openai.azure.com (and any other) suffix → first label only.
     const firstLabel = host.split('.')[0] ?? '';
     if (firstLabel.length === 0) {
         throw new ConfigError(
@@ -58,6 +47,12 @@ export function deriveResourceName(endpoint: string): string {
         );
     }
     return firstLabel;
+}
+
+function trimTrailingSlash(s: string): string {
+    let v = s;
+    while (v.endsWith('/')) v = v.slice(0, -1);
+    return v;
 }
 
 export const azureOpenaiProvider: LlmProviderModule = {
@@ -80,37 +75,40 @@ export const azureOpenaiProvider: LlmProviderModule = {
             );
         }
 
-        // AZURE_OPENAI_API_VERSION is optional and chooses the URL pattern:
-        //   - unset / empty → v1 GA mode (apiVersion defaults to 'v1' inside
-        //     the SDK; URL is /openai/v1/... ; no dated api-version query).
-        //   - explicitly set → legacy deployment-based mode (URL becomes
-        //     /openai/deployments/<id>/...?api-version=<x>). Setting a dated
-        //     api-version without enabling useDeploymentBasedUrls would route
-        //     it against the v1 URL and Azure would reject it with "API
-        //     version not supported", so we pair the two automatically.
         const apiVersionRaw = config.get('AZURE_OPENAI_API_VERSION');
         const apiVersion = apiVersionRaw && apiVersionRaw.length > 0
             ? apiVersionRaw
             : undefined;
-        const useDeploymentBasedUrls = apiVersion !== undefined;
-
-        const resourceName = deriveResourceName(endpoint);
-
-        // Pass apiKey + resourceName explicitly so the SDK does not auto-read
-        // AZURE_API_KEY / AZURE_RESOURCE_NAME from the shell. This preserves
-        // the four-tier precedence chain. apiVersion + useDeploymentBasedUrls
-        // are only forwarded together, so the SDK's 'v1' GA default takes
-        // effect when no api-version is configured.
-        const provider = createAzure({
-            apiKey,
-            resourceName,
-            ...(apiVersion !== undefined
-                ? { apiVersion, useDeploymentBasedUrls }
-                : {}),
-        });
 
         const modelId = resolveModel('azure-openai', modelOverride, config);
-        return provider(modelId);
+
+        if (apiVersion === undefined) {
+            // v1 GA mode — use ChatOpenAI pointed at the /openai/v1 endpoint.
+            // The deployment name is sent as the `model` field in the
+            // request body, exactly how OpenAI's GA contract works.
+            // (LangChain 1.x cleanly separated ChatOpenAI from
+            // AzureChatOpenAI — `ChatOpenAI` no longer auto-reads
+            // AZURE_OPENAI_* env vars, so no suppression is needed.)
+            const baseURL = trimTrailingSlash(endpoint) + '/openai/v1';
+            return new ChatOpenAI({
+                apiKey,
+                model: modelId,
+                configuration: { baseURL },
+                streamUsage: true,
+            });
+        }
+
+        // Legacy mode — AzureChatOpenAI builds the deployment-based URL
+        // pattern automatically using azureOpenAIApiInstanceName +
+        // azureOpenAIApiDeploymentName + azureOpenAIApiVersion.
+        const azureOpenAIApiInstanceName = deriveResourceName(endpoint);
+        return new AzureChatOpenAI({
+            azureOpenAIApiKey: apiKey,
+            azureOpenAIApiInstanceName,
+            azureOpenAIApiDeploymentName: modelId,
+            azureOpenAIApiVersion: apiVersion,
+            streamUsage: true,
+        });
     },
 };
 

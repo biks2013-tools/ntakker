@@ -1,10 +1,10 @@
-// src/llm/providers/anthropic.ts — Anthropic provider module.
+// src/llm/providers/anthropic.ts — Direct Anthropic provider module (LangChain).
 //
 // Required env: ANTHROPIC_API_KEY
 // Optional env: ANTHROPIC_BASE_URL
-// Default model: claude-haiku-4-5-20251001  (versioned id per sdk research §4)
+// Default model: claude-haiku-4-5-20251001
 
-import { createAnthropic } from '@ai-sdk/anthropic';
+import { ChatAnthropic } from '@langchain/anthropic';
 
 import { ConfigError, type LanguageModel, type LlmProviderModule } from '../../types.js';
 import { resolveModel } from '../default-models.js';
@@ -22,14 +22,15 @@ export const anthropicProvider: LlmProviderModule = {
         }
 
         const baseURL = config.get('ANTHROPIC_BASE_URL');
-
-        const provider = createAnthropic({
-            apiKey,
-            ...(baseURL !== undefined && baseURL.length > 0 ? { baseURL } : {}),
-        });
-
         const modelId = resolveModel('anthropic', modelOverride, config);
-        return provider(modelId);
+
+        return new ChatAnthropic({
+            apiKey,
+            model: modelId,
+            ...(baseURL && baseURL.length > 0
+                ? { clientOptions: { baseURL } }
+                : {}),
+        });
     },
 };
 

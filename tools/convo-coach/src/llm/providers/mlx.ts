@@ -1,12 +1,10 @@
-// src/llm/providers/mlx.ts — MLX-LM via @ai-sdk/openai-compatible.
+// src/llm/providers/mlx.ts — Local MLX-LM provider module (LangChain).
+// MLX-LM exposes an OpenAI-compatible server; convo-coach reuses
+// OPENAI_BASE_URL pointed at the MLX-LM server endpoint.
 //
-// Required env: OPENAI_BASE_URL (MLX-LM reuses this var per sdk research §3.4).
-//
-// No static default model — MLX-LM serves whatever the user started the
-// server with (`mlx_lm.server --model …`). The user must pass --model
-// matching that exact id.
+// Required env: OPENAI_BASE_URL
 
-import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
+import { ChatOpenAI } from '@langchain/openai';
 
 import { ConfigError, type LanguageModel, type LlmProviderModule } from '../../types.js';
 import { resolveModel } from '../default-models.js';
@@ -24,18 +22,14 @@ export const mlxProvider: LlmProviderModule = {
             );
         }
         const baseURL = baseUrlRaw.trim().replace(/\/+$/, '');
-
-        const provider = createOpenAICompatible({
-            name: 'mlx',
-            baseURL,
-            // MLX-LM ignores the api key but the SDK requires a non-empty
-            // string; documented placeholder is 'mlx'.
-            apiKey: 'mlx',
-            includeUsage: true,
-        });
-
         const modelId = resolveModel('mlx', modelOverride, config);
-        return provider.languageModel(modelId);
+
+        return new ChatOpenAI({
+            apiKey: 'mlx',
+            model: modelId,
+            configuration: { baseURL },
+            streamUsage: true,
+        });
     },
 };
 

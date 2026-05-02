@@ -1059,6 +1059,20 @@ Plan-002 dispatches Phase F (quit-while-recording flow) and Phase G (error-mappi
 
 ## Completed items
 
+### PLAN-011-CC-REFACTOR-LANGCHAIN — convo-coach LLM stack swapped from Vercel AI SDK to LangChain.js (Closed 2026-05-02)
+
+User requested replacing the Vercel AI SDK with LangChain.js. **Straight swap with the same 8-provider surface preserved.** Removed `ai@^6` + `@ai-sdk/openai` + `@ai-sdk/anthropic` + `@ai-sdk/google` + `@ai-sdk/azure` + `@ai-sdk/openai-compatible`. Added `@langchain/core@^1.1` + `@langchain/openai@^1.4` + `@langchain/anthropic@^1.3` + `@langchain/google-genai@^2.1` + `@langchain/ollama@^1.2`. js-tiktoken kept for OpenAI-family token counting.
+
+Changes:
+- `tools/convo-coach/src/types.ts` — `LanguageModel` re-export now imports `BaseChatModel` from `@langchain/core/language_models/chat_models` (was `import type { LanguageModel } from 'ai'`).
+- `tools/convo-coach/src/llm/providers/*.ts` (all 8) — rewritten to instantiate `ChatOpenAI` / `AzureChatOpenAI` / `ChatAnthropic` / `ChatGoogleGenerativeAI` / `ChatOllama` directly. Provider routing preserved: 5 OpenAI-compat providers (openai, azure-openai-v1-mode, azure-ai-inference, litellm, mlx) all use `ChatOpenAI` with appropriate `apiKey` + `configuration.baseURL`; `azure-openai` legacy mode uses `AzureChatOpenAI`; `ollama` uses dedicated `ChatOllama` (native `/api/...` paths, no `/v1` suffix needed).
+- `tools/convo-coach/src/output/stream.ts` — `runOneAdvice` rewritten: `streamText({...}).textStream` → `model.stream([SystemMessage, HumanMessage])` returning `AsyncIterable<AIMessageChunk>`; aggregates chunks via `concat()` from `@langchain/core/utils/stream`; usage metadata pulled from final aggregated chunk's `usage_metadata` (snake-case fields `input_tokens`/`output_tokens`/`total_tokens` projected onto our flat camelCase `AdviceUsage` shape). AbortSignal flows through `model.stream(messages, { signal })`.
+- `tools/convo-coach/test/llm-factory-smoke.test.ts` — fixture-only updates (no logic change).
+- `tools/convo-coach/test/output-sinks.test.ts` — `runOneAdvice` stub simplified from a complex `doStream` + `ReadableStream` shape to a plain `async function* () { yield { content, usage_metadata? } }` generator. The previously-skipped "Implementation gap" assertion now runs and passes (full shape + collected text + usage metrics asserted).
+- `tools/convo-coach/package.json` — `overrides: { "@anthropic-ai/sdk": "^0.92.0" }` added to clear an upstream moderate-severity advisory (Anthropic SDK's filesystem-memory tool, which `convo-coach` doesn't use).
+
+Verified: `npx tsc --noEmit` 0 errors; `npm test` 166/166 pass; `npm audit` 0 vulnerabilities; end-to-end smoke against the user's `gpt-5.1` Azure deployment streams 30 lines of advice (584/424/1008 tokens, 1.30 s TTFT, 4.51 s latency, exit 0). Public CLI / env-var / exit-code surface unchanged. Sidecar format unchanged. Four-tier config resolver unchanged.
+
 ### PLAN-011-CC-FIX-CONFIG-EMPTY-OVERRIDE — convo-coach config resolver "delete-on-empty" semantic (Closed 2026-05-02)
 
 When the user uncommented `AZURE_OPENAI_API_VERSION=` (empty) in `~/.tool-agents/convo-coach/.env` to override their shell-exported `AZURE_OPENAI_API_VERSION=2024-12-01-preview`, the tool kept reading the shell value. Root cause: `loadConfig`'s `applyTier` skipped empty-string values (`if (raw === undefined || raw === '') continue;`), so a tier-2 empty assignment never wiped a tier-1 set value. **Fix**: changed the semantic so empty strings at any tier explicitly DELETE the key from the resolver's working map (clearing whatever a lower tier contributed) without contributing a value of their own. Now:

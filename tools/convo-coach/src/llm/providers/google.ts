@@ -1,9 +1,9 @@
-// src/llm/providers/google.ts — Google Gemini provider module.
+// src/llm/providers/google.ts — Google Gemini provider module (LangChain).
 //
-// Required env: GOOGLE_API_KEY (GEMINI_API_KEY alias is resolved by config layer).
-// Default model: gemini-2.5-flash  (per sdk research §4)
+// Required env: GOOGLE_API_KEY (GEMINI_API_KEY alias resolved by config layer).
+// Default model: gemini-2.5-flash
 
-import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 
 import { ConfigError, type LanguageModel, type LlmProviderModule } from '../../types.js';
 import { resolveModel } from '../default-models.js';
@@ -20,10 +20,12 @@ export const googleProvider: LlmProviderModule = {
             );
         }
 
-        const provider = createGoogleGenerativeAI({ apiKey });
-
         const modelId = resolveModel('google', modelOverride, config);
-        return provider(modelId);
+
+        return new ChatGoogleGenerativeAI({
+            apiKey,
+            model: modelId,
+        });
     },
 };
 

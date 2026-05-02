@@ -207,17 +207,19 @@
 
         ## Dependencies (pinned)
 
-        The tool uses the Vercel AI SDK for provider abstraction and token streaming:
+        The tool uses LangChain.js for provider abstraction and streaming:
 
-        | Package                          | Version   | Purpose |
-        |----------------------------------|-----------|---------|
-        | `ai`                             | `^6.0.0`  | Core `streamText` / `textStream` API |
-        | `@ai-sdk/openai`                 | `^3.0.55` | Direct OpenAI + MLX-LM (OpenAI-compatible) |
-        | `@ai-sdk/anthropic`              | `^3.0.74` | Direct Anthropic |
-        | `@ai-sdk/google`                 | `^3.0.64` | Google Gemini |
-        | `@ai-sdk/azure`                  | `^3.0.59` | Azure OpenAI |
-        | `@ai-sdk/openai-compatible`      | `^2.0.41` | Azure AI Inference, Ollama, LiteLLM |
-        | `js-tiktoken`                    | `^1.0.0`  | Token counting for context-window budget |
+        | Package                  | Version   | Purpose |
+        |--------------------------|-----------|---------|
+        | `@langchain/core`        | `^1.1.0`  | `BaseChatModel`, message types, `concat` for chunk aggregation |
+        | `@langchain/openai`      | `^1.4.0`  | `ChatOpenAI` (direct OpenAI, Azure AI Inference, LiteLLM, MLX-LM via custom `baseURL`) + `AzureChatOpenAI` (legacy Azure deployment-based URLs) |
+        | `@langchain/anthropic`   | `^1.3.0`  | `ChatAnthropic` |
+        | `@langchain/google-genai`| `^2.1.0`  | `ChatGoogleGenerativeAI` (Gemini) |
+        | `@langchain/ollama`      | `^1.2.0`  | `ChatOllama` (native Ollama API) |
+        | `js-tiktoken`            | `^1.0.0`  | Token counting for context-window budget |
+
+        npm `overrides` pins `@anthropic-ai/sdk@^0.92.0` to clear an upstream
+        moderate-severity advisory (filesystem-memory tool — not used by `convo-coach`).
 
         ---
 

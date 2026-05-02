@@ -178,12 +178,15 @@ export interface BuiltPrompt {
 // LLM PROVIDER (U6)
 // =====================================================================
 
-// Re-export the SDK's LanguageModel type so consumers depend on this
-// module rather than directly on the runtime SDK during type-checking.
-// Pinned import path: `import type { LanguageModel } from 'ai'` —
-// verified against ai@6.0.x.
-import type { LanguageModel } from 'ai';
-export type { LanguageModel };
+// Re-export LangChain's BaseChatModel as the project-internal `LanguageModel`
+// type so consumers depend on this module rather than directly on a specific
+// LangChain package during type-checking. Every provider module returns an
+// instance whose runtime class is a subclass of BaseChatModel (e.g.
+// ChatOpenAI, ChatAnthropic, AzureChatOpenAI, ChatOllama,
+// ChatGoogleGenerativeAI). All exposed via a uniform `.stream(messages,
+// options?)` and `.invoke(messages, options?)` surface.
+import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
+export type LanguageModel = BaseChatModel;
 
 export interface ProviderCreateInput {
     readonly config: ResolvedConfig;

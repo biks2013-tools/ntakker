@@ -1,10 +1,10 @@
-// src/llm/providers/openai.ts — OpenAI provider module.
+// src/llm/providers/openai.ts — Direct OpenAI provider module (LangChain).
 //
 // Required env: OPENAI_API_KEY
 // Optional env: OPENAI_BASE_URL, OPENAI_ORG_ID
-// Default model: gpt-4o-mini  (per docs/research/vercel-ai-sdk-v5-multiprovider.md §4)
+// Default model: gpt-4o-mini
 
-import { createOpenAI } from '@ai-sdk/openai';
+import { ChatOpenAI } from '@langchain/openai';
 
 import { ConfigError, type LanguageModel, type LlmProviderModule } from '../../types.js';
 import { resolveModel } from '../default-models.js';
@@ -23,15 +23,18 @@ export const openaiProvider: LlmProviderModule = {
 
         const baseURL = config.get('OPENAI_BASE_URL');
         const organization = config.get('OPENAI_ORG_ID');
-
-        const provider = createOpenAI({
-            apiKey,
-            ...(baseURL !== undefined && baseURL.length > 0 ? { baseURL } : {}),
-            ...(organization !== undefined && organization.length > 0 ? { organization } : {}),
-        });
-
         const modelId = resolveModel('openai', modelOverride, config);
-        return provider(modelId);
+
+        const configuration: { baseURL?: string; organization?: string } = {};
+        if (baseURL && baseURL.length > 0) configuration.baseURL = baseURL;
+        if (organization && organization.length > 0) configuration.organization = organization;
+
+        return new ChatOpenAI({
+            apiKey,
+            model: modelId,
+            ...(Object.keys(configuration).length > 0 ? { configuration } : {}),
+            streamUsage: true,
+        });
     },
 };
 
