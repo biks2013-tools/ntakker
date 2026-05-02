@@ -53,12 +53,31 @@ public actor SourceSplitTranscriptionManager: TranscriptionDispatcher {
     // MARK: - TranscriptionDispatcher
 
     public func start() async throws -> AsyncStream<TranscriptionEvent> {
-        // Phase C1 cut: bring up both children but return only the
-        // system stream. Phase C2 adds the actual merge so consumers
-        // see events from both children on a single stream.
-        let s = await systemManager.start()
-        _ = await microphoneManager.start()
-        return s
+        // Phase C2 — merge the two child streams into one so consumers
+        // see events from both system and microphone children on a
+        // single AsyncStream. Two forwarding tasks drain each child
+        // and yield into the merged continuation; the continuation
+        // finishes only after BOTH children's streams have ended
+        // (tracked by the actor-isolated finish counter).
+        let systemStream = await systemManager.start()
+        let microphoneStream = await microphoneManager.start()
+
+        return AsyncStream<TranscriptionEvent> { continuation in
+            let counter = SourceSplitMergeFinishCounter()
+
+            Task {
+                for await event in systemStream {
+                    continuation.yield(event)
+                }
+                if await counter.markFinished() { continuation.finish() }
+            }
+            Task {
+                for await event in microphoneStream {
+                    continuation.yield(event)
+                }
+                if await counter.markFinished() { continuation.finish() }
+            }
+        }
     }
 
     public func ingest(_ samples: [Float], from tag: SourceTag) async {
@@ -103,5 +122,17 @@ public actor SourceSplitTranscriptionManager: TranscriptionDispatcher {
 
     public func testInternalIngestCounts() -> IngestCounts {
         IngestCounts(system: systemIngestCount, microphone: microphoneIngestCount)
+    }
+}
+
+/// Tracks "both children have finished" state for the merge in
+/// `SourceSplitTranscriptionManager.start()`. Actor-isolated so the
+/// two forwarding tasks don't race on the boolean flip. Plan-012
+/// Phase C2.
+private actor SourceSplitMergeFinishCounter {
+    private var done = 0
+    func markFinished() -> Bool {
+        done += 1
+        return done >= 2
     }
 }
