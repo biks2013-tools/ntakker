@@ -33,6 +33,17 @@ struct SonioxSettingsView: View {
 
                 Divider().padding(.vertical, 4)
 
+                SettingsSectionHeader("Diarization")
+                SettingsToggleRow(
+                    label: String(localized: "Diarize speakers"),
+                    envVarName: "MACREC_SONIOX_DIARIZE",
+                    helpText: String(localized: "Tag each transcript segment with the Soniox-detected speaker (S1, S2, …). On by default; turn off for monologue recordings."),
+                    defaultValue: true
+                )
+                SettingsHelperText("Speaker labels appear in JSONL (raw 'spk:N'), TXT ([S1] prefix), SRT ('S1:' prefix), and VTT (<v S1>...</v>). Sidecar files for non-Soniox providers are unaffected.")
+
+                Divider().padding(.vertical, 4)
+
                 SettingsSectionHeader("Endpoint (regional)")
                 SettingsPickerRow(
                     label: String(localized: "WebSocket endpoint"),

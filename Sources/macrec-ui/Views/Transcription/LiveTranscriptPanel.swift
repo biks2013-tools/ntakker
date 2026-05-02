@@ -280,6 +280,21 @@ struct LiveTranscriptPanel: View {
                     .background(palette.chipBackground)
                     .cornerRadius(3)
             }
+            // Plan-012 Phase A8: speaker chip — rendered next to the
+            // language chip when the segment carries a non-nil
+            // speaker (currently only Soniox with diarization enabled).
+            // Uses SpeakerSidecarLabel for the display string so the
+            // chip and the sidecar files agree on the convention
+            // (e.g. "spk:1" → "S1").
+            if let speakerLabel = SpeakerSidecarLabel.label(for: segment.speaker) {
+                Text(speakerLabel)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(palette.secondary)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(palette.chipBackground)
+                    .cornerRadius(3)
+            }
             Text(segment.text)
                 .font(.system(size: 11))
                 .foregroundStyle(segment.isSettled ? palette.value : palette.secondary)
