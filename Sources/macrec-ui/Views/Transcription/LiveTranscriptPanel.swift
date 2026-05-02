@@ -51,6 +51,18 @@ struct LiveTranscriptPanel: View {
         LiveTranscriptionMode(rawValue: transcriptionModeRaw) ?? .single
     }
 
+    /// Persisted source picker (com.macrec.ui.transcribeSource) —
+    /// used by the Phase C6 three-way branch to switch into the
+    /// SourceSplitTranscriptView when single-mode + `.both` is
+    /// selected. Matches the same key used by ControlBar /
+    /// TranscriptionSourcePicker so they stay in sync.
+    @AppStorage("com.macrec.ui.transcribeSource")
+    private var transcribeSourceRaw: String = TranscriptionSource.mixed.rawValue
+
+    private var transcribeSource: TranscriptionSource {
+        TranscriptionSource(rawValue: transcribeSourceRaw) ?? .mixed
+    }
+
     /// Floor on the inner scroll-view height so even on a small
     /// popover there is room for two or three lines of transcript.
     /// The previous build had a fixed 200pt cap; the user reported
@@ -87,16 +99,75 @@ struct LiveTranscriptPanel: View {
     }
 
     var body: some View {
-        // Mode branch (plan-010 Lane L-9). The single-mode subtree
-        // below is BYTE-FOR-BYTE UNCHANGED from the pre-plan-010
-        // panel — see DT-INV. The dual-mode subtree is
-        // `DualLiveTranscriptView()` and lives in the same vertical
-        // slot (so the panel claims the same height in both modes).
-        if transcriptionMode == .dual {
-            dualBody
-        } else {
-            singleBody
+        // Three-way branch — plan-012 Phase C6.
+        //   * .dual         → existing dualBody (plan-010, byte-equiv).
+        //   * .sourceSplit  → NEW sourceSplitBody (single mode + .both).
+        //   * .single       → existing singleBody (DT-INV preserved
+        //                     for .system / .mic / .mixed).
+        let branch = LiveTranscriptPanelBranchSelector.branch(
+            mode: transcriptionMode,
+            source: transcribeSource
+        )
+        switch branch {
+        case .dual:        dualBody
+        case .sourceSplit: sourceSplitBody
+        case .single:      singleBody
         }
+    }
+
+    /// Source-split body — plan-012 Phase C6. Wraps the new
+    /// SourceSplitTranscriptView in the same chrome (Transcript
+    /// header, optional Clear button, status badge, error banner)
+    /// and outer .frame(...) modifier as singleBody so the panel
+    /// claims its vertical slot identically across all three modes.
+    private var sourceSplitBody: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text("Transcript")
+                    .font(.caption)
+                    .foregroundStyle(palette.secondary)
+                Spacer()
+                if !segments.isEmpty {
+                    Button {
+                        recordingController?.clearTranscriptSegments()
+                    } label: {
+                        Image(systemName: "trash")
+                            .imageScale(.small)
+                            .foregroundStyle(palette.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .help(String(localized: "Clear transcript (sidecar files are unaffected)"))
+                    .accessibilityLabel(String(localized: "Clear transcript"))
+                }
+                TranscriptionStatusBadge()
+            }
+            if let err = lastError {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(err)
+                        .font(.system(size: 10))
+                        .foregroundStyle(palette.secondary)
+                        .lineLimit(2)
+                }
+                .padding(.horizontal, 4)
+            }
+            SourceSplitTranscriptView()
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(palette.groupBackground)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(palette.groupStroke, lineWidth: 0.5)
+        )
+        .frame(
+            minHeight: Self.minBodyHeight,
+            maxHeight: .infinity,
+            alignment: .top
+        )
     }
 
     /// Dual-mode body — Lane L-9 entry point. Wraps
