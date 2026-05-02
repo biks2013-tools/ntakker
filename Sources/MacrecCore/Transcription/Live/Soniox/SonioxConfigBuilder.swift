@@ -16,7 +16,7 @@
 //   * enable_language_identification: true    (FR-SX-10)
 //   * enable_endpoint_detection:      true    (clean `<end>` markers)
 //   * max_endpoint_delay_ms:          2000    (clean finals over latency)
-//   * enable_speaker_diarization:     false   (out of v1 scope)
+//   * enable_speaker_diarization:     true    (plan-012 Phase A2 — opt-out)
 
 import Foundation
 
@@ -24,6 +24,13 @@ public enum SonioxConfigBuilder {
 
     /// Real-time STT model id used by `macrec` v1.
     public static let defaultModel = "stt-rt-v4"
+
+    /// Default value for `enable_speaker_diarization`. Flipped to
+    /// `true` by plan-012 Phase A2 — the user asked for diarization
+    /// support and the field is now opt-out via
+    /// `MACREC_SONIOX_DIARIZE=false` (CLI: `--soniox-diarize false`,
+    /// UI: `com.macrec.ui.sonioxDiarize`).
+    public static let defaultDiarize: Bool = true
 
     /// Build a `SonioxConfigMessage` populated with `macrec` v1 defaults.
     /// The caller supplies the API key, language hints (already
@@ -33,6 +40,7 @@ public enum SonioxConfigBuilder {
         apiKey: String,
         model: String = defaultModel,
         languageHints: [String],
+        diarize: Bool = SonioxConfigBuilder.defaultDiarize,
         clientReferenceId: String? = nil
     ) -> SonioxConfigMessage {
         return SonioxConfigMessage(
@@ -46,7 +54,7 @@ public enum SonioxConfigBuilder {
             enableLanguageIdentification: true,
             enableEndpointDetection: true,
             maxEndpointDelayMs: 2_000,
-            enableSpeakerDiarization: false,
+            enableSpeakerDiarization: diarize,
             context: nil,
             clientReferenceId: clientReferenceId,
             keepaliveIntervalMs: nil
