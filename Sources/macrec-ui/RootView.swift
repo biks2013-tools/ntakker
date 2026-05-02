@@ -25,7 +25,10 @@
 // Unit E preserves every existing `@AppStorage` declaration even when
 // the new layout no longer reads from it (UR-ADR-10):
 //   * `transcriptionExpanded` and `recordingSettingsExpanded` are
-//     orphaned but retained so a downgrade to v1.5 still finds them.
+//     re-activated 2026-05-02 to drive the new collapsibility of the
+//     General + Live Transcription sections (chevron + tap-to-toggle).
+//     Default `true` preserves the post-plan-008 default of "both
+//     sections expanded" so an existing user sees no change on upgrade.
 //   * `transcribeProvider` and `privacyAcknowledged` continue to drive
 //     the cloud-provider privacy disclosure flow.
 //
@@ -35,6 +38,7 @@
 // `RecordingController` is itself `@MainActor`-isolated so any reads
 // here are safe.
 
+import AppKit
 import MacrecCore
 import MacrecUIKit
 import SwiftUI
@@ -83,15 +87,19 @@ struct RootView: View {
     /// concern).
     @State private var dualModeDisclosureProvider: String? = nil
 
-    /// Orphan-but-retained per UR-ADR-10. The new layout no longer
-    /// reads this slot; the keys remain in `UserDefaults` so a
-    /// downgrade to v1.5 finds them.
+    /// Whether the Live Transcription section body is expanded.
+    /// Re-activated 2026-05-02 — the section header now exposes a
+    /// chevron + tap-to-toggle that drives this binding. Default `true`
+    /// preserves the post-plan-008 default of "both sections expanded"
+    /// for users upgrading from a build that ignored the slot.
     @AppStorage("com.macrec.ui.transcriptionExpanded")
-    private var transcriptionExpanded: Bool = false
+    private var transcriptionExpanded: Bool = true
 
-    /// Orphan-but-retained per UR-ADR-10 (see above).
+    /// Whether the General section body is expanded. Same lifecycle
+    /// notes as `transcriptionExpanded` above — re-activated to drive
+    /// the new collapsibility, default `true` to preserve UX.
     @AppStorage("com.macrec.ui.recordingSettingsExpanded")
-    private var recordingSettingsExpanded: Bool = false
+    private var recordingSettingsExpanded: Bool = true
 
     /// Master enable/disable for live transcription (UR-ADR-7). Mirrored
     /// here from `ControlBar.swift` (Unit I declared the slot) +
@@ -150,6 +158,24 @@ struct RootView: View {
                     }
                     .buttonStyle(.borderless)
                     .help(String(localized: "Open Settings (⌘,) — manage cloud-provider API keys and tuning"))
+                    // Quit button (added 2026-05-02). Routes through
+                    // `NSApp.terminate(_:)` so AppKit calls
+                    // `applicationShouldTerminate(_:)`, which delegates
+                    // to the existing `QuitFlow` (project-design §15.11)
+                    // and presents the "Stop & Quit?" confirmation alert
+                    // when a recording is in flight. Idle state quits
+                    // immediately.
+                    Button {
+                        NSApp.terminate(nil)
+                    } label: {
+                        Image(systemName: "power")
+                            .imageScale(.medium)
+                            .foregroundStyle(palette.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .keyboardShortcut("q", modifiers: .command)
+                    .help(String(localized: "Quit macrec-ui (⌘Q) — confirms before stopping an active recording"))
+                    .accessibilityLabel(String(localized: "Quit"))
                 }
             }
             .padding(.horizontal, 14)
@@ -163,7 +189,10 @@ struct RootView: View {
             // as the sole claimer of residual vertical space (§UR-5).
             VStack(alignment: .leading, spacing: 14) {
                 // -- General section --
-                PopoverSection(title: "General") {
+                PopoverSection(
+                    title: "General",
+                    isExpanded: $recordingSettingsExpanded
+                ) {
                     Form {
                         GeneralSection()
                     }
@@ -175,7 +204,12 @@ struct RootView: View {
 
                 // -- Live Transcription section --
                 PopoverSection(
-                    header: { LiveTranscriptionSectionHeader() }
+                    isExpanded: $transcriptionExpanded,
+                    header: {
+                        LiveTranscriptionSectionHeader(
+                            isExpanded: $transcriptionExpanded
+                        )
+                    }
                 ) {
                     Form {
                         LiveTranscriptionSection()

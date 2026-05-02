@@ -85,8 +85,92 @@ macOS dual-source audio recorder: captures system audio (via `ScreenCaptureKit`)
 
 Documentation: [docs/tools/macrec.md](docs/tools/macrec.md)
 
+#### Build & run the CLI
+
+`macrec` is a SwiftPM `executableTarget` (no `.app` wrapper — it's a plain CLI). Quick paths:
+
+```sh
+# 1. Quickest dev iteration — debug build, runs attached to terminal.
+swift run macrec --help
+swift run macrec list-devices
+swift run macrec start --output ~/Recordings/test.m4a
+
+# 2. Release build — produces .build/release/macrec.
+swift build -c release --product macrec
+.build/release/macrec --help
+
+# 3. Stop a detached recording (paired with `start --detach`).
+swift run macrec stop
+```
+
+To make `macrec` available system-wide as a normal CLI on `PATH`:
+
+```sh
+swift build -c release --product macrec
+sudo cp .build/release/macrec /usr/local/bin/macrec
+macrec --help
+```
+
+`/usr/local/bin` is on the default `zsh` `PATH`. If you prefer a non-`sudo` location, copy to `~/.local/bin` (or any directory on your `PATH`) instead.
+
+Notes:
+
+- TCC: the CLI inherits Microphone + Screen Recording grants attached to the parent terminal binary (Terminal.app, iTerm, etc.). On first run macOS will pop the two prompts; click Allow. Apple Cloud Speech Recognition (`--transcribe apple-cloud` / `dual`) does **not** work from the raw CLI — it only works from the bundled `macrec-ui.app` (see the `macrec-ui` section below).
+- Provider API keys (Gemini, Soniox, Azure, ElevenLabs) are read from environment variables, then `~/.tool-agents/macrec/.env`, then the local `.env`, then CLI flags. See `docs/tools/macrec.md` for the full resolution chain.
+
 ### macrec-ui
 
 macOS menu-bar status item app for the `macrec` audio recorder. Provides a popover toolbar to start, pause, resume, stop, and split recordings, with elapsed-time, format/layout/folder/mic selectors, permission status, and per-source level meters; drives `MacrecCore` in-process and ships under a separate bundle id (`com.local.macrec-ui`) so its TCC grants are independent of the CLI's. The popover also exposes opt-in live transcription (None / Gemini Live picker, source picker, sidecar-format picker, inline live-transcript panel, one-time privacy-disclosure dialog, and per-recording cost / latency display) plus a Single/Dual mode switch (plan-010) that surfaces a per-channel locale / format / metrics panel and a stacked dual-lane live-transcript display when Dual is active.
 
 Documentation: [docs/tools/macrec-ui.md](docs/tools/macrec-ui.md)
+
+#### Build & run as a typical macOS app
+
+The recommended way to run `macrec-ui` like a normal Mac app (Dock / Spotlight visibility, Apple Cloud Speech Recognition prompt, persistent TCC grants under bundle id `com.local.macrec-ui`) is to package it as an `.app` bundle and `open` it.
+
+```sh
+# 1. Build a release bundle at dist/macrec-ui.app (ad-hoc signed).
+bash scripts/package-macrec-ui-app.sh
+
+# 2. Launch it like any other Mac app.
+open dist/macrec-ui.app
+```
+
+The packaging script runs `swift build -c release --product macrec-ui`, assembles `dist/macrec-ui.app/Contents/{Info.plist, MacOS/macrec-ui, Resources/, _CodeSignature/}` from the canonical `Resources/MacrecUI-Info.plist`, and ad-hoc codesigns the bundle. Useful overrides:
+
+- `SWIFT_CONFIG=debug bash scripts/package-macrec-ui-app.sh` — faster debug build during iteration.
+- `CODESIGN_IDENTITY="Developer ID Application: …" bash scripts/package-macrec-ui-app.sh` — sign with a real identity instead of ad-hoc.
+- `pkill -f '\.build/.*macrec-ui' || true` — kill any stale raw-CLI instance before relaunching the bundled app (TCC sometimes refuses to re-prompt while the older PID is alive).
+
+For quick dev iteration (no Apple Cloud STT, no Dock entry):
+
+```sh
+swift run macrec-ui                                   # debug, attached to terminal
+swift build -c release && .build/release/macrec-ui    # release, raw binary
+```
+
+#### Deploying to /Applications
+
+Once `dist/macrec-ui.app` builds cleanly, install it system-wide so it survives `swift build` cleans and can be launched from Spotlight or set to "Open at Login":
+
+```sh
+# Stop any running instance first so the move doesn't overwrite a live binary.
+pkill -x macrec-ui || true
+
+# Replace any previous install and copy the freshly built bundle.
+rm -rf "/Applications/macrec-ui.app"
+cp -R dist/macrec-ui.app "/Applications/macrec-ui.app"
+
+# Optional: clear quarantine flags Finder may have set after the copy.
+xattr -dr com.apple.quarantine "/Applications/macrec-ui.app" || true
+
+# Launch from its installed location.
+open "/Applications/macrec-ui.app"
+```
+
+To start it automatically at login, open **System Settings → General → Login Items → Open at Login**, click `+`, and add `/Applications/macrec-ui.app`.
+
+Notes:
+
+- The bundle id (`com.local.macrec-ui`) is identical between `dist/…` and `/Applications/…`, so existing Microphone, Screen Recording, and Speech Recognition TCC grants carry over — no need to re-approve permissions after deploying.
+- After upgrading the bundle in `/Applications`, relaunch the menu-bar icon (quit via the popover's Quit action, then `open` again). macOS does not auto-restart it.
