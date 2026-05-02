@@ -11958,3 +11958,1066 @@ cannot modify these without coordinating):**
 - Issues file: `Issues - Pending Items.md` (per-lane PLAN-010-PENDING-*
   entries during Phase 6; Completed entries on merge).
 
+
+
+---
+
+## convo-coach — TypeScript CLI for live conversation coaching (plan-011)
+
+> **Status:** DESIGN COMPLETE / IMPLEMENTATION PENDING (Phase 5 of plan-011 workflow).
+> **Owner of this section:** Designer (Phase 5).
+> **Source documents (must be read before any implementation):**
+> - `docs/design/refined-request-convo-coach.md` (16 ACs / 15 FRs / 8 NFRs / 8 ODs).
+> - `docs/design/plan-011-convo-coach.md` (the canonical 8-phase / 11-unit plan; THIS DESIGN MUST ALIGN WITH IT).
+> - `docs/reference/investigation-convo-coach.md` (recommends Vercel AI SDK + ports of dual-transcript-merger patterns).
+> - `docs/research/vercel-ai-sdk-v5-multiprovider.md` (eight-provider matrix, `streamText` API, gotchas).
+> - `docs/reference/codebase-scan-convo-coach.md` (TS precedent in `tools/dual-transcript-merger/`; macrec JSONL schema).
+> - `tools/dual-transcript-merger/src/{cli.ts,config.ts,parser.ts,types.ts}` — verbatim port targets.
+>
+> **Pre-baked decisions inherited from plan-011 §0** (D1..D10) and **§0.5** open
+> items (OI-A=YES, OI-B=string-constant, OI-C=YES) are applied as design inputs.
+> They are NOT re-litigated here.
+
+### CC-DSGN-1 — Goal of this design
+
+Provide enough detail that the four **P3 parallel coder agents** (U4, U6, U8, U9)
+plus the four sequential coder agents (U1, U2, U5, U7, U3, U10, U11) can implement
+their units without further coordination. Every interface boundary between units
+is defined here as a stable TypeScript signature so independent implementations
+can compile and unit-test against `src/types.ts` from day one.
+
+### CC-DSGN-2 — System architecture / data flow
+
+```
+┌───────────────────────────────────────────────────────────────────────────────────┐
+│                              CLI BOUNDARY (cli.ts, U3)                             │
+│  argv → parseArgs() → CliArgs                                                      │
+└───────────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌───────────────────────────────────────────────────────────────────────────────────┐
+│        CONFIG LAYERING CHAIN (config.ts, U2 — ports merger config.ts)              │
+│                                                                                    │
+│   tier 1: process.env                                                              │
+│   tier 2: ~/.tool-agents/convo-coach/.env       (mode 0700 dir / 0600 file)        │
+│   tier 3: <cwd>/.env                                                               │
+│   tier 4: CliArgs (applied after resolveDefaults())                                │
+│                                                                                    │
+│   → ResolvedConfig { all eight provider env vars + MACREC_RECORDINGS_DIR +         │
+│                       CONVO_COACH_* internal knobs + provenance map }              │
+└───────────────────────────────────────────────────────────────────────────────────┘
+              │                                                  │
+              │ feeds                                            │ feeds
+              ▼                                                  ▼
+┌──────────────────────────────────────┐        ┌──────────────────────────────────┐
+│  TRANSCRIPT-SOURCE RESOLVER (U3)     │        │  LLM-PROVIDER FACTORY (U6)        │
+│                                      │        │                                  │
+│  if (!stdin.isTTY) → stdin           │        │  switch (provider) {              │
+│  else if --transcript → file         │        │    'openai' → createOpenAI(...)   │
+│  else → autodetect (U5)              │        │    'anthropic' → ...              │
+│                                      │        │    ...                           │
+│                                      │        │  } → LanguageModel               │
+└──────────────────────────────────────┘        └──────────────────────────────────┘
+              │                                                  │
+              ▼                                                  │
+┌──────────────────────────────────────┐                         │
+│  TRANSCRIPT INPUT (U4 + U5)          │                         │
+│                                      │                         │
+│  reader.ts dispatch:                 │                         │
+│    file  → fs.createReadStream       │                         │
+│            + readline                 │                         │
+│    stdin → readline + /dev/tty       │                         │
+│            + debounce fallback        │                         │
+│    auto  → autodetect.findNewest()   │                         │
+│                                      │                         │
+│  per-format parser:                  │                         │
+│    jsonl.ts │ txt.ts │ srt.ts │ vtt  │                         │
+│                                      │                         │
+│  → AsyncIterable<NormalisedRecord>   │                         │
+└──────────────────────────────────────┘                         │
+              │                                                  │
+              ▼                                                  │
+┌──────────────────────────────────────┐                         │
+│  WINDOW SLICER (U4 — window.ts)       │                         │
+│                                      │                         │
+│  applyWindow(records, {              │                         │
+│    last?: Duration,                  │                         │
+│    since?: Date,                     │                         │
+│    transcriptEnd: Date }) →          │                         │
+│  NormalisedRecord[]                  │                         │
+│                                      │                         │
+│  later boundary wins; absent → all   │                         │
+└──────────────────────────────────────┘                         │
+              │                                                  │
+              ▼                                                  │
+┌──────────────────────────────────────┐                         │
+│  PROMPT BUILDER (U8 — prompt/build)  │                         │
+│                                      │                         │
+│  buildSystemPrompt({ override? })     │                         │
+│  buildUserMessage(records, {          │                         │
+│    languageHint? }) →                 │                         │
+│  BuiltPrompt {                        │                         │
+│    system, user, estimatedTokens     │                         │
+│  }                                   │                         │
+└──────────────────────────────────────┘                         │
+              │                                                  │
+              ▼                                                  │
+┌──────────────────────────────────────┐                         │
+│  TOKEN-BUDGET GUARD (U9 — budget)    │                         │
+│                                      │                         │
+│  applyBudget(records, system,        │                         │
+│    scaffolding, modelId, strategy)   │                         │
+│  → { kept, dropped }                 │                         │
+│                                      │                         │
+│  truncate-start | truncate-end |     │                         │
+│  error                               │                         │
+└──────────────────────────────────────┘                         │
+              │                                                  │
+              ▼                                                  ▼
+              ┌──────────────────────────────────────────────────┐
+              │   STREAMING ORCHESTRATOR (U7 — output/stream)    │
+              │                                                  │
+              │   const r = streamText({ model, system, prompt})│
+              │   for await (const delta of r.textStream) {     │
+              │     stdoutSink.write(delta)                     │
+              │     sidecarSink.write(delta)                    │
+              │   }                                             │
+              │   await r.usage → finaliseMetrics()             │
+              └──────────────────────────────────────────────────┘
+                            │                       │
+                            ▼                       ▼
+                ┌──────────────────────┐   ┌──────────────────────────────┐
+                │ stdout (unbuffered)  │   │ sidecar (output/sidecar.ts)  │
+                │ process.stdout.write │   │                              │
+                │                      │   │ <basename>.advice-           │
+                │                      │   │   <YYYYMMDD-HHMMSS>[-n].md   │
+                │                      │   │ YAML front-matter +          │
+                │                      │   │ ## Advice (streamed body) +  │
+                │                      │   │ ## Metrics (finalised)       │
+                └──────────────────────┘   └──────────────────────────────┘
+```
+
+### CC-DSGN-3 — Module organization (definitive file tree)
+
+```
+tools/convo-coach/
+├── package.json                      (U1 — bin maps convo-coach → dist/cli.js)
+├── tsconfig.json                     (U1 — copy verbatim from merger)
+├── .gitignore                        (U1 — node_modules/, dist/, *.log, .env)
+├── README.md                         (U1 — pointer to docs/tools/convo-coach.md)
+├── package-lock.json                 (U1 — generated; committed per R10)
+├── src/
+│   ├── types.ts                      (U1 — central type definitions; see §CC-DSGN-5)
+│   ├── errors.ts                     (U2 — ConvoCoachError + EXIT_CODES)
+│   ├── log.ts                        (U2 — quiet|info|debug; redactSecrets())
+│   ├── config.ts                     (U2 — four-tier resolver, port of merger)
+│   ├── cli.ts                        (U3 — #!/usr/bin/env node; parseArgs)
+│   ├── index.ts                      (U3 — orchestration: run(args, cfg))
+│   ├── transcript/
+│   │   ├── reader.ts                 (U4 — readFromFile / readFromStdin dispatcher)
+│   │   ├── jsonl.ts                  (U4 — parseLine + parseStream; single + dual)
+│   │   ├── txt.ts                    (U4 — [HH:MM:SS.mmm] [LANG?] text parser)
+│   │   ├── srt.ts                    (U4 — SRT cues + EN: prefix → channel)
+│   │   ├── vtt.ts                    (U4 — VTT cues + <v EN>...</v> → channel)
+│   │   ├── duration.ts               (U4 — parseDuration regex)
+│   │   ├── window.ts                 (U4 — applyWindow + parseSinceTimestamp)
+│   │   ├── autodetect.ts             (U5 — newest *.transcript.* in MACREC_RECORDINGS_DIR)
+│   │   └── stdin.ts                  (U5 — /dev/tty Enter + --debounce fallback)
+│   ├── llm/
+│   │   ├── factory.ts                (U6 — createProviderModel(provider, modelId, cfg))
+│   │   ├── default-models.ts         (U6 — DEFAULT_MODEL_IDS per D4)
+│   │   ├── budget.ts                 (U9 — estimateTokens + applyBudget)
+│   │   ├── model-context-windows.ts  (U9 — static map)
+│   │   └── providers/
+│   │       ├── openai.ts             (U6)
+│   │       ├── anthropic.ts          (U6)
+│   │       ├── google.ts             (U6)
+│   │       ├── azure-openai.ts       (U6 — includes deriveResourceName())
+│   │       ├── azure-ai-inference.ts (U6 — createOpenAICompatible /openai/v1)
+│   │       ├── ollama.ts             (U6 — apiKey:'ollama')
+│   │       ├── litellm.ts            (U6)
+│   │       └── mlx.ts                (U6 — reuses OPENAI_BASE_URL)
+│   ├── prompt/
+│   │   └── build.ts                  (U8 — buildSystemPrompt + buildUserMessage;
+│   │                                       DEFAULT_SYSTEM_PROMPT string constant per OI-B)
+│   └── output/
+│       ├── stream.ts                 (U7 — runStreaming({ model, prompt, sinks }))
+│       └── sidecar.ts                (U7 — uniqueSidecarPath, openSidecar,
+│                                            writeFrontMatter, finaliseMetrics,
+│                                            writeErrorFooter)
+├── test/                             (U11 — node --test --import tsx test/*.test.ts)
+│   ├── config.test.ts
+│   ├── duration.test.ts
+│   ├── window.test.ts
+│   ├── jsonl.test.ts
+│   ├── txt.test.ts
+│   ├── srt.test.ts
+│   ├── vtt.test.ts
+│   ├── autodetect.test.ts
+│   ├── stdin.test.ts
+│   ├── budget.test.ts
+│   ├── factory.test.ts
+│   ├── prompt.test.ts
+│   ├── sidecar.test.ts
+│   ├── stream.test.ts
+│   ├── logging.test.ts
+│   ├── e2e.test.ts
+│   └── fixtures/
+│       ├── single-channel.transcript.jsonl
+│       ├── dual-channel.transcript.jsonl
+│       ├── plain.transcript.txt
+│       ├── plain.transcript.srt
+│       ├── plain.transcript.vtt
+│       └── system-prompts/
+│           └── coach.md
+└── dist/                             (gitignored; tsc output; chmod +x cli.js by postbuild)
+```
+
+> The file `docs/tools/convo-coach.md` and the directory
+> `~/.tool-agents/convo-coach/` are scaffolded **out-of-band** by
+> `/tool-conventions scaffold convo-coach` (P0). The implementation phases NEVER
+> hand-roll either of them. U10 finalises the doc body after the implementation
+> stabilises.
+
+### CC-DSGN-4 — Technology choices (consolidated; rationale cited, not re-derived)
+
+| Choice | Decision | Pinned version (initial; lock after `npm install`) | Citation |
+|---|---|---|---|
+| LLM SDK | Vercel AI SDK | `ai@^6.0.0` | investigation §Q1 verdict; plan-011 D1 |
+| OpenAI provider | `@ai-sdk/openai` | `^3.0.55` | sdk research §Provider Matrix |
+| Anthropic provider | `@ai-sdk/anthropic` | `^3.0.74` | sdk research §Provider Matrix |
+| Google provider | `@ai-sdk/google` | `^3.0.64` | sdk research §Provider Matrix |
+| Azure OpenAI provider | `@ai-sdk/azure` | `^3.0.59` | plan-011 D2 |
+| OpenAI-compatible adapter | `@ai-sdk/openai-compatible` | `^2.0.41` | plan-011 D2/D3 (covers Azure AI Inference, Ollama, LiteLLM, MLX-LM) |
+| Token estimation (OpenAI-family) | `js-tiktoken` | `^1.0.0` | investigation §Q6; plan-011 D10 |
+| TypeScript runtime for tests | `tsx` | `^4.19.0` (dev) | merger precedent |
+| Test runner | Node built-in `node --test` | (Node ≥20) | merger precedent; plan-011 D8 |
+| `@types/node` | `^22.0.0` (dev) | merger precedent |
+| TypeScript | `typescript` `^5.6.0` (dev) | merger precedent |
+| CLI parser | hand-rolled `parseArgs` | (no package) | investigation §Q2 verdict; plan-011 D9 |
+| `.env` parser | hand-rolled `parseDotEnv` | (no package) | investigation §Q3 verdict; ports merger |
+| HTTP client | Node built-in `fetch` (used by AI SDK internally) | n/a | constraint C-11 |
+
+> **Pinning policy** (from plan-011 §U1): caret ranges in `package.json` for
+> Phase 8 dependency validator; convert to exact versions and commit
+> `package-lock.json` after the validator's `npm install` completes cleanly.
+
+### CC-DSGN-5 — Central type module (`src/types.ts`) — INTERFACE CONTRACT
+
+This file is created in **U1 (skeleton)** so every parallel unit in P3 can
+import from it from day one. NO unit may add types here unilaterally — extend
+this file via PR-style amendments to the design.
+
+```typescript
+// src/types.ts — single source of truth for cross-module type contracts.
+
+// =====================================================================
+// CONFIGURATION (U2)
+// =====================================================================
+
+/** All recognised env-var keys carried in ResolvedConfig.values. */
+export type ConfigKey =
+  | 'OPENAI_API_KEY' | 'OPENAI_BASE_URL' | 'OPENAI_ORG_ID'
+  | 'ANTHROPIC_API_KEY' | 'ANTHROPIC_BASE_URL'
+  | 'GOOGLE_API_KEY' | 'GEMINI_API_KEY'
+  | 'AZURE_OPENAI_API_KEY' | 'AZURE_OPENAI_ENDPOINT'
+  | 'AZURE_OPENAI_DEPLOYMENT' | 'AZURE_OPENAI_API_VERSION'
+  | 'AZURE_AI_INFERENCE_KEY' | 'AZURE_AI_INFERENCE_ENDPOINT'
+  | 'OLLAMA_HOST'
+  | 'LITELLM_PROXY_URL' | 'LITELLM_MASTER_KEY'
+  | 'MACREC_RECORDINGS_DIR'
+  | 'CONVO_COACH_PROVIDER' | 'CONVO_COACH_MODEL'
+  | 'CONVO_COACH_LOG_LEVEL' | 'CONVO_COACH_DEBOUNCE';
+
+export type ProvenanceTier =
+  | 'process.env'
+  | '~/.tool-agents/convo-coach/.env'
+  | './.env'
+  | 'cli'
+  | 'built-in default'
+  | 'unset';
+
+/** Result of the four-tier chain (CLI tier already merged). */
+export interface ResolvedConfig {
+  /** Sparse map: key may be absent (undefined) when no tier set it. */
+  readonly values: Readonly<Partial<Record<ConfigKey, string>>>;
+  /** Where every CONFIGURED key was resolved from. Unset keys carry 'unset'. */
+  readonly provenance: Readonly<Record<ConfigKey, ProvenanceTier>>;
+}
+
+// =====================================================================
+// CLI (U3)
+// =====================================================================
+
+export type ProviderName =
+  | 'openai' | 'anthropic' | 'gemini'
+  | 'azure-openai' | 'azure-ai-inference'
+  | 'ollama' | 'litellm' | 'mlx';
+
+export type OverflowStrategy = 'truncate-start' | 'truncate-end' | 'error';
+export type LogLevel = 'quiet' | 'info' | 'debug';
+
+export interface CliArgs {
+  // --- input mode ---
+  readonly transcript?: string;       // --transcript <path>
+  readonly adviceOut?: string;        // --advice-out <dir>      (stdin mode)
+  readonly adviceBasename?: string;   // --advice-basename <stem> (stdin mode)
+  // --- window ---
+  readonly last?: string;             // --last <duration>  raw, parse later
+  readonly since?: string;            // --since <ts>       raw, parse later
+  // --- LLM ---
+  readonly provider?: ProviderName;   // --provider <name>
+  readonly model?: string;            // --model <id>
+  readonly systemPrompt?: string;     // --system-prompt <path>
+  readonly language?: string;         // --language <bcp-47>
+  readonly onOverflow?: OverflowStrategy;
+  // --- stdin ---
+  readonly debounce?: string;         // --debounce <duration>
+  // --- meta ---
+  readonly logLevel?: LogLevel;
+  readonly showConfig: boolean;
+  readonly help: boolean;
+  readonly version: boolean;
+}
+
+// =====================================================================
+// TRANSCRIPT (U4)
+// =====================================================================
+
+/**
+ * Normalised transcript record. The same shape is produced by all four
+ * format parsers (jsonl/txt/srt/vtt). Channel may be present in dual-channel
+ * inputs only; source is mainly emitted by single-channel macrec JSONL.
+ */
+export interface NormalisedRecord {
+  /** Wall-clock UTC milliseconds of segment START. */
+  readonly startMs: number;
+  /** Wall-clock UTC milliseconds of segment END (= startMs when duration unknown). */
+  readonly endMs: number;
+  readonly text: string;
+  readonly source?: 'system' | 'mic' | 'mixed';
+  /** Dual-channel only: 'A' = on-device (Apple), 'B' = cloud (Apple Cloud / other). */
+  readonly channel?: 'A' | 'B';
+  /** BCP-47, e.g. 'en-US'. */
+  readonly language?: string;
+  /** Provider-reported model id (e.g. 'apple', 'apple-cloud', 'gemini'). */
+  readonly model?: string;
+  /** Verbatim record id from JSONL when present (used for tombstone correlation only). */
+  readonly id?: string;
+  /** Unknown JSON keys are preserved here so future macrec additions never
+   *  break this parser. Per plan-011 R9. */
+  readonly extras: Readonly<Record<string, unknown>>;
+}
+
+/** Window passed to the slicer. transcriptEnd is "now" for finite files;
+ *  for stdin mode the orchestrator passes wall-clock at trigger time. */
+export interface WindowFilter {
+  readonly last?: number;     // milliseconds (parsed from --last)
+  readonly since?: Date;      // resolved Date (parsed from --since)
+  readonly transcriptEnd: Date;
+}
+
+/** Result of duration.ts parsing. Number of milliseconds. */
+export type DurationMs = number;
+
+// =====================================================================
+// PROMPT (U8)
+// =====================================================================
+
+export interface BuildPromptOptions {
+  /** Override the built-in DEFAULT_SYSTEM_PROMPT (file contents from --system-prompt). */
+  readonly systemPromptOverride?: string;
+  /** BCP-47 language hint appended to user message (--language). */
+  readonly languageHint?: string;
+}
+
+export interface BuiltPrompt {
+  readonly system: string;
+  readonly user: string;
+  /** Pre-budget token estimate (the budget guard recomputes after slicing). */
+  readonly estimatedTokens: number;
+}
+
+// =====================================================================
+// LLM PROVIDER (U6)
+// =====================================================================
+
+// IMPORTANT: import the *type* from 'ai' so consumers don't depend on the
+// runtime SDK during type-checking of unrelated units. Use the CURRENT v6
+// import path. If the v5/v6 type alias diverges between minor versions,
+// adjust here and the rest of the codebase recompiles consistently.
+//
+// Pinned import path: `import type { LanguageModel } from 'ai';` — verified
+// against ai@6.0.x. (`LanguageModelV2` is the underlying interface; v5/v6
+// re-export it as `LanguageModel`.)
+import type { LanguageModel } from 'ai';
+export type { LanguageModel };
+
+/**
+ * Inputs every provider module receives. Provider modules MUST validate
+ * required keys themselves and throw ConvoCoachError('MISSING_CONFIG', ...)
+ * with the env-var name on absence (per FR-CC-10).
+ */
+export interface ProviderCreateInput {
+  readonly cfg: ResolvedConfig;
+  /** The resolved model id. The factory always passes a non-empty string;
+   *  it pre-applies the per-provider default from default-models.ts when
+   *  --model and CONVO_COACH_MODEL are both absent (and the provider has
+   *  a default). For litellm/mlx with no --model, the factory throws
+   *  BAD_USAGE BEFORE calling create(). */
+  readonly modelId: string;
+}
+
+/** Every src/llm/providers/*.ts file MUST default-export an object of this shape. */
+export interface LlmProviderModule {
+  /** Default model id for this provider when --model is not passed.
+   *  null means "no default; --model is required" (litellm, mlx). */
+  readonly defaultModel: string | null;
+  /** Build a streamable LanguageModel from cfg + modelId. Throws on missing keys. */
+  create(input: ProviderCreateInput): LanguageModel;
+}
+
+// =====================================================================
+// OUTPUT (U7)
+// =====================================================================
+
+/**
+ * Sink abstraction so the streaming loop can write the same delta to
+ * multiple destinations (stdout + sidecar) without each sink owning its
+ * own iteration. Both sinks consume the SAME deltas from result.textStream.
+ *
+ * Implementations:
+ *   - StdoutSink:   process.stdout.write(delta) — unbuffered (R7).
+ *   - SidecarSink:  appendable WriteStream over the .partial file.
+ */
+export interface StreamSink {
+  /** Write one delta synchronously (no backpressure handling required —
+   *  process.stdout.write is non-blocking; sidecar fs.WriteStream buffers
+   *  internally). */
+  write(delta: string): void;
+  /** Optional finaliser called once after the stream loop ends successfully. */
+  end?(): Promise<void> | void;
+  /** Optional error handler called when the stream loop throws.
+   *  Implementations MAY append an error footer; the orchestrator still
+   *  re-throws afterward. */
+  onError?(err: unknown): Promise<void> | void;
+}
+
+/** Front-matter values written at sidecar open time. Updated in finaliseMetrics(). */
+export interface SidecarFrontMatter {
+  readonly provider: ProviderName;
+  readonly model: string;
+  readonly transcriptSource: string;
+  readonly window: {
+    readonly last: string | null;
+    readonly since: string | null;
+    readonly resolvedStart: string;   // ISO-8601
+    readonly resolvedEnd: string;     // ISO-8601
+  };
+  readonly segments: number;
+  readonly droppedSegments: number;
+  readonly channelLabels: Readonly<Record<'A' | 'B', string>>;
+  readonly startedAt: string;         // ISO-8601
+  // Filled at end:
+  readonly ttftMs: number | null;
+  readonly elapsedMs: number | null;
+  readonly inputTokens: number | null;
+  readonly outputTokens: number | null;
+  readonly totalTokens: number | null;
+}
+
+// =====================================================================
+// ERRORS (U2)
+// =====================================================================
+
+export type ConvoCoachErrorCode =
+  | 'BAD_USAGE'              // exit 64  (EX_USAGE)
+  | 'NO_INPUT'               // exit 66  (EX_NOINPUT)
+  | 'PROVIDER_FAILURE'       // exit 70  (EX_SOFTWARE)
+  | 'MISSING_CONFIG'         // exit 78  (EX_CONFIG)
+  | 'GENERIC';               // exit 1
+
+export class ConvoCoachError extends Error {
+  constructor(
+    public readonly code: ConvoCoachErrorCode,
+    message: string,
+    public readonly details?: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = 'ConvoCoachError';
+  }
+}
+
+export const EXIT_CODES: Readonly<Record<ConvoCoachErrorCode, number>> = Object.freeze({
+  BAD_USAGE: 64,
+  NO_INPUT: 66,
+  PROVIDER_FAILURE: 70,
+  MISSING_CONFIG: 78,
+  GENERIC: 1,
+});
+```
+
+### CC-DSGN-6 — Per-module interface contracts (signatures)
+
+Each parallel unit implements against these signatures. The design fixes the
+exported names and their type signatures; the bodies are the unit owner's
+problem.
+
+#### `src/config.ts` (U2)
+
+```typescript
+import type { CliArgs, ResolvedConfig, ConfigKey } from './types.js';
+
+/** Tiers 1+2+3. CLI tier (4) is layered on by applyCliOverrides(). */
+export function resolveDefaults(cwd?: string): ResolvedConfig;
+
+/** Returns a NEW ResolvedConfig with CLI flags promoted to highest priority. */
+export function applyCliOverrides(base: ResolvedConfig, cli: CliArgs): ResolvedConfig;
+
+/** Required-key assertion helper. Throws ConvoCoachError('MISSING_CONFIG', ...).
+ *  The message lists the env-var name AND the four resolution tiers inspected. */
+export function requireKey(cfg: ResolvedConfig, key: ConfigKey): string;
+
+/** Strip trailing slash; used by URL-shaped values per plan-011 R3. */
+export function stripTrailingSlash(s: string): string;
+```
+
+`resolveDefaults` reads tiers 1→3 in order, validates each value (provider
+name in `CONVO_COACH_PROVIDER` must be one of the 8; log level must be
+`quiet|info|debug`; durations must parse via `parseDuration`). The
+`GEMINI_API_KEY → GOOGLE_API_KEY` alias copy happens here (D6) with
+provenance set to the alias source.
+
+#### `src/cli.ts` (U3)
+
+```typescript
+import type { CliArgs } from './types.js';
+
+/** Hand-rolled flag parser. Throws ConvoCoachError('BAD_USAGE', ...) on unknown
+ *  flags, missing values, or invalid enum choices. */
+export function parseArgs(argv: readonly string[]): CliArgs;
+
+/** Print usage text to stdout. Called for --help / -h. */
+export function printHelp(): void;
+
+/** mkdirSync(~/.tool-agents/convo-coach, { recursive: true, mode: 0o700 }) */
+export function bootstrapToolAgentsDir(): void;
+```
+
+`cli.ts` ALSO contains the `main()` async entry point that wires:
+`parseArgs → bootstrapToolAgentsDir → resolveDefaults → applyCliOverrides →
+index.run(args, cfg) → process.exit(EXIT_CODES[err.code])`.
+
+#### `src/index.ts` (U3)
+
+```typescript
+import type { CliArgs, ResolvedConfig } from './types.js';
+
+/** End-to-end orchestration. Returns the exit code (0 on success). */
+export async function run(args: CliArgs, cfg: ResolvedConfig): Promise<number>;
+```
+
+#### `src/transcript/duration.ts` (U4)
+
+```typescript
+import type { DurationMs } from '../types.js';
+/** Parse compound `30s | 5m | 1h | 1h30m | 90s`. Throws BAD_USAGE on malformed. */
+export function parseDuration(input: string): DurationMs;
+```
+
+Regex: `/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/`. At least one capture group must
+be present; total milliseconds = `((h*60)+m)*60+s)*1000`.
+
+#### `src/transcript/jsonl.ts` (U4)
+
+```typescript
+import type { NormalisedRecord } from '../types.js';
+import type { Interface as ReadlineInterface } from 'node:readline';
+
+/** Parse one JSONL line. Returns null for tombstones or blank lines.
+ *  Throws ConvoCoachError('NO_INPUT', ...) for unparseable JSON when strict mode is on
+ *  (the streaming caller catches and converts to a counted skip). */
+export function parseLine(line: string): NormalisedRecord | null;
+
+/** Stream parser. Skips blank lines and tombstones silently; emits a single
+ *  warning-line summary at end if there were >0 unparseable lines. */
+export async function* parseStream(rl: ReadlineInterface): AsyncIterable<NormalisedRecord>;
+```
+
+#### `src/transcript/txt.ts`, `srt.ts`, `vtt.ts` (U4)
+
+Each exports the same shape:
+
+```typescript
+import type { NormalisedRecord } from '../types.js';
+import type { Interface as ReadlineInterface } from 'node:readline';
+export async function* parseStream(rl: ReadlineInterface): AsyncIterable<NormalisedRecord>;
+```
+
+#### `src/transcript/window.ts` (U4)
+
+```typescript
+import type { NormalisedRecord, WindowFilter } from '../types.js';
+/** Resolve --since text into Date. Supports HH:MM:SS[.mmm], ISO-8601, +MM:SS / +HH:MM:SS. */
+export function parseSinceTimestamp(input: string, anchor: Date): Date;
+
+/** Apply windowing to an array of records. Later boundary wins when both set. */
+export function applyWindow(records: readonly NormalisedRecord[], filter: WindowFilter): NormalisedRecord[];
+```
+
+#### `src/transcript/reader.ts` (U4)
+
+```typescript
+import type { NormalisedRecord } from '../types.js';
+
+export type SourceFormat = 'jsonl' | 'txt' | 'srt' | 'vtt';
+
+/** Detect the format from the file extension; throw NO_INPUT for unknown. */
+export function detectFormat(path: string): SourceFormat;
+
+export async function* readFromFile(path: string): AsyncIterable<NormalisedRecord>;
+
+/** Same shape — parses stdin per the format hint (default: jsonl). */
+export async function* readFromStdin(format?: SourceFormat): AsyncIterable<NormalisedRecord>;
+```
+
+#### `src/transcript/autodetect.ts` (U5)
+
+```typescript
+/** Find the newest *.transcript.{jsonl,txt,srt,vtt} in dir; prefer JSONL on tie. */
+export function findNewestSidecar(recordingsDir: string): string;
+```
+
+Throws `ConvoCoachError('NO_INPUT', ...)` if none found, with a remediation
+hint pointing at `--transcript`.
+
+#### `src/transcript/stdin.ts` (U5)
+
+```typescript
+import type { NormalisedRecord } from '../types.js';
+
+export interface StdinDriverOptions {
+  readonly debounceMs: number;            // 0 = disabled (only EOF triggers)
+  readonly format?: 'jsonl' | 'txt';      // default 'jsonl'
+}
+
+/** Async generator yielding "trigger events" — each yields an array of
+ *  records currently in the ring buffer (after window slicing applied
+ *  upstream). Caller invokes runOnce() per yielded snapshot. */
+export async function* drive(
+  options: StdinDriverOptions,
+): AsyncIterable<readonly NormalisedRecord[]>;
+```
+
+The `drive()` generator owns the `/dev/tty` open, the readline parsing of
+stdin, the debounce timer, the re-entrant guard, and the EOF rule. It yields
+one snapshot per trigger.
+
+#### `src/llm/factory.ts` (U6)
+
+```typescript
+import type { LanguageModel, ProviderName, ResolvedConfig } from '../types.js';
+
+/** Dispatch on provider, validate cfg, build LanguageModel. */
+export function createProviderModel(
+  provider: ProviderName,
+  modelId: string,
+  cfg: ResolvedConfig,
+): LanguageModel;
+```
+
+#### `src/llm/providers/*.ts` (U6)
+
+Each provider file exports a `LlmProviderModule` as the **default export**:
+
+```typescript
+// e.g. src/llm/providers/openai.ts
+import type { LlmProviderModule } from '../../types.js';
+const mod: LlmProviderModule = {
+  defaultModel: 'gpt-4o-mini',
+  create({ cfg, modelId }) {
+    const apiKey = requireKey(cfg, 'OPENAI_API_KEY');
+    const openai = createOpenAI({
+      apiKey,
+      ...(cfg.values.OPENAI_BASE_URL && { baseURL: stripTrailingSlash(cfg.values.OPENAI_BASE_URL) }),
+      ...(cfg.values.OPENAI_ORG_ID    && { organization: cfg.values.OPENAI_ORG_ID }),
+    });
+    return openai(modelId);
+  },
+};
+export default mod;
+```
+
+The factory imports each module by static `import` (NOT dynamic) so bundling
+and tree-shaking remain predictable. Per-provider key contract per
+plan-011 §U6.
+
+#### `src/llm/default-models.ts` (U6)
+
+```typescript
+import type { ProviderName } from '../types.js';
+export const DEFAULT_MODEL_IDS: Readonly<Record<ProviderName, string | null>> = Object.freeze({
+  'openai':              'gpt-4o-mini',
+  'anthropic':           'claude-haiku-4-5-20251001',
+  'gemini':              'gemini-2.5-flash',
+  'azure-openai':        '__deployment__',  // sentinel: factory substitutes AZURE_OPENAI_DEPLOYMENT
+  'azure-ai-inference':  'claude-haiku-4-5',
+  'ollama':              'llama3.1:8b',
+  'litellm':             null,
+  'mlx':                 null,
+});
+```
+
+#### `src/llm/budget.ts` (U9)
+
+```typescript
+import type { NormalisedRecord, OverflowStrategy } from '../types.js';
+
+export function estimateTokens(text: string, modelId: string): number;
+
+export interface ApplyBudgetResult {
+  readonly kept: readonly NormalisedRecord[];
+  readonly dropped: number;
+}
+
+export function applyBudget(
+  records: readonly NormalisedRecord[],
+  systemPromptText: string,
+  scaffoldingText: string,
+  modelId: string,
+  strategy: OverflowStrategy,
+): ApplyBudgetResult;
+```
+
+`applyBudget` first computes systemTokens + scaffoldingTokens; reserves
+`min(2048, contextWindow / 4)` for the response; walks records per strategy.
+For `error`, throws `ConvoCoachError('BAD_USAGE', ...)` on overflow.
+
+#### `src/llm/model-context-windows.ts` (U9)
+
+```typescript
+export const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>>;  // per plan-011 §U9
+export const FALLBACK_CONTEXT_WINDOW: number;                          // 8192
+export function lookupContextWindow(modelId: string): number;          // logs warning on fallback
+```
+
+#### `src/prompt/build.ts` (U8)
+
+```typescript
+import type { NormalisedRecord, BuildPromptOptions, BuiltPrompt } from '../types.js';
+
+/** Single string constant; OI-B = inline, not a file resource. */
+export const DEFAULT_SYSTEM_PROMPT: string;
+
+export function buildSystemPrompt(opts: BuildPromptOptions): string;
+
+export function buildUserMessage(
+  records: readonly NormalisedRecord[],
+  opts: BuildPromptOptions,
+): string;
+
+/** Convenience: builds both and pre-estimates tokens (caller may re-budget). */
+export function buildPrompt(
+  records: readonly NormalisedRecord[],
+  opts: BuildPromptOptions,
+  modelId: string,
+): BuiltPrompt;
+```
+
+Channel→speaker mapping per plan-011 §U8 / FR-CC-12. Both single-channel
+(`[system]`/`[mic]`) and dual-channel (`[Speaker-A (on-device, primary)]`,
+`[Speaker-B (cloud)]`) legends are documented inline; the builder picks the
+correct legend based on whether ANY input record carries `channel`.
+
+#### `src/output/sidecar.ts` (U7)
+
+```typescript
+import type { SidecarFrontMatter } from '../types.js';
+
+export function uniqueSidecarPath(baseDir: string, basename: string, ts: Date): string;
+
+export interface SidecarHandle {
+  readonly path: string;
+  /** Stream sink that the orchestrator passes to the streaming loop. */
+  readonly sink: import('../types.js').StreamSink;
+  /** Update the front-matter and append ## Metrics. Atomic temp-file rename. */
+  finalise(metrics: Partial<SidecarFrontMatter>): Promise<void>;
+  /** On stream error: append `# ERROR\n\n<msg>\n` and rename. */
+  fail(err: unknown): Promise<void>;
+}
+
+export function openSidecar(path: string, frontMatter: SidecarFrontMatter): SidecarHandle;
+```
+
+`openSidecar` writes the YAML front-matter and the `## Source window` block
+to `<path>.partial` synchronously, then opens an append-mode `WriteStream`
+on the partial. `finalise` rewrites the front-matter with the resolved
+metric values and appends `## Metrics`, then renames `.partial` → final.
+
+#### `src/output/stream.ts` (U7)
+
+```typescript
+import type { LanguageModel, StreamSink } from '../types.js';
+
+export interface StreamRunInput {
+  readonly model: LanguageModel;
+  readonly system: string;
+  readonly prompt: string;
+  readonly maxOutputTokens: number;        // default 2048 per FR-CC-13 reservation
+  readonly sinks: readonly StreamSink[];
+  readonly abortSignal?: AbortSignal;
+}
+
+export interface StreamRunResult {
+  readonly ttftMs: number | undefined;
+  readonly elapsedMs: number;
+  readonly inputTokens: number | undefined;
+  readonly outputTokens: number | undefined;
+  readonly totalTokens: number | undefined;
+}
+
+/** Runs streamText, fans deltas to all sinks in lock-step, awaits usage. */
+export async function runStreaming(input: StreamRunInput): Promise<StreamRunResult>;
+```
+
+### CC-DSGN-7 — Data models (macrec JSONL schema as TypeScript)
+
+Confirmed against `docs/reference/codebase-scan-convo-coach.md` §"macrec JSONL
+Sidecar Schema" and `Sources/MacrecCore/Transcription/TranscriptSegment.swift`.
+
+```typescript
+// src/transcript/jsonl.ts (internal — NOT exported via types.ts)
+
+/** The wire shape of a macrec JSONL transcript line. NOT a public API —
+ *  the parser converts to NormalisedRecord. Note: NO discriminated union
+ *  is needed: `channel` is simply absent in single-channel mode and
+ *  present (`"A"|"B"`) in dual-channel mode. */
+interface MacrecJsonlLine {
+  // Required (single + dual):
+  id: string;
+  timestamp: string;                  // ISO-8601 UTC, Z-suffixed
+  source: 'system' | 'mic' | 'mixed';
+  text: string;
+  // Optional (single + dual):
+  model?: string;                     // 'apple' | 'apple-cloud' | 'gemini' | 'soniox' | ...
+  durationSec?: number;               // seconds; 0 for streaming partials
+  language?: string;                  // BCP-47
+  // Dual-channel additive:
+  channel?: 'A' | 'B';
+  // Documentation artefact (per codebase scan §JSONL note); ignore if present:
+  isFinal?: boolean;
+  // Tombstone marker (separate row shape — handle in parseLine):
+  // { _tombstone: true, id: string }  → return null
+}
+
+interface MacrecTombstoneLine {
+  _tombstone: true;
+  id: string;
+}
+```
+
+The parser MUST:
+1. Skip blank lines silently.
+2. `JSON.parse` each non-blank line; on parse error, increment a counter and continue (single warning summary at end).
+3. Skip lines where `_tombstone === true` silently.
+4. Return `null` from `parseLine` for tombstones / blank lines / parse errors.
+5. Map `timestamp` → `startMs = Date.parse(timestamp)` (UTC). Compute `endMs = startMs + (durationSec ?? 0) * 1000`.
+6. Preserve unknown keys in `extras: Record<string, unknown>` (per plan-011 R9).
+
+For TXT/SRT/VTT inputs, `id` is left undefined; `extras` carries the raw cue
+string for debugging.
+
+### CC-DSGN-8 — API contracts (LLM factory)
+
+`createProviderModel()` returns a `LanguageModel` (re-exported from `'ai'`).
+The exact import path:
+
+```typescript
+import type { LanguageModel } from 'ai';
+```
+
+This is the **public** type alias the AI SDK exposes; it forwards to the
+internal `LanguageModelV2` interface which `streamText` accepts. Verified
+against `ai@6.0.x` and `ai@5.0.x` — the alias is stable across both major
+versions, so pinning to either compiles cleanly. The project pins to
+`ai@^6.0.0` per plan-011 D1.
+
+`streamText` is called as documented in the SDK reference §1.1. The
+orchestrator uses `result.textStream` (NOT `result.fullStream`) per plan-011
+R1 to avoid the `textDelta` vs `delta` v5/v6 naming drift.
+
+### CC-DSGN-9 — Error handling strategy
+
+Single error class hierarchy in `src/types.ts` (`ConvoCoachError` with discriminated
+`code` field) + a stable exit-code table:
+
+| Error code | Exit | Triggered by |
+|---|---|---|
+| `BAD_USAGE` | 64 | Unknown CLI flag; malformed `--last`/`--since`/`--debounce`; unknown `--provider`; missing `--model` for `litellm` / `mlx`; `--on-overflow error` overflow; invalid `--language` / `--log-level`; unknown SourceFormat |
+| `NO_INPUT` | 66 | `--transcript` path missing/unreadable; auto-detect found no sidecars in `MACREC_RECORDINGS_DIR`; transcript file is empty after parsing |
+| `PROVIDER_FAILURE` | 70 | LLM HTTP 5xx; network drop mid-stream; provider returned malformed response; AI SDK threw mid-iteration |
+| `MISSING_CONFIG` | 78 | Required env-var absent for the selected provider (e.g. `OPENAI_API_KEY` for `--provider openai`); `MACREC_RECORDINGS_DIR` resolves to a non-existent directory in auto-detect mode |
+| `GENERIC` | 1 | Anything that escapes the typed-error funnel |
+
+The CLI top-level catch in `cli.ts` maps `err.code` to `EXIT_CODES[err.code]`
+and writes a redacted `error: <message>` line to stderr before
+`process.exit()`. **No-fallback discipline**: the resolver throws on any
+absent required value at provider-construction time (in U6's per-provider
+`create()`), never substituting a placeholder. The `MACREC_RECORDINGS_DIR`
+default of `~/Recordings` (D7) is a directory location, NOT a credential —
+it does not violate FR-CC-10.
+
+Every `MISSING_CONFIG` error message MUST list:
+1. The exact env-var name missing (`OPENAI_API_KEY`).
+2. The four resolution tiers inspected (in the same wording as merger config).
+3. A remediation hint (where to set it, e.g. `~/.tool-agents/convo-coach/.env`).
+
+### CC-DSGN-10 — Integration points
+
+1. **Binary on PATH.** `package.json` has `"bin": { "convo-coach": "./dist/cli.js" }`. The `prepare` script (`tsc -p tsconfig.json && chmod +x dist/cli.js`) makes the binary executable immediately after `npm install`, mirroring `dual-transcript-merger`'s pattern. Users install with:
+   ```sh
+   cd tools/convo-coach
+   npm install
+   npm link
+   convo-coach --help
+   ```
+2. **No project root changes** beyond adding the `### convo-coach` entry to `CLAUDE.md` "Tools" section (done by U10) and the FR-CC-1..FR-CC-15 entries to `docs/design/project-functions.md` (also U10).
+3. **Tool config folder.** `~/.tool-agents/convo-coach/` is created at mode `0700` on first run by `bootstrapToolAgentsDir()`; the `.env` file inside is seeded by `/tool-conventions scaffold convo-coach` at P0 with mode `0600`. The runtime never modifies `.env` — only reads it.
+4. **macrec is unmodified.** convo-coach reads macrec sidecars by file format only (no code dependency). `MACREC_RECORDINGS_DIR` is convo-coach-owned (D7), discovered via convo-coach's own four-tier chain.
+5. **dual-transcript-merger is unmodified.** convo-coach can consume the merger's `.merged.jsonl` output (it is JSONL with `channel` field — already supported by the parser).
+
+### CC-DSGN-11 — Parallel implementation plan (refines plan-011 §P3)
+
+This is the recommended agent dispatch table. It REFINES the plan's parallel
+split: the eight provider files are bundled into a single agent (U6) because
+they're trivially small and the factory's switch must stay coherent.
+
+| Phase | Agent count | Agents | Owns | Depends on | Parallelism note |
+|---|---|---|---|---|---|
+| P0 | n/a (slash command) | `/tool-conventions scaffold convo-coach` | `docs/tools/convo-coach.md`, `~/.tool-agents/convo-coach/{,.env}` | nothing | sequential, MUST run first |
+| P1 | 1 | U1 | `package.json`, `tsconfig.json`, `.gitignore`, `README.md`, `src/types.ts` (skeleton + types) | P0 | sequential |
+| P2 | 1 | U2 | `src/{config,errors,log}.ts` | U1 (needs `types.ts`) | sequential — blocks P3..P8 |
+| P3 | **4 in parallel** | U4, U6, U8, U9 | see below | U2 | NO file overlaps; types fixed by U1 |
+| P4 | 1 | U5 | `src/transcript/{autodetect,stdin}.ts` | U4 (uses `NormalisedRecord` + `parseStream`) | sequential after P3 |
+| P5 | 1 | U7 | `src/output/{stream,sidecar}.ts` | U2, U6, U8, U9 | sequential after P3 |
+| P6 | 1 | U3 | `src/{cli,index}.ts` | U2..U9 (orchestrates) | sequential after P5 |
+| P7 | 1 | U10 | `docs/tools/convo-coach.md` (finalise body), `CLAUDE.md` (Tools entry), `docs/design/project-functions.md`, `docs/design/project-design.md` | U6 (env-var list final) | done via `/tool-conventions audit convo-coach` follow-up — NOT hand-rolled scaffolding |
+| P8 | 1 (parallel by file) | U11 | `test/*.test.ts` + `test/fixtures/*` | U7 (full pipeline available) | `node --test` parallelises by file |
+
+**P3 parallelism contract**: the four agents in P3 own disjoint subtrees:
+
+| Agent | Owns subtree | Depends on (from U1/U2) |
+|---|---|---|
+| U4 | `src/transcript/{reader,jsonl,txt,srt,vtt,duration,window}.ts` | `types.ts`, `errors.ts` |
+| U6 | `src/llm/{factory,default-models}.ts` + `src/llm/providers/*.ts` (8 files) | `types.ts`, `errors.ts`, `config.ts` (via `requireKey`) |
+| U8 | `src/prompt/build.ts` | `types.ts`, `errors.ts` |
+| U9 | `src/llm/{budget,model-context-windows}.ts` | `types.ts`, `errors.ts` |
+
+No two agents touch the same file. The only cross-cutting type they all
+import from is `src/types.ts`, which is FROZEN by U1 — additions must be
+proposed back to the designer and reviewed before merge.
+
+### CC-DSGN-12 — Architectural decisions log (convo-coach)
+
+| ID | Decision | Alternatives considered | Why this | Where evidence lives |
+|---|---|---|---|---|
+| CC-ADR-1 | LLM client = Vercel AI SDK (`ai@^6` + `@ai-sdk/{openai,anthropic,google,azure,openai-compatible}`) | LangChain.js; LlamaIndex.ts; LiteLLM-only; per-provider native SDKs hand-wired | Single `streamText({ model, system, prompt })` + `textStream` async-iterable covers all 8 providers. ~150 LOC of factory code vs ~700 LOC for hand-rolled SDKs. Provider isolation (NFR-CC-5) is one new file in `src/llm/providers/`. Streaming-token reaches stdout sub-second, satisfying NFR-CC-1. | investigation §Q1; sdk research §Provider Matrix; plan-011 D1, R10 |
+| CC-ADR-2 | CLI parser = hand-rolled `parseArgs` (no `commander` / `yargs`) | commander v12; yargs; citty; clipanion | Project precedent in `tools/dual-transcript-merger/src/cli.ts:84-157` already proves the pattern. Zero runtime deps; strict (no silent value coercion); direct control over error mapping for FR-CC-14. | investigation §Q2; plan-011 D9 |
+| CC-ADR-3 | Config resolver = port `tools/dual-transcript-merger/src/config.ts` verbatim, parameterised | `dotenv`; `c12`; `envalid`; `zod-config` | Identical four-tier pattern; proven; zero deps; provenance map needed for FR-CC-10's "checked these tiers" error message; rejects values with no silent default substitution. | investigation §Q3; plan-011 D5; CC-DSGN-6 |
+| CC-ADR-4 | Duration parser = hand-rolled regex `/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/` | `ms`; `parse-duration`; `human-interval` | Strict grammar match for FR-CC-5; rejects `5x`/decimals/empty unlike `ms`. ~15 LOC + tests. | investigation §Q4; plan-011 D9-adjacent |
+| CC-ADR-5 | `MACREC_RECORDINGS_DIR` is convo-coach-owned, NOT macrec-native; default `~/Recordings` when absent | Read macrec's `.env`; require explicit `--transcript` always | Codebase scan §"macrec Recordings Folder — CRITICAL FINDING" verified macrec stores its UI folder in `@AppStorage`, NOT env. Default is a directory location (FR-CC-10's last paragraph allows this). User can still override at every tier. | codebase scan §critical; investigation §Correction-to-A-1; plan-011 D7 |
+| CC-ADR-6 | Token estimator = two-tier (`js-tiktoken` for OpenAI-family; `Math.ceil(text.length/4)` heuristic for everything else) | One tokenizer per provider (`tiktoken` + Anthropic SDK + sentencepiece + Llama tokenizer) | OpenAI-family is the only family with a cheap pure-JS tokenizer; bundling tokenizers for the rest costs ~10 MB binary data with marginal accuracy gain for budget-truncation purposes (a coaching prompt's accuracy floor is well above one-token precision). Lazy-import per R8 keeps cold-start cost off non-OpenAI invocations. | investigation §Q6; plan-011 D10, R8 |
+| CC-ADR-7 | Stdin trigger = Enter on `/dev/tty` (default); `--debounce <D>` fallback when `/dev/tty` is unavailable | Enter only; debounce only; Enter+queue; line-by-line auto-trigger | Enter on `/dev/tty` is the only mechanism that works for `tail -f` (which never closes stdin). Debounce is the principled fallback for fully non-interactive pipelines. Auto-trigger per line burns provider quota. Queueing on re-entrant trigger adds complexity with no UX benefit. | investigation §Q5; plan-011 R5 |
+| CC-ADR-8 | Sidecar collision = `-<n>` numeric suffix (n=2..99); throw at n>99 | Use process pid suffix; use random hex; abort | Deterministic, human-readable, predictable. n>99 collisions in one second is a bug, not a real situation. | investigation §Q8; plan-011 NFR-CC-3 |
+| CC-ADR-9 | Sidecar write strategy = stream to `<sidecar>.partial`, atomic rename on finalise | Open in `r+` mode and seek-back to update front-matter | Seeking risks partial overwrite on crash. Temp-file + atomic rename is crash-safe. The sidecar is preserved with `# ERROR` footer if streaming fails (per FR-CC-11 + R6). | plan-011 §U7 implementation note |
+| CC-ADR-10 | Default system prompt = inline string constant in `src/prompt/build.ts` (NOT a separate `default-system-prompt.md` file resource) | File-resource bundled with the package and read at startup via `fs.readFile(path-relative-to-import.meta.url)` | OI-B verdict: file approach complicates `npm link` resolution and bundled-binary distribution; constant is faster, simpler, removes one runtime I/O. `--system-prompt <path>` already exists for users who want to override. | plan-011 §0.5 OI-B |
+| CC-ADR-11 | Use `result.textStream` (NOT `result.fullStream`) for the streaming write loop | Iterate `fullStream` and switch on `part.type === 'text-delta'` | `fullStream`'s text-delta field name changed between v5 (`textDelta`) and v6 (`delta`); pinning would otherwise be brittle. `textStream` is documented stable across both. | sdk research §1.2; plan-011 R1 |
+| CC-ADR-12 | LiteLLM and MLX-LM have NO default model — `--model` / `CONVO_COACH_MODEL` is REQUIRED | Hard-code `gpt-4o-mini` for litellm; hard-code `mlx-community/Llama-3.2-3B-Instruct-4bit` for MLX | LiteLLM's whole point is multi-provider routing — there's no sensible "default route". MLX-LM serves whatever the user started the server with. Forcing a default would silently invoke the wrong model. | plan-011 D4 (litellm), §U6; sdk research §4 |
+| CC-ADR-13 | Eight provider files implemented by ONE agent (U6), not eight | Eight parallel agents (one per provider file) | Each provider file is ~20-30 LOC of nearly identical structure; coordination overhead of 8 agents > implementation time. Factory's switch must stay coherent — single owner avoids merge conflicts. | plan-011 §U6 splitting decision |
+| CC-ADR-14 | Trailing-slash stripping happens in `config.ts` at validation time (not in each provider) | Each provider strips its own URL | Eliminates per-provider duplication; one place to audit; matches plan-011 R3 mitigation for the Azure AI Inference `//openai/v1` 404 risk. | plan-011 R3; CC-DSGN-6 `stripTrailingSlash` |
+| CC-ADR-15 | `GEMINI_API_KEY` is a documented alias for `GOOGLE_API_KEY`; resolver copies the value with provenance noting the alias | Treat both as independent and require `GOOGLE_API_KEY` only | Many users have `GEMINI_API_KEY` from Google AI Studio. Aliasing is a UX win that does not violate no-fallback (alias is documented, not silent). | plan-011 D6, §U2 key table |
+
+### CC-DSGN-13 — `package.json` skeleton (frozen by U1)
+
+```jsonc
+{
+  "name": "convo-coach",
+  "version": "0.1.0",
+  "description": "LLM-powered conversational coach for macrec transcripts.",
+  "type": "module",
+  "bin": { "convo-coach": "./dist/cli.js" },
+  "scripts": {
+    "build":     "tsc -p tsconfig.json",
+    "postbuild": "chmod +x dist/cli.js",
+    "watch":     "tsc -p tsconfig.json --watch",
+    "start":     "node dist/cli.js",
+    "test":      "node --test --import tsx test/*.test.ts",
+    "clean":     "rm -rf dist",
+    "prepare":   "tsc -p tsconfig.json && chmod +x dist/cli.js"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "ai":                            "^6.0.0",
+    "@ai-sdk/openai":                "^3.0.55",
+    "@ai-sdk/anthropic":             "^3.0.74",
+    "@ai-sdk/google":                "^3.0.64",
+    "@ai-sdk/azure":                 "^3.0.59",
+    "@ai-sdk/openai-compatible":     "^2.0.41",
+    "js-tiktoken":                   "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx":         "^4.19.0",
+    "typescript":  "^5.6.0"
+  }
+}
+```
+
+### CC-DSGN-14 — `tsconfig.json` (frozen by U1)
+
+Copy verbatim from `tools/dual-transcript-merger/tsconfig.json`:
+`target:"ES2022"`, `module:"ES2022"`, `moduleResolution:"Bundler"`,
+`strict:true`, `noUncheckedIndexedAccess:true`, `noImplicitOverride:true`,
+`noFallthroughCasesInSwitch:true`, `esModuleInterop:true`,
+`forceConsistentCasingInFileNames:true`, `skipLibCheck:true`,
+`declaration:true`, `sourceMap:true`, `resolveJsonModule:true`,
+`outDir:"./dist"`, `rootDir:"./src"`.
+
+### CC-DSGN-15 — Cross-references
+
+- Plan: `docs/design/plan-011-convo-coach.md` (8 phases, 11 units, dependency
+  graph, AC mapping). THIS DESIGN ALIGNS WITH IT.
+- Refined request: `docs/design/refined-request-convo-coach.md`
+  (FR-CC-1..FR-CC-15, NFR-CC-1..NFR-CC-8, AC-CC-1..AC-CC-16, OD-1..OD-8).
+- Investigation: `docs/reference/investigation-convo-coach.md` (Q1..Q8 with
+  recommendations and the critical `MACREC_RECORDINGS_DIR` correction).
+- Codebase scan: `docs/reference/codebase-scan-convo-coach.md` (TS precedent;
+  macrec JSONL schema; recordings-folder finding).
+- Technical reference: `docs/research/vercel-ai-sdk-v5-multiprovider.md`
+  (8-provider matrix, `streamText` API surface, gotchas).
+- TS precedent files (ports): `tools/dual-transcript-merger/src/cli.ts`,
+  `tools/dual-transcript-merger/src/config.ts`,
+  `tools/dual-transcript-merger/src/parser.ts`,
+  `tools/dual-transcript-merger/src/types.ts`.
+- Project conventions: `CLAUDE.md` (Structure & Conventions, Tools section
+  format, Exception 001 — Swift exception is `macrec`-only; convo-coach
+  MUST be TypeScript).
+
+### CC-DSGN-16 — Open Design Questions (residual)
+
+These are explicitly residual ambiguities that did NOT have a clear owner in
+plan-011 and that the parallel coders should treat as design defaults until
+overridden by the user. None are blockers.
+
+| ID | Question | Designer's chosen default | Coder action if user vetoes |
+|---|---|---|---|
+| CC-OD-1 | When the resolved `MACREC_RECORDINGS_DIR` exists but contains zero `*.transcript.*` files, do we exit `NO_INPUT` (66) or `MISSING_CONFIG` (78)? | **`NO_INPUT` (66).** The directory exists; it just has no sidecars yet. `NO_INPUT` semantically matches "no transcript file found". `MISSING_CONFIG` would be misleading (the config IS set). | Adjust `findNewestSidecar` to throw `MISSING_CONFIG` and update the e2e test. |
+| CC-OD-2 | When dual-channel JSONL contains BOTH a `channel` field AND a `source` field, the prompt legend shows the speaker labels only (per plan-011 §U8). Does the prompt still mention the `source` field anywhere? | **No — speaker labels supersede source labels in dual mode.** The `source` field is implicitly conveyed by the channel mapping (Channel A is Apple on-device, which captures both system + mic mixed; same for B). Mentioning both would confuse the LLM. | Add the source as a parenthetical in the per-segment line if vetoed. |
+| CC-OD-3 | Should the sidecar's `## Source window` block include the FIRST and LAST segment text excerpts (e.g. first 80 chars of the first segment, last 80 chars of the last)? | **No — only timestamps and segment counts.** Including text in the front-matter region duplicates the prompt (which the LLM already saw) and risks confusing the user reading the advice. | Add the excerpts in a new `## Window preview` block after `## Source window` if vetoed. |
+| CC-OD-4 | The `--language <bcp-47>` hint — should it be validated against a known BCP-47 list, or accepted as any non-empty string and let the LLM decide? | **Any non-empty string.** BCP-47 has thousands of valid tags; validating client-side is over-engineering. The LLM will gracefully ignore garbage. | Add a basic regex (`/^[a-zA-Z]{2,3}(-[A-Z]{2})?$/`) to `cli.ts` if vetoed. |
+| CC-OD-5 | When `--debounce 0` is supplied AND `/dev/tty` is unavailable, does EOF still trigger one final request, or does the tool exit silently after consuming stdin? | **EOF triggers one final request.** Otherwise the user's piped input would be silently discarded — confusing behaviour. The plan-011 §U5 already specifies "EOF always emits one final request unless the last trigger was within ~1s"; this matches. | No code change — already aligned. |
+| CC-OD-6 | The `Authorization: Bearer <key>` header for Azure AI Inference — does the AI SDK's `@ai-sdk/openai-compatible` send `Bearer` automatically when `apiKey` is set, or does Azure AI Foundry require an `api-key:` header instead (Azure-OpenAI-style)? | **Trust the SDK's default `Authorization: Bearer ...` header.** Per sdk research §2.2, Foundry's `/openai/v1` endpoint accepts the OpenAI-style Bearer header since the Aug-2025 GA migration. If a specific Azure region rejects it, the user can override by passing `headers: { 'api-key': ... }` in `azure-ai-inference.ts`. | Update `src/llm/providers/azure-ai-inference.ts` to set `headers: { 'api-key': cfg.values.AZURE_AI_INFERENCE_KEY }` and omit `apiKey`. |
+| CC-OD-7 | When the user passes `--transcript <path>` AND stdin is also piped, the plan says stdin wins with a warning. Does the warning go to `stderr` only, or do we also annotate the sidecar front-matter? | **stderr only.** Sidecar front-matter is per-request metadata, not session metadata; including the override warning would clutter every sidecar in the session. | Add `cliOverrideWarning: 'stdin won over --transcript'` to front-matter if vetoed. |
+
+---
+

@@ -6,6 +6,29 @@
 
 ## Pending items (most critical first)
 
+### PLAN-011-CC-PENDING-5 — convo-coach `Unknown model` warning for current models (cosmetic)
+The `model-context-windows.ts` lookup table does not include several current models (notably `gpt-5.1`, `gpt-5`, `gpt-5-mini`). When the user passes `--model gpt-5.1` the budget guard logs `Unknown model 'gpt-5.1' — assuming 8000-token context window` and falls back to a conservative 8000-token budget. Advice still works (the budget guard truncates more aggressively than necessary), but the warning is noisy and the truncation may be over-aggressive on long transcripts. Recommendation: extend the table with current OpenAI / Anthropic / Google model IDs in a small follow-up. Severity: cosmetic (no functional impact for short transcripts).
+
+### PLAN-011-CC-PENDING-1 — convo-coach SRT/VTT parsers + autodetect coverage missing (important)
+Phase 7 code review (2026-05-02) found that the implementation deviates from plan-011 (§U4 file list lines 131-132, §"NEW" file list 519-521) and design CC-DSGN-6 ("`src/transcript/txt.ts, srt.ts, vtt.ts` (U4)"). Only `.jsonl` and `.txt` are wired:
+- `tools/convo-coach/src/transcript/reader.ts:17` — `SUPPORTED_EXTENSIONS = ['.jsonl', '.txt']` (no `.srt` / `.vtt`).
+- `tools/convo-coach/src/transcript/autodetect.ts:24` — same restriction; AC-CC-7 wording ("most recent `*.transcript.{jsonl,txt,srt,vtt}` sidecar") is therefore only partially satisfied.
+- FR-CC-4 explicitly mandates SRT/VTT best-effort parsing including channel tags (`EN: …` / `<v EN>…</v>`).
+The user-facing tool docs (`docs/tools/convo-coach.md`) only document `.jsonl`/`.txt`, so the gap is internally consistent across docs+code, but it is a documented deviation from the refined request. Recommendation: implement `srt.ts` and `vtt.ts` parsers in a small follow-up lane and broaden `SUPPORTED_EXTENSIONS` in both `reader.ts` and `autodetect.ts`, or have integration verification (Phase 10) explicitly accept the narrowed scope by amending the refined request and AC-CC-7. Severity: important (does not block dev install / smoke; affects AC-CC-7 strict pass).
+
+### PLAN-011-CC-PENDING-2 — convo-coach orchestrator drops several design-listed CLI flags (nice-to-have)
+Design CC-DSGN-5's `CliArgs` type lists: `adviceOut`, `adviceBasename`, `language`, `logLevel`, `showConfig`. The implementation in `tools/convo-coach/src/types.ts:118-130` ships a slimmer set (no `--advice-out`, `--advice-basename`, `--language`, `--log-level`, `--show-config`). Effects:
+- FR-CC-11 sidecar-output overrides for stdin mode (`--advice-out <dir>` / `--advice-basename <stem>`) are not exposed; the orchestrator hard-codes the recordings-dir + `convo-coach-stdin` stem in `index.ts:308-316`.
+- FR-CC-12 `--language <bcp-47>` hint is missing.
+- FR-CC-14 `--log-level` is missing; logging always goes to stderr at info level via `process.stderr.write` (still per the spirit of NFR-CC-6 — no API keys are logged).
+Help text in `args.ts:133-196` does not advertise these flags either, so end users have no expectation gap. Severity: nice-to-have (no AC-CC-* directly fails — AC-CC-15 is observed; the missing flags are only enumerated in design CliArgs, not in the AC table).
+
+### PLAN-011-CC-PENDING-3 — convo-coach stdin precedence inverted vs FR-CC-3 (nice-to-have)
+`tools/convo-coach/src/index.ts:407-416` resolves explicit `--transcript` BEFORE checking `process.stdin.isTTY === false`. FR-CC-3 §1 specifies the opposite — stdin should win even when `--transcript` is supplied, with a stderr warning. AC-CC-8 only requires stdin to be consumed when no `--transcript` is supplied, so the AC technically passes; integration verifier should confirm whether to treat the FR-CC-3 wording or AC-CC-8 wording as authoritative. Severity: nice-to-have (clarification, not a defect).
+
+### PLAN-011-CC-PENDING-4 — convo-coach internal-invariant throws use plain Error (cosmetic)
+`tools/convo-coach/src/output/sidecar.ts:182, 190, 219` throw `new Error(...)` for SidecarWriter post-close calls and rename failures. These are internal-invariant programming-error paths (write/append after close, or fs rename failure) so they are arguably acceptable per the project's "internal invariant failure that should bubble up uncategorised" carve-out, but tightening them to `ConvoCoachError('GENERIC', …)` would route them through the consistent exit-code mapping in `runCli`. Severity: cosmetic.
+
 ### PLAN-010-PENDING-L11-WIRING — Per-channel metrics polling wiring (deferred per Phase 7 + Phase 10 verification — non-blocking, follow-up lane recommended)
 Phase 7 review (2026-05-01) and Phase 10 integration verification (2026-05-01) both confirmed this entry remains the right shape — the recommended fix (Option 1: add `TranscriptionEvent.dualMetricsTick(DualChannelMetrics)` emitted by `DualTranscriptionManager`, forwarded through `SessionCoordinator` to `RecordingController.applyDualMetrics(_:)`) requires touching `RecordingSession.swift` / `SessionCoordinator.swift` + the four sidecar writers' exhaustive switches over `TranscriptionEvent`. Deferred to a follow-up lane after Phase 10 ship. Until it lands, `DualTranscriptionMetricsView` renders `EmptyView()` at runtime in dual-mode sessions (the row is invisible). All other dual-mode UI surfaces work; only the per-channel metrics rows are dark. Phase 10 impact on AC-9: PARTIAL — slot exists, producer does not.
 
@@ -1035,6 +1058,25 @@ The default build (Swift 5.9 mode) is clean — no warnings, no errors. This iss
 Plan-002 dispatches Phase F (quit-while-recording flow) and Phase G (error-mapping banner) in parallel within Wave 5. The design (`docs/design/project-design.md` §15.15 "Wave 4 → Wave 5" boundary table) shows that both phases edit `Sources/MacrecUIKit/Views/RootView.swift`: F adds a Quit button at the bottom of the popover stack; G inserts an `ErrorBanner` at the top. Concurrent agents editing the same file will race or merge-conflict. **Mitigation**: Phase 6 orchestrator MUST dispatch F and G **sequentially** within Wave 5 — F first (adds the Quit affordance) then G (adds the ErrorBanner) is the recommended order, but either ordering is acceptable as long as the two are not concurrent. Each individual phase remains a single-file edit; only the Wave 5 dispatch order matters. Owner: Phase 6 orchestrator + Phase 7 Code Reviewer.
 
 ## Completed items
+
+### PLAN-011-CC-FIX-CONFIG-EMPTY-OVERRIDE — convo-coach config resolver "delete-on-empty" semantic (Closed 2026-05-02)
+
+When the user uncommented `AZURE_OPENAI_API_VERSION=` (empty) in `~/.tool-agents/convo-coach/.env` to override their shell-exported `AZURE_OPENAI_API_VERSION=2024-12-01-preview`, the tool kept reading the shell value. Root cause: `loadConfig`'s `applyTier` skipped empty-string values (`if (raw === undefined || raw === '') continue;`), so a tier-2 empty assignment never wiped a tier-1 set value. **Fix**: changed the semantic so empty strings at any tier explicitly DELETE the key from the resolver's working map (clearing whatever a lower tier contributed) without contributing a value of their own. Now:
+- Shell sets `KEY=value` + .env sets `KEY=` (empty) → resolver returns `undefined` (correct override).
+- Shell sets `KEY=` (empty) only → resolver returns `undefined` (unchanged behavior — the existing test still passes).
+- Shell sets `KEY=value` + .env unsets the line → resolver returns `value` (unchanged).
+
+Added new test `config: empty string at tier-2 wipes the shell value (delete-on-empty override)`. All 166 tests pass. Verified end-to-end: with the user's shell still exporting `AZURE_OPENAI_API_VERSION=2024-12-01-preview`, an empty `.env` override now correctly routes to Azure's v1 GA endpoint, gpt-5.1 streams cleanly (586/438/1024 tokens). Documented in the .env template comment that this is the intended override mechanism.
+
+### PLAN-011-CC-FIX-AZURE-V1 — convo-coach Azure provider switched to v1 GA API (Closed 2026-05-02)
+
+User reported `error: stream failed: API version not supported` when running `convo-coach --provider azure-openai --model gpt-5.1` against the existing shell environment (`AZURE_OPENAI_API_VERSION=2024-12-01-preview`). Root cause: Azure GA'd a new `/openai/v1/...` endpoint in August 2025 that does not accept dated api-versions. The provider was always passing `apiVersion` to `createAzure`, which forced the SDK to append `?api-version=2024-12-01-preview` to v1 URLs — Azure rejected the call. **Fix** (in `tools/convo-coach/src/llm/providers/azure-openai.ts`): made `AZURE_OPENAI_API_VERSION` optional and auto-paired with `useDeploymentBasedUrls`:
+- When unset → SDK defaults to `'v1'` and routes to `/openai/v1/...` (correct path for current models including gpt-5.x).
+- When set → also enables `useDeploymentBasedUrls: true` so the provider switches to the legacy `/openai/deployments/<id>/...?api-version=<x>` URL pattern (correct for older deployments that still need a dated api-version).
+
+Updated docs: `docs/tools/convo-coach.md` Azure OpenAI section now marks `AZURE_OPENAI_API_VERSION` as Optional with a migration tip; `~/.tool-agents/convo-coach/.env` template now explains the v1 GA default. Added new test `buildLanguageModel: azure-openai builds without AZURE_OPENAI_API_VERSION (v1 GA default)`. Test suite: 165/165 pass (was 164). Verified end-to-end with the user's actual gpt-5.1 deployment: v1 mode (api-version unset) returns exit 0 with full advice streamed (1049 tokens, 1.4 s TTFT, 5.4 s latency). Legacy mode (api-version set) returns the appropriate "Resource not found" / "API version not supported" error with exit 70 depending on deployment vintage.
+
+**User action required to take advantage of the fix**: `unset AZURE_OPENAI_API_VERSION` in your shell profile (or set it to empty in `~/.tool-agents/convo-coach/.env`) before running `convo-coach --provider azure-openai`. Otherwise the legacy URL pattern stays active.
 
 ### PLAN-010 — Dual-provider live transcription mode (Closed 2026-05-01)
 

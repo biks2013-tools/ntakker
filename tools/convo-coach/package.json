@@ -1,0 +1,43 @@
+{
+  "name": "convo-coach",
+  "version": "0.1.0",
+  "description": "LLM-powered conversational coach for macrec transcripts.",
+  "type": "module",
+  "bin": {
+    "convo-coach": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "postbuild": "chmod +x dist/cli.js",
+    "watch": "tsc -p tsconfig.json --watch",
+    "start": "node dist/cli.js",
+    "test": "node --test --import tsx test/*.test.ts",
+    "clean": "rm -rf dist",
+    "prepare": "tsc -p tsconfig.json && chmod +x dist/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ai": "^6.0.0",
+    "@ai-sdk/openai": "^3.0.55",
+    "@ai-sdk/anthropic": "^3.0.74",
+    "@ai-sdk/google": "^3.0.64",
+    "@ai-sdk/azure": "^3.0.59",
+    "@ai-sdk/openai-compatible": "^2.0.41",
+    "js-tiktoken": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

@@ -1359,6 +1359,149 @@ pipelines with the same target URL/format. Whether per-channel disable
 is also supported (without leaving Dual mode) is OQ-2 (Phase 5 design
 call).
 
+### Added 2026-05-02 by plan-011 — Convo-Coach LLM Coaching CLI
+
+> Source: `docs/design/refined-request-convo-coach.md`
+> (FR-CC-1..FR-CC-15). Implemented as a TypeScript CLI under
+> `tools/convo-coach/` (separate from the Swift recording-tool).
+> Status: PLANNED unless otherwise noted. Plan: `plan-011-convo-coach.md`.
+
+#### FR-CC-1 — Project location & language
+**Status:** PLANNED. **Phase:** plan-011 §U1.
+`convo-coach` MUST be implemented in TypeScript (strict) under
+`tools/convo-coach/`, mirroring the structural conventions of
+`tools/dual-transcript-merger/` (ESM, Node ≥20, `bin` mapping,
+`prepare`/`postbuild` scripts that emit and chmod `dist/cli.js`). The
+Swift exception (CLAUDE.md Exception 001) does NOT apply here. Package
+and binary name: `convo-coach`.
+
+#### FR-CC-2 — Installation
+**Status:** PLANNED. **Phase:** plan-011 §U1.
+Installable via `cd tools/convo-coach && npm install && npm link` —
+after which `convo-coach --help` works from any directory. The
+`prepare` script MUST run `tsc` and `chmod +x dist/cli.js`.
+
+#### FR-CC-3 — Transcript input modes
+**Status:** PLANNED. **Phases:** plan-011 §U3, §U5.
+Three input modes with precedence highest → lowest: (1) stdin when
+`process.stdin.isTTY === false`; (2) explicit `--transcript <path>`;
+(3) auto-detect newest `*.transcript.{jsonl,txt,srt,vtt}` in
+`MACREC_RECORDINGS_DIR` (a `convo-coach`-owned env var with default
+`~/Recordings`). When stdin and `--transcript` are both supplied,
+stdin wins and a stderr warning is emitted.
+
+#### FR-CC-4 — Sidecar format support
+**Status:** PLANNED. **Phase:** plan-011 §U4.
+Parser MUST handle single-channel JSONL, dual-channel JSONL
+(`channel:"A"|"B"` per plan-010 DT-7), plain TXT
+(`[HH:MM:SS.mmm] [LANG?] text`), SRT, and VTT. Malformed lines/cues
+are skipped with a single summary warning (count), not one warning
+per line.
+
+#### FR-CC-5 — Conversation-window filtering
+**Status:** PLANNED. **Phase:** plan-011 §U4.
+`--last <duration>` (`30s | 5m | 1h | 1h30m | 90s`; strict regex,
+malformed → exit 64) and `--since <timestamp>` (wall-clock
+`HH:MM:SS[.mmm]` local TZ; ISO-8601; relative `+MM:SS` / `+HH:MM:SS`).
+When both flags are set, the later boundary wins. Absent → full
+transcript. "Now" for finite files = max segment end; for stdin =
+wall-clock at trigger time.
+
+#### FR-CC-6 — Stdin streaming semantics
+**Status:** PLANNED. **Phase:** plan-011 §U5.
+When stdin is piped, the tool reads line-by-line into a window-aware
+ring buffer. LLM requests trigger on Enter from `/dev/tty` (default).
+If `/dev/tty` is unavailable, fall back to `--debounce <duration>`
+silence trigger (default `15s`); `--debounce 0` disables the timer
+(only EOF triggers). Each trigger produces ONE distinct timestamped
+sidecar.
+
+#### FR-CC-7 — LLM providers
+**Status:** PLANNED. **Phase:** plan-011 §U6.
+Eight standard providers wired out of the box, matching the
+`tool-doc-config-architect` mandate:
+`openai | anthropic | gemini | azure-openai | azure-ai-inference |
+ollama | litellm | mlx`. Implementation via the Vercel AI SDK
+(`ai@^6` + `@ai-sdk/openai`, `@ai-sdk/anthropic`, `@ai-sdk/google`,
+`@ai-sdk/azure`, `@ai-sdk/openai-compatible`).
+
+#### FR-CC-8 — Provider/model selection
+**Status:** PLANNED. **Phases:** plan-011 §U3, §U6.
+`--provider <name>` (env `CONVO_COACH_PROVIDER`) and `--model <id>`
+(env `CONVO_COACH_MODEL`). Per-provider defaults: `gpt-4o-mini`,
+`claude-haiku-4-5-20251001`, `gemini-2.5-flash`,
+`${AZURE_OPENAI_DEPLOYMENT}`, `claude-haiku-4-5`, `llama3.1:8b`. No
+default for `litellm` and `mlx` — `--model` is required (raise
+`MISSING_CONFIG` if absent).
+
+#### FR-CC-9 — Configuration resolution chain
+**Status:** PLANNED. **Phase:** plan-011 §U2.
+Four-tier chain identical to `macrec` and `dual-transcript-merger`:
+`process.env` (lowest) → `~/.tool-agents/convo-coach/.env` →
+`<cwd>/.env` → CLI flags (highest). Folder mode `0700` enforced on
+first invocation. The `.env` file is seeded at mode `0600` by the
+`/tool-conventions scaffold convo-coach` command, NOT by the
+runtime.
+
+#### FR-CC-10 — No-fallback rule
+**Status:** PLANNED. **Phases:** plan-011 §U2, §U6.
+Missing required configuration (provider key, endpoint, deployment,
+model when required, recordings dir for auto-detect) MUST raise
+`ConvoCoachError('MISSING_CONFIG', …)` with the env-var name AND the
+four resolution tiers inspected; exit 78. Default model IDs and the
+`MACREC_RECORDINGS_DIR` default `~/Recordings` are documented model
+metadata / directory locations, NOT credential fallbacks.
+
+#### FR-CC-11 — Output behaviour
+**Status:** PLANNED. **Phase:** plan-011 §U7.
+Tokens stream to `stdout` via direct `process.stdout.write` (no
+console buffering) AND are simultaneously appended to
+`<basename>.advice-<YYYYMMDD-HHMMSS>.md` next to the source
+transcript. Sidecar markdown carries a YAML front-matter block
+(provider, model, source, window, segments, dropped, channelLabels,
+ttftMs, elapsedMs, input/output/total tokens). Collision suffix `-<n>`.
+On stream-error the sidecar is preserved with a `# ERROR` footer.
+
+#### FR-CC-12 — Prompt construction
+**Status:** PLANNED. **Phase:** plan-011 §U8.
+A built-in default system prompt frames the LLM as a real-time
+conversational coach (3–5 concrete next-utterance suggestions). The
+user message contains the windowed transcript formatted as
+`[HH:MM:SS.mmm] [<channel-or-source>] text`. Channel labels (`A` →
+`Speaker-A (on-device, primary)`, `B` → `Speaker-B (cloud)`) are
+explained in the message's legend. `--system-prompt <path>` overrides
+the default; `--language <bcp-47>` adds a response-language hint.
+
+#### FR-CC-13 — Token-budget handling
+**Status:** PLANNED. **Phase:** plan-011 §U9.
+Default strategy `truncate-start` drops oldest segments until the
+prompt fits the model's context window; `--on-overflow
+{truncate-start | truncate-end | error}` switches the strategy.
+Per-model context-window sizes live in
+`src/llm/model-context-windows.ts`; unknown models fall back to a
+conservative 8 192-token assumption with a warning. Token estimation:
+`js-tiktoken` for OpenAI-family models, 4-chars-per-token heuristic
+elsewhere. Dropped count is recorded as `droppedSegments: <n>` in the
+sidecar front-matter.
+
+#### FR-CC-14 — Logging & exit codes
+**Status:** PLANNED. **Phases:** plan-011 §U2, §U3.
+Log levels `quiet | info | debug` via `--log-level` (env
+`CONVO_COACH_LOG_LEVEL`); logs go to stderr. Exit codes: `0`
+(success), `1` (generic), `64` (`EX_USAGE` — bad CLI / malformed
+window), `66` (`EX_NOINPUT` — transcript not found / unparseable),
+`70` (`EX_SOFTWARE` — provider failure), `78` (`EX_CONFIG` —
+missing required config). API keys MUST NEVER be logged at any
+level.
+
+#### FR-CC-15 — CLAUDE.md "Tools" section entry
+**Status:** PLANNED. **Phase:** plan-011 §U10.
+After implementation completes and `docs/tools/convo-coach.md` is
+in place (scaffolded by `/tool-conventions scaffold convo-coach`),
+the project `CLAUDE.md` MUST gain a concise `### convo-coach` entry
+under `## Tools` pointing at `docs/tools/convo-coach.md` plus the
+install snippet (`cd tools/convo-coach && npm install && npm link`).
+
 ---
 
 ## 2. Non-functional requirements
