@@ -35,6 +35,30 @@ let package = Package(
             url: "https://github.com/argmaxinc/argmax-oss-swift.git",
             exact: "0.18.0"
         ),
+        // FluidAudio — Swift-native CoreML wrapper around NVIDIA's
+        // Parakeet TDT V3 multilingual ASR (~25 European languages
+        // including Greek). Pinned to v0.8.2 for plan-012 Phase B.
+        //
+        // Why v0.8.2 (not the latest v0.9.x): v0.9.0+ bumped its
+        // own swift-tools-version to 6.0 and the new
+        // `StreamingAsrManager.swift` triggers Swift 6 strict-
+        // concurrency `SendingRisksDataRace` errors when the package
+        // is built. v0.8.x uses tools 5.10 — clean build under our
+        // existing config — and exposes the same ASR surface
+        // (AsrManager / AsrModels.downloadAndLoad(version: .v3)) we
+        // need for batch transcription. We're batch-only by design
+        // (mirrors WhisperKit's posture), so the absence of the
+        // streaming manager is irrelevant. Bump pin once upstream
+        // resolves the strict-concurrency issue.
+        //
+        // Library product `FluidAudio` exposes ASR + diarization +
+        // VAD; we only consume the ASR surface. `FluidAudioTTS`
+        // (separate product, GPL-3.0 ESpeakNG) is intentionally
+        // NOT pulled in.
+        .package(
+            url: "https://github.com/FluidInference/FluidAudio",
+            exact: "0.8.2"
+        ),
     ],
     targets: [
         .executableTarget(
@@ -64,6 +88,8 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "WhisperKit", package: "argmax-oss-swift"),
+                // plan-012 Phase B — Parakeet TDT V3 multilingual ASR.
+                .product(name: "FluidAudio", package: "FluidAudio"),
             ],
             path: "Sources/MacrecCore"
         ),
