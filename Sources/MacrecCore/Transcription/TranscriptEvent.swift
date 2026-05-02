@@ -48,4 +48,22 @@ public struct TranscriptionMetrics: Sendable, Codable, Equatable {
     public var bufferOverflowCount: Int = 0
 
     public init() {}
+
+    /// Field-wise merge of multiple metrics snapshots (plan-012 Phase
+    /// C1, used by `SourceSplitTranscriptionManager.currentMetrics()`).
+    /// Counters (`chunksSent`, `billableSeconds`, `errorCount`,
+    /// `bufferOverflowCount`) are summed; `lastRttMs` takes the max
+    /// (treats the worst-case round-trip across children as the
+    /// snapshot's representative RTT).
+    public static func merge(_ snapshots: [TranscriptionMetrics]) -> TranscriptionMetrics {
+        var out = TranscriptionMetrics()
+        for s in snapshots {
+            out.chunksSent += s.chunksSent
+            out.billableSeconds += s.billableSeconds
+            out.errorCount += s.errorCount
+            out.bufferOverflowCount += s.bufferOverflowCount
+            out.lastRttMs = max(out.lastRttMs, s.lastRttMs)
+        }
+        return out
+    }
 }
