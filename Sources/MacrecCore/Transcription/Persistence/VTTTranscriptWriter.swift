@@ -145,18 +145,34 @@ public final class VTTTranscriptWriter: TranscriptFormatWriter {
     /// output (NFR-1 / AC-1). When `mode == .dual` but the segment's
     /// model isn't `"apple"` / `"apple-cloud"`, a warning is logged and
     /// the cue body is emitted without the voice tag.
+    ///
+    /// Plan-012 Phase A7 — when the segment carries a non-nil
+    /// `speaker` (Soniox diarization is on), the cue text is wrapped
+    /// in WebVTT voice tags `<v S<N>>...</v>` (label resolved via
+    /// `SpeakerSidecarLabel.label(for:)`). When `speaker` is `nil`
+    /// every legacy code path is taken textually unchanged so pre-A7
+    /// VTT fixtures stay byte-equivalent (DT-INV).
     private func render(_ segment: TranscriptSegment) -> String {
         let start = segment.timestamp.timeIntervalSince(sessionStart)
         let end = segment.lastUpdated.timeIntervalSince(sessionStart)
+        let speakerLabel = SpeakerSidecarLabel.label(for: segment.speaker)
         let body: String
         switch mode {
         case .single:
             let langTag = segment.language.map { " [\(Self.shortTag($0))]" } ?? ""
-            body = "\(segment.source.rawValue)\(langTag): \(segment.text)"
+            if let speakerLabel {
+                body = "\(segment.source.rawValue)\(langTag): <v \(speakerLabel)>\(segment.text)</v>"
+            } else {
+                body = "\(segment.source.rawValue)\(langTag): \(segment.text)"
+            }
         case .dual:
             if let tag = DualSidecarLabel.channelTag(forModel: segment.model) {
                 let label = DualSidecarLabel.channelLabel(for: tag)
-                body = "<v \(label)>\(segment.text)</v>"
+                if let speakerLabel {
+                    body = "<v \(label)><v \(speakerLabel)>\(segment.text)</v></v>"
+                } else {
+                    body = "<v \(label)>\(segment.text)</v>"
+                }
             } else {
                 logger.warning(
                     """
@@ -165,7 +181,11 @@ public final class VTTTranscriptWriter: TranscriptFormatWriter {
                     cue without voice tag. id=\(segment.id.uuidString)
                     """
                 )
-                body = segment.text
+                if let speakerLabel {
+                    body = "<v \(speakerLabel)>\(segment.text)</v>"
+                } else {
+                    body = segment.text
+                }
             }
         }
         return "\(Self.vttTime(start)) --> \(Self.vttTime(end))\n\(body)\n\n"

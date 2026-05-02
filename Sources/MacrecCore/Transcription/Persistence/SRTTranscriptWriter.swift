@@ -143,18 +143,33 @@ public final class SRTTranscriptWriter: TranscriptFormatWriter {
     /// output (NFR-1 / AC-1). When `mode == .dual` but the segment's
     /// model isn't `"apple"` / `"apple-cloud"`, a warning is logged and
     /// the cue body is emitted without the channel prefix.
+    ///
+    /// Plan-012 Phase A7 — when the segment carries a non-nil
+    /// `speaker` (Soniox diarization is on), the cue text is prefixed
+    /// with `S<N>: ` (label resolved via `SpeakerSidecarLabel.label(for:)`).
+    /// When `speaker` is `nil` every legacy code path is taken textually
+    /// unchanged so pre-A7 SRT fixtures stay byte-equivalent (DT-INV).
     private func render(seq: Int, _ segment: TranscriptSegment) -> String {
         let start = segment.timestamp.timeIntervalSince(sessionStart)
         let end = segment.lastUpdated.timeIntervalSince(sessionStart)
+        let speakerLabel = SpeakerSidecarLabel.label(for: segment.speaker)
         let body: String
         switch mode {
         case .single:
             let langTag = segment.language.map { " [\(Self.shortTag($0))]" } ?? ""
-            body = "\(segment.source.rawValue)\(langTag): \(segment.text)"
+            if let speakerLabel {
+                body = "\(segment.source.rawValue)\(langTag): \(speakerLabel): \(segment.text)"
+            } else {
+                body = "\(segment.source.rawValue)\(langTag): \(segment.text)"
+            }
         case .dual:
             if let tag = DualSidecarLabel.channelTag(forModel: segment.model) {
                 let label = DualSidecarLabel.channelLabel(for: tag)
-                body = "\(label): \(segment.text)"
+                if let speakerLabel {
+                    body = "\(label): \(speakerLabel): \(segment.text)"
+                } else {
+                    body = "\(label): \(segment.text)"
+                }
             } else {
                 logger.warning(
                     """
@@ -163,7 +178,11 @@ public final class SRTTranscriptWriter: TranscriptFormatWriter {
                     cue without channel prefix. id=\(segment.id.uuidString)
                     """
                 )
-                body = segment.text
+                if let speakerLabel {
+                    body = "\(speakerLabel): \(segment.text)"
+                } else {
+                    body = segment.text
+                }
             }
         }
         return "\(seq)\n\(Self.srtTime(start)) --> \(Self.srtTime(end))\n\(body)\n\n"

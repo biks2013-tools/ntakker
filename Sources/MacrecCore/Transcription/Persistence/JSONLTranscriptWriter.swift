@@ -139,6 +139,16 @@ public final class JSONLTranscriptWriter: TranscriptFormatWriter {
     /// the sidecar never carries a wrong-channel hint. In `.single`
     /// mode the field is ALWAYS omitted, preserving byte equivalence
     /// with pre-plan-010 output (NFR-1 / AC-1).
+    ///
+    /// Plan-012 Phase A7 adds the OPTIONAL `speaker` field that carries
+    /// the RAW provider value (e.g. Soniox `"spk:1"`) — JSONL is the
+    /// authoritative machine-readable sidecar, so we keep the unmodified
+    /// provider id rather than the human-friendly `S1` display label
+    /// (the human-readable formats — TXT/SRT/VTT — translate via
+    /// `SpeakerSidecarLabel.label(for:)`). When `segment.speaker` is
+    /// `nil` (every non-diarized provider, every pre-A7 fixture) the
+    /// `Encodable` synthesis omits the key so the JSONL byte layout
+    /// stays equivalent (DT-INV).
     private func encode(_ segment: TranscriptSegment) throws -> String {
         struct Wire: Encodable {
             let id: String
@@ -148,6 +158,7 @@ public final class JSONLTranscriptWriter: TranscriptFormatWriter {
             let model: String?
             let durationSec: Double?
             let language: String?
+            let speaker: String?
             let channel: String?
         }
         let channel: String? = {
@@ -164,6 +175,7 @@ public final class JSONLTranscriptWriter: TranscriptFormatWriter {
             model: segment.model,
             durationSec: segment.durationSec,
             language: segment.language,
+            speaker: segment.speaker,
             channel: channel
         )
         let data = try JSONEncoder().encode(wire)

@@ -119,15 +119,30 @@ public final class TXTTranscriptWriter: TranscriptFormatWriter {
     /// model isn't `"apple"` / `"apple-cloud"`, a warning is logged and
     /// the line is rendered without the channel prefix (no fallback —
     /// see Lane L-6 spec).
+    ///
+    /// Plan-012 Phase A7 — when the segment carries a non-nil
+    /// `speaker` (Soniox diarization is on), an extra `[S<N>]` tag is
+    /// inserted using `SpeakerSidecarLabel.label(for:)`. In single mode
+    /// it sits between the language tag and the colon; in dual mode it
+    /// is appended after the channel-label bracket. When `speaker` is
+    /// `nil` every legacy code path is taken textually unchanged so
+    /// existing snapshot fixtures stay byte-equivalent (DT-INV).
     private func render(_ segment: TranscriptSegment) -> String {
         let ts = Self.timeFormatter.string(from: segment.timestamp)
+        let speakerLabel = SpeakerSidecarLabel.label(for: segment.speaker)
         switch mode {
         case .single:
             let langTag = segment.language.map { " [\(Self.shortTag($0))]" } ?? ""
+            if let speakerLabel {
+                return "[\(ts)] \(segment.source.rawValue)\(langTag) [\(speakerLabel)]: \(segment.text)\n"
+            }
             return "[\(ts)] \(segment.source.rawValue)\(langTag): \(segment.text)\n"
         case .dual:
             if let tag = DualSidecarLabel.channelTag(forModel: segment.model) {
                 let label = DualSidecarLabel.channelLabel(for: tag)
+                if let speakerLabel {
+                    return "[\(ts)] [\(label)] [\(speakerLabel)] \(segment.text)\n"
+                }
                 return "[\(ts)] [\(label)] \(segment.text)\n"
             } else {
                 logger.warning(
@@ -137,6 +152,9 @@ public final class TXTTranscriptWriter: TranscriptFormatWriter {
                     without channel prefix. id=\(segment.id.uuidString)
                     """
                 )
+                if let speakerLabel {
+                    return "[\(ts)] [\(speakerLabel)] \(segment.text)\n"
+                }
                 return "[\(ts)] \(segment.text)\n"
             }
         }
