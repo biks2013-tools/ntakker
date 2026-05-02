@@ -597,15 +597,37 @@
         | Single segment, `mixed` / `stereo-split`                    | `recording-….m4a`                           | `recording-….transcript.<ext>`                                      |
         | Multi-segment (pause/resume or split)                       | `recording-….part01.m4a`, `…part02.m4a`     | `recording-….part01.transcript.<ext>`, `recording-….part02.transcript.<ext>` |
         | `--layout split` + `--transcribe-source` ∈ {mixed,system,mic} | `recording-….mic.m4a`, `recording-….system.m4a` | one sidecar reflecting the chosen single stream                      |
-        | `--layout split` + `--transcribe-source both`               | `recording-….mic.m4a`, `recording-….system.m4a` | `recording-….mic.transcript.<ext>` AND `recording-….system.transcript.<ext>` |
+        | `--transcribe-source both` (any layout, plan-012)           | per `--layout`                                  | `recording-….system.transcript.<ext>` AND `recording-….microphone.transcript.<ext>` (true dual-driver, plan-012) |
 
         `<ext>` is one of `jsonl` (default), `txt`, `srt`, `vtt`.
 
-        > **v1 limitation — `--transcribe-source both`.** v1 ships a single
-        > transcription driver and emits one combined transcript stream.
-        > When `both` is requested with a non-split layout, the driver
-        > falls back to `mixed`. True per-source dual-driver transcription
-        > is tracked as a v2 follow-up (see `Issues - Pending Items.md`).
+        ### Source-split mode (plan-012)
+
+        When `--transcribe-source both` is selected with single-mode
+        transcription, `macrec` runs **two** transcription drivers in
+        parallel — one for the system audio submix, one for the
+        microphone — and emits two sidecar files
+        (`<basename>.system.transcript.<ext>` and
+        `<basename>.microphone.transcript.<ext>`). Both drivers are
+        instances of the SAME provider (whatever `--transcribe`
+        selected). Each gets its own logger label (`track=system` /
+        `track=mic`) so log lines stay disambiguable.
+
+        **Per-provider compatibility:**
+
+        | Provider                  | Notes                                                  |
+        |---------------------------|--------------------------------------------------------|
+        | `apple` / `apple-cloud`   | Independent `SpeechAnalyzer` / `SFSpeechRecognizer` instances. The two-instance contract is locked by `AppleSpeechParallelInstancesTest`. |
+        | `gemini`                  | Independent per-chunk REST POSTs.                       |
+        | `whisperkit` / `parakeet` | Doubled memory cost (~1.2 GB total when both lanes load the multilingual model). |
+        | `soniox`                  | Two independent WebSocket connections.                  |
+        | `azure` / `azure-openai-realtime` | Two independent REST/WebSocket sessions; each counts independently against the realtime 60-min boundary. |
+        | `elevenlabs`              | Two parallel POSTs. Free/Starter tiers cap concurrent requests at 8 — `macrec` logs a warning at session start. |
+
+        **UI:** the live transcript panel renders TWO stacked auto-
+        scrolling lanes labelled `System audio` and `Microphone`.
+        Dual-mode (`--transcribe dual`) is unaffected — its existing
+        Channel A / Channel B layout takes precedence over source-split.
 
         ### Long-session behaviour
 

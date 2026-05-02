@@ -1059,6 +1059,42 @@ Plan-002 dispatches Phase F (quit-while-recording flow) and Phase G (error-mappi
 
 ## Completed items
 
+### PLAN-012-PHASE-C — True source-split transcription (Closed 2026-05-02)
+
+Plan-012 Phase C lifts the v1 `--transcribe-source both` limitation.
+The single-mode dispatcher previously collapsed `both` to `mixed`
+and emitted a single combined transcript; the new path runs **two**
+parallel transcription drivers (one per `SourceTag`) behind a new
+`SourceSplitTranscriptionManager` actor that conforms to the
+existing `TranscriptionDispatcher` protocol. Each child manager
+owns its own provider instance, sidecar writer, downsampler, and
+metrics struct — the manager merges their event streams into one
+and field-wise-merges their metrics on `currentMetrics()`.
+
+Tasks delivered:
+
+- C1 — `SourceSplitTranscriptionManager` skeleton + ingest routing
+  by SourceTag + `TranscriptionMetrics.merge`.
+- C2 — Two-stream `AsyncStream` merge with finish-counter actor.
+- C3 — Per-source sidecar naming (already implemented by
+  `SidecarPathBuilder.sidecarURL(... sourceTag:)` from plan-003 /
+  plan-004; no code change needed).
+- C4 — `TranscriptionDispatcherSelector.chooseKind(for:)` pure
+  selector + RecordingSession three-way switch on the kind, with
+  ElevenLabs Free/Starter quota warning when source == .both.
+- C5 — `SourceLane` + `SourceLaneFilter` + `SegmentChipRow` extracted
+  for reuse (singleBody intentionally not refactored — DT-INV
+  preservation).
+- C6 — `SourceSplitTranscriptView` (two stacked SourceLanes) +
+  `LiveTranscriptPanelBranchSelector` + three-way `body` branch in
+  `LiveTranscriptPanel`.
+- C7 — `AppleSpeechParallelInstancesTest` smoke-locks the
+  two-instance `SpeechAnalyzer` contract.
+
+DT-INV preservation: when source ∈ {system, mic, mixed}, single-mode
+rendering and engine paths are byte-equivalent to today. Closes the
+"True per-source dual-driver transcription" v2 follow-up tracker.
+
 ### PLAN-012-PHASE-A — Soniox speaker diarization (Closed 2026-05-02)
 
 Plan-012 Phase A (tasks A1–A8) lifts OQ-SX-3's "diarization OFF in v1"

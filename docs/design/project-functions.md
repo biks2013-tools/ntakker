@@ -1743,6 +1743,30 @@ with the disposition "validate during Phase 10".
   after plan-008 (`FilenameField.swift`, `FolderPicker.swift`,
   `SonioxKeyField.swift`, `GeminiKeyField.swift`, `ProviderKeyField.swift`).
 
+### Added by plan-012 — Source-split transcription
+
+**FR-SS-1** — `--transcribe-source both` runs two parallel
+transcription drivers (one per `SourceTag` — `.system` and
+`.microphone`) and emits two sidecar files
+(`*.system.transcript.<ext>` + `*.microphone.transcript.<ext>`).
+Both drivers are instances of the SAME provider id; each owns its
+own provider instance, sidecar writer, downsampler, and metrics
+struct. `TranscriptionMetrics` from both children is field-wise
+merged (counters summed, lastRttMs max'd) by
+`SourceSplitTranscriptionManager.currentMetrics()`. Plan-012 Phase
+C.
+
+**FR-SS-2** — The live transcript panel renders two stacked
+auto-scrolling lanes (`System audio` / `Microphone`) when
+single-mode + `transcribeSource == .both`. Dual-mode
+(`--transcribe dual`) is unaffected.
+
+**FR-SS-3** — When `--transcribe-source both` is selected with
+provider == `elevenlabs`, `macrec` logs a warning at session start
+about the Free/Starter tier concurrent-request cap (8). The recording
+proceeds; users on those tiers may surface `concurrent_limit_exceeded`
+(HTTP 429).
+
 ### Added by plan-012 — Parakeet TDT V3 multilingual provider
 
 **FR-PK-1** — `macrec` supports a Parakeet TDT V3 multilingual
