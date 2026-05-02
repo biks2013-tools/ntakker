@@ -105,6 +105,7 @@ struct TranscriptionPicker: View {
                 Text("Apple Speech (on-device)").tag("apple")
                 Text("Apple Cloud (cloud, streaming, Greek + 57 locales)").tag("apple-cloud")
                 Text("WhisperKit (on-device, multilingual)").tag("whisperkit")
+                Text("Parakeet (on-device, multilingual)").tag("parakeet")
                 Text("Gemini (cloud)").tag("gemini")
                 Text("Soniox (cloud, multilingual)").tag("soniox")
                 Text("Azure OpenAI (cloud, batch)").tag("azure")
