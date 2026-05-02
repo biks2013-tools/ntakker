@@ -1,24 +1,38 @@
 // macrec-ui/Views/Sections/LiveTranscriptionSection.swift —
-// plan-008 Unit E (project-design §UR-5).
+// plan-008 Unit E (project-design §UR-5); plan-010 Phase E / Lane L-7
+// (mode switch + Single sub-view extraction).
 //
-// Body of the Live Transcription section: Engine + Source + Sidecar
-// format + Language pickers, plus the per-provider API-key field
-// (Soniox / Gemini / Azure / ElevenLabs). The `transcriptionEnabled`
+// Body of the Live Transcription section. The `transcriptionEnabled`
 // master switch lives on the section header (UR-ADR-7); when OFF the
-// section body collapses to a single hint line so the persisted engine
-// + key state survives without consuming popover height.
+// section body collapses to a single hint line so the persisted
+// engine + key state survives without consuming popover height.
 //
-// The API-key row dispatches by provider id:
-//   * "soniox"                       → SonioxKeyField()
-//   * "gemini" / "gemini-live"       → GeminiKeyField()
-//   * "azure" / "azure-openai-realtime" → ProviderKeyField(...)
-//   * "elevenlabs"                    → ProviderKeyField(...)
-//   * everything else (apple, whisperkit, none) → no key row
+// When ON, the section body composes (top-to-bottom) per project-design
+// §DT-8:
 //
-// Apple Speech / WhisperKit are on-device and do not need a key.
-// `none` disables transcription entirely (the picker is the only
-// affordance left).
+//   1. `TranscriptionModeSwitch` — segmented "Single | Dual" picker
+//      bound to `@AppStorage("com.macrec.ui.transcriptionMode")`
+//      (plan-010 Lane L-7). Always rendered above the mode-dependent
+//      controls.
+//   2. The mode-dependent controls:
+//      * `.single` → `SingleTranscriptionControls()` — the verbatim
+//        extraction of the pre-plan-010 four-row block (Transcribe /
+//        Source / Transcript format / Language) plus the per-provider
+//        API-key row. Behaviourally identical to today (AC-1).
+//      * `.dual`   → `DualTranscriptionControls()` — the dual-mode
+//        control set landed by plan-010 Lane L-8 (Wave 5). Renders
+//        the source / Channel-A locale / Channel-B locale / format
+//        rows plus per-channel inline error display (FR-4).
+//
+// The mode is read here via `@AppStorage` directly (rather than from
+// `RecordingController.transcriptionMode`) so the branch reactively
+// re-evaluates on user flip without going through a controller-side
+// `Notification` round-trip. The controller still keeps an
+// independent mirror so the engine-side `RecordingSession`
+// construction can read the mode at Start time.
 
+import MacrecCore
+import MacrecUIKit
 import SwiftUI
 
 /// Body of the Live Transcription section. Wrapped in a `Section` so it
@@ -26,21 +40,27 @@ import SwiftUI
 struct LiveTranscriptionSection: View {
     @Environment(\.palette) private var palette
 
-    @AppStorage("com.macrec.ui.transcribeProvider")
-    private var providerRaw: String = "apple"
-
     @AppStorage("com.macrec.ui.transcriptionEnabled")
     private var transcriptionEnabled: Bool = true
+
+    /// Persisted mode (plan-010 Lane L-7). Bad / missing values
+    /// collapse to `.single` — same fallback semantics as
+    /// `RecordingController.loadTranscriptionMode`.
+    @AppStorage(RecordingController.transcriptionModeStorageKey)
+    private var transcriptionModeRaw: String = LiveTranscriptionMode.single.rawValue
+
+    private var transcriptionMode: LiveTranscriptionMode {
+        LiveTranscriptionMode(rawValue: transcriptionModeRaw) ?? .single
+    }
 
     var body: some View {
         Section {
             if transcriptionEnabled {
-                TranscriptionPicker()
-                if providerRaw.lowercased() != "none" {
-                    TranscriptionSourcePicker()
-                    TranscriptionFormatPicker()
-                    TranscriptionLanguagePicker()
-                    apiKeyRow
+                TranscriptionModeSwitch()
+                if transcriptionMode == .single {
+                    SingleTranscriptionControls()
+                } else {
+                    DualTranscriptionControls()
                 }
             } else {
                 Text("Off — toggle on to enable live transcription")
@@ -48,43 +68,6 @@ struct LiveTranscriptionSection: View {
                     .foregroundStyle(palette.tertiary)
                     .padding(.vertical, 2)
             }
-        }
-    }
-
-    /// Provider-specific API-key row. Composes the existing per-provider
-    /// key views — Unit D wrapped each one in `ApiKeyStatusRow` so the
-    /// rendered surface here matches the locked-in v1.6 chip + dotted
-    /// state.
-    @ViewBuilder
-    private var apiKeyRow: some View {
-        switch providerRaw.lowercased() {
-        case "soniox":
-            SonioxKeyField()
-        case "gemini", "gemini-live":
-            GeminiKeyField()
-        case "azure":
-            ProviderKeyField(
-                providerId: "azure",
-                envVarName: "AZURE_OPENAI_API_KEY",
-                displayLabel: String(localized: "Azure OpenAI API key"),
-                helpURL: URL(string: "https://learn.microsoft.com/azure/ai-services/openai/")
-            )
-        case "azure-openai-realtime":
-            ProviderKeyField(
-                providerId: "azure-openai-realtime",
-                envVarName: "AZURE_OPENAI_API_KEY",
-                displayLabel: String(localized: "Azure OpenAI Realtime API key"),
-                helpURL: URL(string: "https://learn.microsoft.com/azure/ai-services/openai/")
-            )
-        case "elevenlabs":
-            ProviderKeyField(
-                providerId: "elevenlabs",
-                envVarName: "ELEVENLABS_API_KEY",
-                displayLabel: String(localized: "ElevenLabs API key"),
-                helpURL: URL(string: "https://elevenlabs.io/app/settings/api-keys")
-            )
-        default:
-            EmptyView()
         }
     }
 }

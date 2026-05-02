@@ -21,7 +21,15 @@ import Logging
 /// to a `TranscriptionProvider`, sanitises results, coalesces segments,
 /// and emits `TranscriptionEvent`s consumed by both UI and sidecar
 /// writers.
-public actor TranscriptionManager {
+///
+/// Plan-010 Phase C / Lane L-4 — conforms to `TranscriptionDispatcher`
+/// so `RecordingSession` can hold a single `(any TranscriptionDispatcher)?`
+/// dispatcher and route every transcription operation through the
+/// protocol regardless of single- vs dual-mode (see project-design
+/// §DT-4). The protocol was extracted from this manager's existing
+/// public surface, so the conformance is a single-line declaration —
+/// no method-body changes are needed.
+public actor TranscriptionManager: TranscriptionDispatcher {
 
     // MARK: - Configuration
 

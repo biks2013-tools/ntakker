@@ -1,6 +1,7 @@
 // macrec-ui/Views/Transcription/LiveTranscriptPanel.swift — see
 // project-design.md §LT-8.1 / §LT-8.5 and plan-003 Phase G,
-// updated for plan-004 Phase H (rest-batch event shape).
+// updated for plan-004 Phase H (rest-batch event shape) and
+// plan-010 Phase G / Lane L-9 (Wave 6 — dual-lane display branch).
 //
 // Renders the live `transcriptSegments` array straight from the
 // `RecordingController`. Each segment is the coalesced output of one
@@ -12,6 +13,22 @@
 // Cap: `RecordingController.maxLiveTranscriptSegments` segments
 // retained (oldest dropped). Sidecar file remains the persistent
 // record for everything that scrolls off the top.
+//
+// Mode branch (plan-010 Lane L-9 / DT-INV — single-mode unchanged):
+//   * Reads the persisted `LiveTranscriptionMode` from
+//     `@AppStorage(RecordingController.transcriptionModeStorageKey)`
+//     (the same source the controls in `LiveTranscriptionSection`
+//     read from).
+//   * `.single` → renders the existing flat-list panel below
+//     (BYTE-FOR-BYTE UNCHANGED — this is DT-INV: the
+//     `LiveTranscriptPanelSingleModeTests` regression suite asserts
+//     no structural drift).
+//   * `.dual` → renders `DualLiveTranscriptView()` (Lane L-9 view
+//     that composes two stacked `DualLiveTranscriptLane`s with
+//     independent auto-scroll per lane, per DT-ADR-8 / OQ-5).
+//   The branch happens INSIDE the existing `Group { ... }.frame(...)`
+//   wrapper so the panel still occupies its slot identically in both
+//   modes.
 
 import MacrecCore
 import MacrecUIKit
@@ -20,6 +37,19 @@ import SwiftUI
 struct LiveTranscriptPanel: View {
     @Environment(\.recordingController) private var recordingController
     @Environment(\.palette) private var palette
+
+    /// Persisted live-transcription mode (Single / Dual) — read here
+    /// directly via `@AppStorage` so the panel reactively re-renders
+    /// when the user flips the mode switch in `LiveTranscriptionSection`,
+    /// without needing a controller-side `Notification` round-trip.
+    /// Bad / missing values collapse to `.single` (matches
+    /// `RecordingController.loadTranscriptionMode`).
+    @AppStorage(RecordingController.transcriptionModeStorageKey)
+    private var transcriptionModeRaw: String = LiveTranscriptionMode.single.rawValue
+
+    private var transcriptionMode: LiveTranscriptionMode {
+        LiveTranscriptionMode(rawValue: transcriptionModeRaw) ?? .single
+    }
 
     /// Floor on the inner scroll-view height so even on a small
     /// popover there is room for two or three lines of transcript.
@@ -57,6 +87,79 @@ struct LiveTranscriptPanel: View {
     }
 
     var body: some View {
+        // Mode branch (plan-010 Lane L-9). The single-mode subtree
+        // below is BYTE-FOR-BYTE UNCHANGED from the pre-plan-010
+        // panel — see DT-INV. The dual-mode subtree is
+        // `DualLiveTranscriptView()` and lives in the same vertical
+        // slot (so the panel claims the same height in both modes).
+        if transcriptionMode == .dual {
+            dualBody
+        } else {
+            singleBody
+        }
+    }
+
+    /// Dual-mode body — Lane L-9 entry point. Wraps
+    /// `DualLiveTranscriptView` in the same `groupBackground` chrome
+    /// + outer `.frame(...)` modifier as the single-mode body so the
+    /// panel claims its vertical slot identically in both modes.
+    private var dualBody: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text("Transcript")
+                    .font(.caption)
+                    .foregroundStyle(palette.secondary)
+                Spacer()
+                if !segments.isEmpty {
+                    Button {
+                        recordingController?.clearTranscriptSegments()
+                    } label: {
+                        Image(systemName: "trash")
+                            .imageScale(.small)
+                            .foregroundStyle(palette.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .help(String(localized: "Clear transcript (sidecar file is unaffected)"))
+                    .accessibilityLabel(String(localized: "Clear transcript"))
+                }
+                TranscriptionStatusBadge()
+            }
+            if let err = lastError {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(err)
+                        .font(.system(size: 10))
+                        .foregroundStyle(palette.secondary)
+                        .lineLimit(2)
+                }
+                .padding(.horizontal, 4)
+            }
+            DualLiveTranscriptView()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(palette.groupBackground)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(palette.groupStroke, lineWidth: 0.5)
+        )
+        .frame(
+            minHeight: Self.minBodyHeight,
+            maxHeight: .infinity,
+            alignment: .top
+        )
+    }
+
+    /// Single-mode body — verbatim extraction of the pre-plan-010
+    /// panel body (DT-INV: byte-for-byte unchanged). DO NOT modify
+    /// this view's contents in dual-mode lanes; modifications here
+    /// must be co-changed in `dualBody` so the two modes stay
+    /// visually consistent.
+    private var singleBody: some View {
         // The panel ALWAYS claims its slot, whether transcription is
         // idle (Color.clear placeholder) or active (full content).
         // Without this, the parent's `.frame(maxHeight: .infinity)`

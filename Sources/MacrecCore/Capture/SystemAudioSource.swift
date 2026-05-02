@@ -44,6 +44,14 @@ public protocol AudioSource: AnyObject {
     /// source's own delivery queue.
     var onSampleBuffer: ((CaptureBuffer) -> Void)? { get set }
 
+    /// Optional secondary tap. When set, called on every captured
+    /// `CaptureBuffer` from the source's own delivery queue, in
+    /// addition to `onSampleBuffer`. Used by the UI's level-meter
+    /// publisher to drive bar visualizations without going through
+    /// the aligner. Must enqueue and return promptly. nil means
+    /// "no level metering" (CLI sessions leave it nil).
+    var levelTap: ((CaptureBuffer) -> Void)? { get set }
+
     /// Begin capturing. Idempotent — implementations should return
     /// immediately if already running. Throws on hard setup failures
     /// (permissions, device-not-found, SCStream setup failure, etc.).

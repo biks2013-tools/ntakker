@@ -23,6 +23,7 @@ import AVFoundation
 import Accelerate
 import CoreMedia
 import Foundation
+import Logging
 
 /// Per-source level-meter tap. Owns a pre-allocated scratch
 /// `AVAudioPCMBuffer` and yields coalesced `LevelSample`s onto an
@@ -150,9 +151,25 @@ public final class LevelMeterTap: @unchecked Sendable {
         source: LevelSampleSource,
         timestamp: TimeInterval
     ) -> LevelSample? {
+        struct Diag { static var dropFrame = 0; static var dropCopy = 0; static var dropChan = 0; static var ok = 0 }
         let frameCount = CMSampleBufferGetNumSamples(sampleBuffer)
-        guard frameCount > 0 else { return nil }
+        guard frameCount > 0 else {
+            Diag.dropFrame += 1
+            if Diag.dropFrame % 100 == 1 {
+                Logger(label: "macrec.ui.levelTap.diag").warning("LEVELMETER_RT extractLevels DROP frameCount=0 n=\(Diag.dropFrame)")
+            }
+            return nil
+        }
         let capped = min(frameCount, Int(scratch.frameCapacity))
+
+        // Set frameLength BEFORE asking for the ABL — `mutableAudioBufferList`
+        // reports each buffer's `mDataByteSize` based on the current
+        // `frameLength * stride`, NOT `frameCapacity * stride`. If we
+        // leave frameLength at 0 (its default) the ABL is reported as
+        // empty and `CMSampleBufferCopyPCMDataIntoAudioBufferList`
+        // fails with `kCMSampleBufferError_AudioBufferListAndSampleBufferHaveDifferentTotalLengths`
+        // (-12731).
+        scratch.frameLength = AVAudioFrameCount(capped)
 
         // Copy frames into the scratch buffer's channel-0 backing.
         // We use CMSampleBufferCopyPCMDataIntoAudioBufferList which
@@ -165,13 +182,28 @@ public final class LevelMeterTap: @unchecked Sendable {
             frameCount: Int32(capped),
             into: abl
         )
-        guard status == noErr else { return nil }
-        scratch.frameLength = AVAudioFrameCount(capped)
+        guard status == noErr else {
+            Diag.dropCopy += 1
+            if Diag.dropCopy % 50 == 1 {
+                Logger(label: "macrec.ui.levelTap.diag").warning("LEVELMETER_RT extractLevels DROP copy-failed status=\(status) n=\(Diag.dropCopy)")
+            }
+            return nil
+        }
 
         // Read channel 0. AVAudioPCMBuffer's `floatChannelData` is a
         // pointer to an array of channel pointers (non-interleaved
         // layout).
-        guard let channels = scratch.floatChannelData else { return nil }
+        guard let channels = scratch.floatChannelData else {
+            Diag.dropChan += 1
+            if Diag.dropChan % 50 == 1 {
+                Logger(label: "macrec.ui.levelTap.diag").warning("LEVELMETER_RT extractLevels DROP floatChannelData=nil n=\(Diag.dropChan)")
+            }
+            return nil
+        }
+        Diag.ok += 1
+        if Diag.ok % 30 == 1 {
+            Logger(label: "macrec.ui.levelTap.diag").warning("LEVELMETER_RT extractLevels OK n=\(Diag.ok) source=\(source)")
+        }
         let channel0 = channels[0]
         let n = vDSP_Length(capped)
 

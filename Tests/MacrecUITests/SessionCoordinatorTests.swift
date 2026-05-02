@@ -75,6 +75,12 @@ final class MockRecordingSession: RecordingSessionLike, @unchecked Sendable {
         emit(.splitting)
         emit(.recording)
     }
+
+    func setLevelTapSink(_ sink: (@Sendable (CaptureBuffer) -> Void)?) {
+        // No-op in the mock. The level meter is a UI concern; tests
+        // for the coordinator's stop-and-stitch behaviour do not
+        // exercise it.
+    }
 }
 
 // MARK: - Tests

@@ -145,14 +145,26 @@ public final class RecordingSession: @unchecked Sendable {
     /// Tests inject a closure returning `FakeTranscriptionProvider`.
     private let transcriptionProviderFactory: TranscriptionProviderFactoryClosure?
 
-    /// Active transcription manager for this session. Created in
-    /// `run()` when `options.transcriptionProviderId != nil && != "none"`,
-    /// stopped in the finalize path. `nil` when transcription is
-    /// disabled — the recording path is byte-identical in that case
-    /// (NFR-17 / AC-LT-2). The manager owns its own per-session
-    /// `TranscriptSidecarWriter`; the session does not retain a
+    /// Active transcription dispatcher for this session. Created in
+    /// `run()` when transcription is enabled (single mode via
+    /// `options.transcriptionProviderId != "none"`, or dual mode via
+    /// `options.dualTranscription != nil`); stopped in the finalize
+    /// path. `nil` when transcription is disabled — the recording
+    /// path is byte-identical in that case (NFR-17 / AC-LT-2).
+    ///
+    /// Plan-010 Phase C / Lane L-4 (DT-INV — project-design §DT-4):
+    /// the choice between the single-mode `TranscriptionManager` and
+    /// the dual-mode `DualTranscriptionManager` is made ONCE here at
+    /// `setUpTranscriptionPipelineIfNeeded(...)` time. After
+    /// construction, every subsequent operation (`ingestFrame`,
+    /// `rotateSidecar`, `stop`, `currentMetrics`) goes through the
+    /// `TranscriptionDispatcher` protocol — there are NO per-callsite
+    /// `if dual { ... } else { ... }` branches in this file.
+    ///
+    /// The dispatcher owns its own per-session sidecar writer (or
+    /// shared writer in dual mode); the session does not retain a
     /// separate sidecar reference (plan-004 Phase E rewrite).
-    private var _transcriptionManager: TranscriptionManager?
+    private var _transcriptionDispatcher: (any TranscriptionDispatcher)?
 
     /// Token for the live tap installed on the aligner. Removed on
     /// teardown so a misbehaving manager can never starve the recorder
@@ -220,6 +232,30 @@ public final class RecordingSession: @unchecked Sendable {
 
     private var _systemSource: (any SystemAudioSource)?
     private var _micSource: (any MicrophoneSource)?
+
+    /// Optional side-channel for per-source level metering.
+    /// `RecordingController` sets this to forward each captured
+    /// `CaptureBuffer` to a `LevelMeterPublisher`. Wired into
+    /// `systemSource.levelTap` and `micSource.levelTap` in Step 7's
+    /// callback wiring (capture → tap call sites). nil means "no level
+    /// metering" (the CLI path has no UI to feed).
+    ///
+    /// `didSet` re-installs the closures on the LIVE sources if they
+    /// already exist — this handles the race where `setLevelTapSink`
+    /// arrives AFTER `run()` has already wired the source callbacks.
+    /// Without this, a late sink would only take effect on the NEXT
+    /// session and the meters would stay dark for the current one.
+    public var levelTapSink: (@Sendable (CaptureBuffer) -> Void)? {
+        didSet {
+            if let sink = levelTapSink {
+                _systemSource?.levelTap = { cb in sink(cb) }
+                _micSource?.levelTap = { cb in sink(cb) }
+            } else {
+                _systemSource?.levelTap = nil
+                _micSource?.levelTap = nil
+            }
+        }
+    }
 
     // MARK: - State stream (FR-33, project-design §15.3.1)
 
@@ -433,6 +469,15 @@ public final class RecordingSession: @unchecked Sendable {
         }
         micSource.onSampleBuffer = { [weak aligner] cb in
             aligner?.ingest(cb)
+        }
+        // Source → level meter (optional). The sink is set by
+        // `RecordingController` before `run()` is invoked; CLI
+        // sessions leave it nil and the closures below short-circuit
+        // to no-op. Strong capture of `self.levelTapSink` is safe —
+        // sources outlive their callbacks within a single session.
+        if let sink = self.levelTapSink {
+            systemSource.levelTap = { cb in sink(cb) }
+            micSource.levelTap = { cb in sink(cb) }
         }
         // Aligner → recorder. Failures inside `append` are non-fatal
         // per-frame; we capture the most recent error and let the
@@ -729,20 +774,30 @@ public final class RecordingSession: @unchecked Sendable {
 
         // 4.5. plan-004 R-LT-5: when transcription is active, rotate
         // the sidecar onto the new audio URL so the in-flight transcript
-        // follows the rotated audio file. The manager closes the
+        // follows the rotated audio file. The dispatcher closes the
         // outgoing writer, opens a fresh one at the derived sibling
         // path, and resets its segment indexing. Failures here are
         // logged but do NOT roll back the audio rotation — the new
         // audio segment is already accepting frames and the partial
         // sidecar is on disk.
-        let mgrSnapshot: TranscriptionManager? = serialQueue.sync {
-            self._transcriptionManager
+        //
+        // Plan-010 / DT-INV: the same call dispatches through the
+        // protocol whether the underlying dispatcher is a single-mode
+        // `TranscriptionManager` (sidecar format from
+        // `options.transcriptionFormat`) or a dual-mode
+        // `DualTranscriptionManager` (sidecar format from
+        // `options.dualTranscription!.sidecarFormat`). We resolve the
+        // format polymorphically here.
+        let dispatcherSnapshot: (any TranscriptionDispatcher)? = serialQueue.sync {
+            self._transcriptionDispatcher
         }
-        if let mgr = mgrSnapshot {
+        if let dispatcher = dispatcherSnapshot {
+            let sidecarFormat: TranscriptFormat = options.dualTranscription?.sidecarFormat
+                ?? options.transcriptionFormat
             do {
-                try await mgr.rotateSidecar(
+                try await dispatcher.rotateSidecar(
                     toAudioURL: nextOutput,
-                    format: options.transcriptionFormat
+                    format: sidecarFormat
                 )
             } catch {
                 logger.error(
@@ -1034,37 +1089,219 @@ public final class RecordingSession: @unchecked Sendable {
         }
     }
 
-    /// Install the live transcription pipeline if
-    /// `options.transcriptionProviderId` selects a real provider. When
-    /// transcription is disabled, this is a no-op and the recording
+    /// Install the live transcription pipeline if transcription is
+    /// enabled. "Enabled" means EITHER:
+    ///
+    ///   * Single mode — `options.transcriptionProviderId` selects a
+    ///     real provider (i.e. is non-empty / non-`"none"` / non-
+    ///     `"noop"`). The session constructs a `TranscriptionManager`.
+    ///
+    ///   * Dual mode (plan-010) — `options.dualTranscription != nil`.
+    ///     The session constructs a `DualTranscriptionManager`.
+    ///
+    /// When neither path applies, this is a no-op and the recording
     /// path is byte-identical to pre-Phase-G behavior (NFR-17 /
     /// AC-LT-2).
     ///
-    /// On success, populates the three pieces of state:
-    ///   * `_transcriptionManager`
-    ///   * `_transcriptionTapToken` (installed on `aligner.addLiveTap`)
-    ///   * `_transcriptionForwarderTask` (manager events → public stream)
+    /// **Plan-010 Phase C / Lane L-4 (DT-INV).** The choice between
+    /// single and dual mode is made ONCE here. After this method
+    /// returns, the session holds a `(any TranscriptionDispatcher)?`
+    /// in `_transcriptionDispatcher` and every subsequent operation
+    /// (`ingestFrame` via the aligner tap, `rotateSidecar` from
+    /// `split(...)`, `stop` from teardown) goes through the protocol —
+    /// there are NO `if dual { ... } else { ... }` branches anywhere
+    /// else in this file.
     ///
-    /// The sidecar writer lives inside the `TranscriptionManager` (it
-    /// owns the per-format writer for the lifetime of the recording
-    /// segment and rotates it on `split(nextOutput:)` via
-    /// `TranscriptionManager.rotateSidecar`).
+    /// On success, populates the three pieces of state:
+    ///   * `_transcriptionDispatcher` (single or dual)
+    ///   * `_transcriptionTapToken` (installed on `aligner.addLiveTap`)
+    ///   * `_transcriptionForwarderTask` (dispatcher events → public stream)
+    ///
+    /// The sidecar writer(s) live inside the dispatcher (single mode:
+    /// per-session writer owned by `TranscriptionManager`; dual mode:
+    /// shared writer owned by `DualTranscriptionManager`); the session
+    /// does not retain a separate sidecar reference.
     ///
     /// Throws on missing API key, unknown provider, non-writable
-    /// sidecar path, or downsampler init failure. Per the project
+    /// sidecar path, downsampler init failure, or any of the
+    /// `DualTranscriptionConfig` validation guards. Per the project
     /// "no fallback" rule, any of these errors aborts `run()` and
     /// surfaces back to the CLI / UI caller.
     private func setUpTranscriptionPipelineIfNeeded(
         aligner: HostClockAligner
     ) async throws {
-        let providerId = options.transcriptionProviderId ?? "none"
-        let normalized = providerId.lowercased()
-        guard !normalized.isEmpty, normalized != "none", normalized != "noop" else {
-            // Transcription disabled — nothing to do, recording path
-            // is unchanged.
+        // ----------------------------------------------------------
+        // Step 1: pick the dispatcher type ONCE (DT-INV).
+        // Dual takes precedence — when both `dualTranscription` is
+        // configured AND a single-mode `transcriptionProviderId` is
+        // set, the dual config wins. (In practice the UI/CLI layers
+        // mute the single-mode controls when dual is enabled, so the
+        // overlap is defensive.)
+        // ----------------------------------------------------------
+        let dispatcher: (any TranscriptionDispatcher)?
+        let trSource: TranscriptionSource
+        let summary: String
+
+        if let dualConfig = options.dualTranscription {
+            // Dual-mode construction. The DualTranscriptionManager
+            // owns provider construction, both downsamplers, and the
+            // shared sidecar writer internally.
+            let dualMgr: DualTranscriptionManager
+            do {
+                dualMgr = try DualTranscriptionManager(
+                    config: dualConfig,
+                    sidecarBaseURL: options.output,
+                    sidecarPolicy: .streaming,
+                    logger: LoggerFactory.make("macrec.transcription.dual")
+                )
+            } catch let macrecError as MacrecError {
+                throw macrecError
+            } catch {
+                throw MacrecError.unknown(
+                    "dual transcription manager init failed: \(error.localizedDescription)"
+                )
+            }
+            dispatcher = dualMgr
+            trSource = dualConfig.source
+            summary = "dual (channelA=\(dualConfig.channelA.providerId)/\(dualConfig.channelA.locale), channelB=\(dualConfig.channelB.providerId)/\(dualConfig.channelB.locale), source=\(trSource.rawValue), sidecar=\(dualConfig.sidecarFormat.rawValue))"
+        } else {
+            // Single-mode construction (existing path). All of the
+            // single-mode plumbing is below.
+            let providerId = options.transcriptionProviderId ?? "none"
+            let normalized = providerId.lowercased()
+            guard !normalized.isEmpty, normalized != "none", normalized != "noop" else {
+                // Transcription disabled — nothing to do, recording
+                // path is unchanged.
+                return
+            }
+            let (mgr, source, summaryLine) = try await buildSingleModeManager(
+                normalizedProviderId: normalized
+            )
+            dispatcher = mgr
+            trSource = source
+            summary = summaryLine
+        }
+
+        guard let dispatcher else {
             return
         }
 
+        // ----------------------------------------------------------
+        // Step 2: start the dispatcher and wire the forwarder Task.
+        // The dispatcher protocol's `start()` is `async throws` —
+        // single-mode `TranscriptionManager.start()` is non-throwing
+        // (Swift allows the conformance), dual-mode
+        // `DualTranscriptionManager.start()` throws on both-channel-
+        // down.
+        // ----------------------------------------------------------
+        let dispatcherEvents: AsyncStream<TranscriptionEvent>
+        do {
+            dispatcherEvents = try await dispatcher.start()
+        } catch let macrecError as MacrecError {
+            throw macrecError
+        } catch {
+            throw MacrecError.unknown(
+                "transcription dispatcher start failed: \(error.localizedDescription)"
+            )
+        }
+
+        let publicContinuation = self._transcriptEventsContinuation
+        let forwarderLogger = self.logger
+        let forwarder = Task {
+            forwarderLogger.info("transcript forwarder: starting drain of dispatcher events stream")
+            var seen = 0
+            for await event in dispatcherEvents {
+                if Task.isCancelled { break }
+                seen += 1
+                forwarderLogger.info("transcript forwarder: republishing event #\(seen) \(String(describing: event).prefix(60))")
+                publicContinuation.yield(event)
+            }
+            forwarderLogger.info("transcript forwarder: dispatcher events stream ended after \(seen) events")
+            // Dispatcher events finished — the public stream is
+            // intentionally NOT finished here. The session's run-loop
+            // owns the stream's lifecycle (so a transient provider
+            // failure does not exit the UI's `for await` loop early).
+        }
+
+        // ----------------------------------------------------------
+        // Step 3: install the live tap on the aligner. The closure
+        // is mode-agnostic — it routes frames into the dispatcher
+        // through the protocol method `ingestFrame(_:from:)`. Both
+        // implementations are `async`, so the sync tap closure spawns
+        // a fire-and-forget Task per dispatch.
+        //
+        // `.mixed` deserves the long comment: previously this case
+        // fell through to `manager.ingestFrame(frame, from: .system)`,
+        // which made `TranscriptionManager.ingestFrame` read
+        // `frame.systemBuffer` and DROP `frame.micBuffer` entirely.
+        // That made `.mixed` silently equivalent to `.system` for
+        // transcription even though the audio file was correctly
+        // mixed by `M4ARecorder` via `BufferSummer.sum(...)`. The
+        // observable defect was: recording contains both the user's
+        // mic and the system audio, but the transcript sidecar only
+        // contains the system side (e.g. the other Teams participants
+        // but not the user). Fix: sum the two sub-buffers here using
+        // the same `BufferSummer` the recorder uses, then synthesise
+        // a single-buffer `AlignedFrame` that the dispatcher picks up
+        // through its existing `.system` branch. This keeps the
+        // dispatcher's API surface unchanged. The same routing
+        // applies to the dual dispatcher because its `ingestFrame`
+        // also reads `frame.systemBuffer` per `tag == .system`.
+        // ----------------------------------------------------------
+        let token = aligner.addLiveTap { [weak dispatcher] frame in
+            guard let dispatcher else { return }
+            switch trSource {
+            case .system:
+                Task { await dispatcher.ingestFrame(frame, from: .system) }
+            case .mic:
+                Task { await dispatcher.ingestFrame(frame, from: .microphone) }
+            case .mixed:
+                // `BufferSummer.sum(_:_:)` is nil-tolerant: nil+nil
+                // returns nil, side+nil returns the side untouched,
+                // both-present returns the clamped Float-add. `try?`
+                // collapses any DSP-level failure into "fall back to
+                // whichever side is available" — the same defensive
+                // posture the recorder takes inside `buildMixed`.
+                let mixed = (try? BufferSummer.sum(
+                    frame.systemBuffer,
+                    frame.micBuffer
+                )) ?? frame.systemBuffer ?? frame.micBuffer
+                guard let mixed else { return }
+                let mixedFrame = AlignedFrame(
+                    pts: frame.pts,
+                    duration: frame.duration,
+                    systemBuffer: mixed,
+                    micBuffer: nil
+                )
+                Task { await dispatcher.ingestFrame(mixedFrame, from: .system) }
+            case .both:
+                Task { await dispatcher.ingestFrame(frame, from: .system) }
+                Task { await dispatcher.ingestFrame(frame, from: .microphone) }
+            }
+        }
+
+        serialQueue.sync {
+            self._transcriptionDispatcher = dispatcher
+            self._transcriptionForwarderTask = forwarder
+            self._transcriptionTapToken = token
+        }
+
+        logger.info("transcription pipeline ready: \(summary)")
+    }
+
+    /// Build a single-mode `TranscriptionManager` from the resolved
+    /// `RecordingOptions`. Extracted from
+    /// `setUpTranscriptionPipelineIfNeeded` (plan-010 L-4) so the
+    /// outer method can branch cleanly between single and dual
+    /// construction without duplicating the long single-mode setup.
+    ///
+    /// Returns the manager (typed as `TranscriptionManager`, the
+    /// caller widens to `any TranscriptionDispatcher`), the resolved
+    /// transcription source, and a one-line summary string for the
+    /// logger.
+    private func buildSingleModeManager(
+        normalizedProviderId: String
+    ) async throws -> (TranscriptionManager, TranscriptionSource, String) {
         // Per FR / configuration-guide rule: warn if the API key is in
         // its last 7 days of validity. The manager still runs; this is
         // a heads-up on stderr.
@@ -1073,7 +1310,7 @@ public final class RecordingSession: @unchecked Sendable {
             if interval <= 7 * 24 * 3600 && interval > 0 {
                 let days = Int(ceil(interval / 86_400))
                 logger.warning(
-                    "transcription API key for provider '\(normalized)' expires in \(days) day(s)"
+                    "transcription API key for provider '\(normalizedProviderId)' expires in \(days) day(s)"
                 )
             }
         }
@@ -1187,93 +1424,8 @@ public final class RecordingSession: @unchecked Sendable {
             logger: LoggerFactory.make("macrec.transcription.manager")
         )
 
-        // `start()` returns the stream the forwarder will drain. The
-        // call is `await` because `TranscriptionManager` is an actor.
-        let managerEvents = await manager.start()
-
-        // Spawn the forwarder task: drains manager events and
-        // republishes them onto the public events stream consumed by
-        // the UI. Sidecar persistence is owned inside the manager
-        // (Phase E), so the forwarder no longer touches it.
-        let publicContinuation = self._transcriptEventsContinuation
-        let forwarderLogger = self.logger
-        let forwarder = Task {
-            forwarderLogger.info("transcript forwarder: starting drain of manager events stream")
-            var seen = 0
-            for await event in managerEvents {
-                if Task.isCancelled { break }
-                seen += 1
-                forwarderLogger.info("transcript forwarder: republishing event #\(seen) \(String(describing: event).prefix(60))")
-                publicContinuation.yield(event)
-            }
-            forwarderLogger.info("transcript forwarder: manager events stream ended after \(seen) events")
-            // Manager events finished — the public stream is
-            // intentionally NOT finished here. The session's run-loop
-            // owns the stream's lifecycle (so a transient provider
-            // failure does not exit the UI's `for await` loop early).
-        }
-
-        // Install the live tap on the aligner. The closure is
-        // synchronous — it forwards into the manager's `nonisolated`
-        // ingest helper which itself spawns a fire-and-forget Task
-        // hopping onto the actor's executor.
-        //
-        // `.mixed` deserves the long comment: previously this case
-        // fell through to `manager.ingestFrame(frame, from: .system)`,
-        // which made `TranscriptionManager.ingestFrame` read
-        // `frame.systemBuffer` and DROP `frame.micBuffer` entirely.
-        // That made `.mixed` silently equivalent to `.system` for
-        // transcription even though the audio file was correctly
-        // mixed by `M4ARecorder` via `BufferSummer.sum(...)`. The
-        // observable defect was: recording contains both the user's
-        // mic and the system audio, but the transcript sidecar only
-        // contains the system side (e.g. the other Teams participants
-        // but not the user). Fix: sum the two sub-buffers here using
-        // the same `BufferSummer` the recorder uses, then synthesise
-        // a single-buffer `AlignedFrame` that the manager picks up
-        // through its existing `.system` branch. This keeps the
-        // manager's API surface unchanged.
-        let token = aligner.addLiveTap { [weak manager] frame in
-            guard let manager else { return }
-            switch trSource {
-            case .system:
-                Task { await manager.ingestFrame(frame, from: .system) }
-            case .mic:
-                Task { await manager.ingestFrame(frame, from: .microphone) }
-            case .mixed:
-                // `BufferSummer.sum(_:_:)` is nil-tolerant: nil+nil
-                // returns nil, side+nil returns the side untouched,
-                // both-present returns the clamped Float-add. `try?`
-                // collapses any DSP-level failure into "fall back to
-                // whichever side is available" — the same defensive
-                // posture the recorder takes inside `buildMixed`.
-                let mixed = (try? BufferSummer.sum(
-                    frame.systemBuffer,
-                    frame.micBuffer
-                )) ?? frame.systemBuffer ?? frame.micBuffer
-                guard let mixed else { return }
-                let mixedFrame = AlignedFrame(
-                    pts: frame.pts,
-                    duration: frame.duration,
-                    systemBuffer: mixed,
-                    micBuffer: nil
-                )
-                Task { await manager.ingestFrame(mixedFrame, from: .system) }
-            case .both:
-                Task { await manager.ingestFrame(frame, from: .system) }
-                Task { await manager.ingestFrame(frame, from: .microphone) }
-            }
-        }
-
-        serialQueue.sync {
-            self._transcriptionManager = manager
-            self._transcriptionForwarderTask = forwarder
-            self._transcriptionTapToken = token
-        }
-
-        logger.info(
-            "transcription pipeline ready (provider=\(provider.id), source=\(trSource.rawValue), format=\(options.transcriptionFormat.rawValue), sidecar=\(sidecarURL.lastPathComponent))"
-        )
+        let summary = "single (provider=\(provider.id), source=\(trSource.rawValue), format=\(options.transcriptionFormat.rawValue), sidecar=\(sidecarURL.lastPathComponent))"
+        return (manager, trSource, summary)
     }
 
     /// Hard upper bound on `tearDownTranscriptionPipelineIfNeeded`.
@@ -1338,45 +1490,52 @@ public final class RecordingSession: @unchecked Sendable {
     /// call from every error/cleanup path. Order:
     ///
     ///   1. Remove the aligner tap (no more frames flow into the
-    ///      manager).
-    ///   2. Stop the manager (final-drains the per-source buffers,
-    ///      waits up to `TranscriptionManager.stopDrainSeconds` for
-    ///      outstanding provider calls, closes the sidecar, finishes
-    ///      its events stream).
+    ///      dispatcher).
+    ///   2. Stop the dispatcher (single-mode: final-drains the
+    ///      per-source buffers, waits up to
+    ///      `TranscriptionManager.stopDrainSeconds` for outstanding
+    ///      provider calls, closes the sidecar; dual-mode:
+    ///      concurrently stops both pipelines with their own per-
+    ///      channel deadlines, closes the shared sidecar). Both end
+    ///      by finishing the events stream.
     ///   3. Await the forwarder task (so the last events make it to
     ///      the public `transcriptEvents` stream).
+    ///
+    /// Plan-010 / DT-INV: the call goes through the
+    /// `TranscriptionDispatcher` protocol — no per-callsite mode
+    /// branch.
     private func tearDownTranscriptionPipelineIfNeeded(
         aligner: HostClockAligner
     ) async {
         // Snapshot under serialQueue and clear so subsequent calls
         // are no-ops.
-        let manager: TranscriptionManager?
+        let dispatcher: (any TranscriptionDispatcher)?
         let token: HostClockAligner.TapToken?
         let forwarder: Task<Void, Never>?
-        (manager, token, forwarder) = serialQueue.sync {
-            let m = self._transcriptionManager
+        (dispatcher, token, forwarder) = serialQueue.sync {
+            let d = self._transcriptionDispatcher
             let t = self._transcriptionTapToken
             let f = self._transcriptionForwarderTask
-            self._transcriptionManager = nil
+            self._transcriptionDispatcher = nil
             self._transcriptionTapToken = nil
             self._transcriptionForwarderTask = nil
-            return (m, t, f)
+            return (d, t, f)
         }
 
-        guard manager != nil || token != nil else {
+        guard dispatcher != nil || token != nil else {
             return
         }
 
-        // 1. Detach the tap so no more frames flow into the manager.
+        // 1. Detach the tap so no more frames flow into the dispatcher.
         if let token {
             aligner.removeLiveTap(token)
         }
 
-        // 2. Stop the manager — final-drains buffers, awaits in-flight
-        // provider calls (bounded), closes the sidecar, finishes the
-        // events stream.
-        if let manager {
-            await manager.stop()
+        // 2. Stop the dispatcher — final-drains buffers, awaits
+        // in-flight provider calls (bounded), closes the sidecar,
+        // finishes the events stream.
+        if let dispatcher {
+            await dispatcher.stop()
         }
 
         // 3. Await the forwarder so the last events reach the public

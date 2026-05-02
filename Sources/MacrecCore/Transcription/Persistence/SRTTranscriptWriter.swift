@@ -22,6 +22,7 @@
 // keeps its index intact across rewrites.
 
 import Foundation
+import Logging
 
 /// SubRip-format sidecar writer.
 public final class SRTTranscriptWriter: TranscriptFormatWriter {
@@ -32,10 +33,28 @@ public final class SRTTranscriptWriter: TranscriptFormatWriter {
     private var sequenceCounter: Int = 0
     private var sequenceForId: [UUID: Int] = [:]
     private let sessionStart: Date
+    private let mode: LiveTranscriptionMode
+    private let logger = Logger(label: "macrec.transcription.sidecar.srt")
 
-    public init(url: URL, sessionStart: Date = Date()) throws {
+    /// - Parameters:
+    ///   - url: destination sidecar file
+    ///   - sessionStart: time origin for cue timestamps
+    ///   - mode: persistence mode. `.single` (default) preserves the
+    ///     pre-plan-010 cue layout exactly. `.dual` prefixes each cue
+    ///     body with `<channel-label>: ` (per design §DT-7 / DT-ADR-10)
+    ///     and OMITS the `source[lang]:` prefix.
+    ///
+    ///     Dual-mode cues are NOT re-sorted by start time — they are
+    ///     written in arrival order (first-finalised-first-written),
+    ///     which means cues from the two channels can overlap. The
+    ///     overlap is intentional and tolerated by mainstream players
+    ///     (mpv, VLC); see design §DT-2 OQ-3.
+    public init(url: URL,
+                sessionStart: Date = Date(),
+                mode: LiveTranscriptionMode = .single) throws {
         self.url = url
         self.sessionStart = sessionStart
+        self.mode = mode
         FileManager.default.createFile(atPath: url.path, contents: nil)
         self.handle = try FileHandle(forUpdating: url)
         try handle.seekToEnd()
@@ -108,11 +127,46 @@ public final class SRTTranscriptWriter: TranscriptFormatWriter {
     /// When `segment.language` is `nil` (single-locale sessions and the
     /// batch pipeline) no prefix is emitted — preserving the
     /// pre-Phase-F SRT layout.
+    ///
+    /// Plan-010 Lane L-6 — dual mode prefixes the cue body with
+    /// `<channel-label>: ` (per design §DT-7 / DT-ADR-10):
+    ///
+    ///     1
+    ///     00:00:01,230 --> 00:00:02,110
+    ///     EN: Hello world
+    ///
+    ///     2
+    ///     00:00:01,920 --> 00:00:03,420
+    ///     EL: Καλημέρα
+    ///
+    /// Single-mode rendering is byte-equivalent to the pre-plan-010
+    /// output (NFR-1 / AC-1). When `mode == .dual` but the segment's
+    /// model isn't `"apple"` / `"apple-cloud"`, a warning is logged and
+    /// the cue body is emitted without the channel prefix.
     private func render(seq: Int, _ segment: TranscriptSegment) -> String {
         let start = segment.timestamp.timeIntervalSince(sessionStart)
         let end = segment.lastUpdated.timeIntervalSince(sessionStart)
-        let langTag = segment.language.map { " [\(Self.shortTag($0))]" } ?? ""
-        return "\(seq)\n\(Self.srtTime(start)) --> \(Self.srtTime(end))\n\(segment.source.rawValue)\(langTag): \(segment.text)\n\n"
+        let body: String
+        switch mode {
+        case .single:
+            let langTag = segment.language.map { " [\(Self.shortTag($0))]" } ?? ""
+            body = "\(segment.source.rawValue)\(langTag): \(segment.text)"
+        case .dual:
+            if let tag = DualSidecarLabel.channelTag(forModel: segment.model) {
+                let label = DualSidecarLabel.channelLabel(for: tag)
+                body = "\(label): \(segment.text)"
+            } else {
+                logger.warning(
+                    """
+                    SRT sidecar in dual mode received segment with \
+                    unknown model=\(segment.model ?? "nil"); emitting \
+                    cue without channel prefix. id=\(segment.id.uuidString)
+                    """
+                )
+                body = segment.text
+            }
+        }
+        return "\(seq)\n\(Self.srtTime(start)) --> \(Self.srtTime(end))\n\(body)\n\n"
     }
 
     /// `"en-US"` → `"en"`, `"el-GR"` → `"el"`. See TXT writer for rationale.

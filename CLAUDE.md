@@ -52,6 +52,9 @@
 
 - You must never create fallback solutions for configuration settings. In every case a configuration setting is not provided you must raise the appropriate exception. You must never substitute the missing config value with a default or a fallback value.
 - If I ask you to make an exception to the configuration setting rule, you must write this exception in the projects memory file, before you implement it.
+
+- Every time you are asked to solve an issue, you must resolve it AND thoroughly document both the issue and the solution.
+
 </structure-and-conventions>
 
 ## Project Memory / Approved Exceptions
@@ -78,12 +81,12 @@ This section records explicit, user-approved exceptions to the Structure & Conve
 
 ### macrec
 
-macOS dual-source audio recorder: captures system audio (via `ScreenCaptureKit`) and the microphone (via `AVFoundation`) simultaneously and writes to `m4a` / `wav` / `caf` in `mixed`, `split`, or `stereo-split` layouts. Supports foreground execution (Ctrl-C to stop) or detached background execution paired with a `stop` subcommand. Foreground recordings can optionally stream the captured audio to a real-time speech-to-text provider (Google Gemini Live in v1) via `--transcribe`, producing a JSONL / TXT / SRT / VTT transcript sidecar alongside the audio file.
+macOS dual-source audio recorder: captures system audio (via `ScreenCaptureKit`) and the microphone (via `AVFoundation`) simultaneously and writes to `m4a` / `wav` / `caf` in `mixed`, `split`, or `stereo-split` layouts. Supports foreground execution (Ctrl-C to stop) or detached background execution paired with a `stop` subcommand. Foreground recordings can optionally stream the captured audio to a real-time speech-to-text provider (Google Gemini Live in v1) via `--transcribe`, producing a JSONL / TXT / SRT / VTT transcript sidecar alongside the audio file. Plan-010 adds dual-mode transcription (`--transcribe dual`) — Apple on-device Channel A + Apple Cloud Channel B run concurrently against identical audio, writing one merged channel-tagged sidecar.
 
 Documentation: [docs/tools/macrec.md](docs/tools/macrec.md)
 
 ### macrec-ui
 
-macOS menu-bar status item app for the `macrec` audio recorder. Provides a popover toolbar to start, pause, resume, stop, and split recordings, with elapsed-time, format/layout/folder/mic selectors, permission status, and per-source level meters; drives `MacrecCore` in-process and ships under a separate bundle id (`com.local.macrec-ui`) so its TCC grants are independent of the CLI's. The popover also exposes opt-in live transcription (None / Gemini Live picker, source picker, sidecar-format picker, inline live-transcript panel, one-time privacy-disclosure dialog, and per-recording cost / latency display).
+macOS menu-bar status item app for the `macrec` audio recorder. Provides a popover toolbar to start, pause, resume, stop, and split recordings, with elapsed-time, format/layout/folder/mic selectors, permission status, and per-source level meters; drives `MacrecCore` in-process and ships under a separate bundle id (`com.local.macrec-ui`) so its TCC grants are independent of the CLI's. The popover also exposes opt-in live transcription (None / Gemini Live picker, source picker, sidecar-format picker, inline live-transcript panel, one-time privacy-disclosure dialog, and per-recording cost / latency display) plus a Single/Dual mode switch (plan-010) that surfaces a per-channel locale / format / metrics panel and a stacked dual-lane live-transcript display when Dual is active.
 
 Documentation: [docs/tools/macrec-ui.md](docs/tools/macrec-ui.md)

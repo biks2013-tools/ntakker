@@ -333,6 +333,21 @@ public struct RecordingOptions: Sendable, Equatable {
     /// Plan-007 §B.7 — optional ISO-8601 expiry for `ELEVENLABS_API_KEY`.
     public let elevenLabsApiKeyExpiresAt: Date?
 
+    // MARK: - Dual-transcription (plan-010 Phase A; design §DT-3)
+
+    /// Resolved dual-transcription configuration. NON-NIL means
+    /// `RecordingSession` constructs a `DualTranscriptionManager`
+    /// (Channel A = Apple on-device, Channel B = Apple Cloud, fed
+    /// identical audio frames). NIL means single-mode transcription
+    /// (or no transcription, depending on `transcriptionProviderId`).
+    /// The two paths are mutually exclusive.
+    ///
+    /// Construction fully validated at the `DualTranscriptionConfig`
+    /// throwing-init boundary — by the time the value reaches this
+    /// field, locales are confirmed members of the per-channel
+    /// supported sets (NO fallback per CLAUDE.md).
+    public let dualTranscription: DualTranscriptionConfig?
+
     public init(
         output: URL,
         format: OutputFormat = .m4a,
@@ -376,7 +391,8 @@ public struct RecordingOptions: Sendable, Equatable {
         elevenLabsFileFormat: String? = nil,
         elevenLabsEntityDetection: String? = nil,
         elevenLabsKeyterms: [String]? = nil,
-        elevenLabsApiKeyExpiresAt: Date? = nil
+        elevenLabsApiKeyExpiresAt: Date? = nil,
+        dualTranscription: DualTranscriptionConfig? = nil
     ) {
         self.output = output
         self.format = format
@@ -421,6 +437,7 @@ public struct RecordingOptions: Sendable, Equatable {
         self.elevenLabsEntityDetection = elevenLabsEntityDetection
         self.elevenLabsKeyterms = elevenLabsKeyterms
         self.elevenLabsApiKeyExpiresAt = elevenLabsApiKeyExpiresAt
+        self.dualTranscription = dualTranscription
     }
 
     // MARK: - Defaults
@@ -518,7 +535,8 @@ extension RecordingOptions {
             elevenLabsFileFormat: elevenLabsFileFormat,
             elevenLabsEntityDetection: elevenLabsEntityDetection,
             elevenLabsKeyterms: elevenLabsKeyterms,
-            elevenLabsApiKeyExpiresAt: elevenLabsApiKeyExpiresAt
+            elevenLabsApiKeyExpiresAt: elevenLabsApiKeyExpiresAt,
+            dualTranscription: dualTranscription
         )
     }
 }

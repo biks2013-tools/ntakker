@@ -86,10 +86,12 @@ public actor TranscriptSidecarWriter {
     ///     pipeline that owns the writer never changes.
     public init(outputPath: URL,
                 format: TranscriptFormat,
-                policy: SidecarPolicy) throws {
+                policy: SidecarPolicy,
+                mode: LiveTranscriptionMode = .single) throws {
         self.outputPath = outputPath
         self.format = format
         self.policy = policy
+        self.mode = mode
         self.logger = Logger(label: "macrec.transcription.sidecar")
 
         // Make sure the parent directory exists — the per-format writer
@@ -100,7 +102,8 @@ public actor TranscriptSidecarWriter {
 
         do {
             self.formatWriter = try Self.makeFormatWriter(for: format,
-                                                          url: outputPath)
+                                                          url: outputPath,
+                                                          mode: mode)
         } catch {
             throw TranscriptSidecarWriterError.cannotOpenForWriting(
                 path: outputPath,
@@ -143,7 +146,13 @@ public actor TranscriptSidecarWriter {
                     // even if it did, it's not part of the batch
                     // sidecar contract.
                     return
-                case .privacyDisclosure, .metricsTick, .error:
+                case .privacyDisclosure, .metricsTick, .error, .dualChannelError:
+                    // Plan-010 Phase B / L-3: `.dualChannelError` is a
+                    // dual-mode merged-stream event (per-channel error
+                    // tag) and is not persisted into the sidecar — the
+                    // sidecar carries transcript content, not orchestration
+                    // diagnostics. Lane L-5 may revisit if the error
+                    // surfaces as a NOTE/comment line per format.
                     return
                 }
             case .streaming:
@@ -154,7 +163,8 @@ public actor TranscriptSidecarWriter {
                     // UI-only events on the streaming path; partials
                     // never reach the sidecar.
                     return
-                case .privacyDisclosure, .metricsTick, .error:
+                case .privacyDisclosure, .metricsTick, .error, .dualChannelError:
+                    // Plan-010 Phase B / L-3: see batch-policy arm above.
                     return
                 }
             }
@@ -210,6 +220,7 @@ public actor TranscriptSidecarWriter {
     private let outputPath: URL
     private let format: TranscriptFormat
     private let policy: SidecarPolicy
+    private let mode: LiveTranscriptionMode
     private let formatWriter: any TranscriptFormatWriter
     private let logger: Logger
     private var state: State
@@ -218,17 +229,25 @@ public actor TranscriptSidecarWriter {
 
     /// Build the per-format writer. Each writer opens its own
     /// `FileHandle(forUpdating:)` against `url` inside `init`.
+    ///
+    /// The `mode` parameter is plumbed through to every per-format
+    /// writer (plan-010 Lane L-6) so they can branch on single vs
+    /// dual transcription mode when rendering segments. In `.single`
+    /// mode every writer's output is byte-equivalent to the
+    /// pre-plan-010 layout; in `.dual` mode each writer adds a
+    /// channel-tagging cue per its format spec (see design §DT-7).
     private static func makeFormatWriter(for format: TranscriptFormat,
-                                         url: URL) throws -> any TranscriptFormatWriter {
+                                         url: URL,
+                                         mode: LiveTranscriptionMode) throws -> any TranscriptFormatWriter {
         switch format {
         case .jsonl:
-            return try JSONLTranscriptWriter(url: url)
+            return try JSONLTranscriptWriter(url: url, mode: mode)
         case .srt:
-            return try SRTTranscriptWriter(url: url)
+            return try SRTTranscriptWriter(url: url, mode: mode)
         case .vtt:
-            return try VTTTranscriptWriter(url: url)
+            return try VTTTranscriptWriter(url: url, mode: mode)
         case .txt:
-            return try TXTTranscriptWriter(url: url)
+            return try TXTTranscriptWriter(url: url, mode: mode)
         }
     }
 

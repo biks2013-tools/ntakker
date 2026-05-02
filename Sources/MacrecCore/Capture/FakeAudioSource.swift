@@ -95,6 +95,7 @@ public final class FakeAudioSource: AudioSource, @unchecked Sendable {
     }
 
     public var onSampleBuffer: ((CaptureBuffer) -> Void)?
+    public var levelTap: ((CaptureBuffer) -> Void)?
 
     // MARK: - Init
 

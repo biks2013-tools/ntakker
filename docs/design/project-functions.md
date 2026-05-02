@@ -1203,6 +1203,162 @@ via `@AppStorage("com.macrec.ui.transcriptionEnabled")` (Bool, default
 the persisted `transcribeProvider` value (which is preserved unchanged
 so re-enabling the toggle restores the user's last engine selection).
 
+### Added 2026-05-01 by plan-010 — Dual-provider live transcription mode (Apple on-device EN + Apple Cloud EL)
+
+> Source: `docs/design/refined-request-dual-transcription.md` (FR-1..FR-11).
+> Phase plan: `docs/design/plan-010-dual-transcription.md` (Phases A..J).
+> Investigation: `docs/reference/investigation-dual-transcription.md`.
+> Codebase scan: `docs/reference/codebase-scan-dual-transcription.md` (IP-1..IP-16).
+
+#### FR-DUAL-1 — Mode switch in Live Transcription panel
+**Status:** PLANNED. **Phase:** plan-010 §A, §E.
+The Live Transcription panel in `macrec-ui` MUST expose a binary mode
+control with values `"Single"` (default, pre-existing behaviour) and
+`"Dual"`. The control MUST be located inside / immediately above the
+Live Transcription panel so that the panel below it can swap based on
+selection. Persisted via
+`@AppStorage("com.macrec.ui.transcriptionMode")` with default
+`"single"`. The exact control type (segmented picker vs toggle vs other)
+is OQ-1 and resolved by the Phase 5 designer.
+
+#### FR-DUAL-2 — Single mode preservation (NFR-1 hard constraint)
+**Status:** PLANNED. **Phase:** plan-010 §C, §D, §E, §G.
+When the mode control is set to `"Single"`, the panel MUST render the
+EXISTING Live Transcription controls (provider picker labelled
+`Transcribe`, audio Source picker, Transcript Format picker, Language
+picker) with the EXACT current layout, defaults, labels, and behaviour.
+No regressions, no relabels, no reorderings. The single-mode runtime
+path, sidecar output, and JSONL byte-level format MUST remain identical
+to today's behaviour. Verified by `SingleModeRegressionTests` and
+`SingleModeSidecarRegressionTests` byte-equivalence assertions.
+
+#### FR-DUAL-3 — Dual mode controls
+**Status:** PLANNED. **Phase:** plan-010 §F.
+When the mode control is set to `"Dual"`, the panel MUST render a
+Dual-specific control set that includes at minimum:
+- Audio Source picker (Mixed / Microphone / System) — same options as
+  Single mode, persisted under `com.macrec.ui.dual.source` (default
+  `"mixed"`).
+- Channel A read-out: provider = `Apple (on-device)`, with a locale
+  picker constrained to English variants and other locales supported
+  by `SpeechTranscriber.supportedLocales` (macOS 26 on-device set,
+  excludes Greek). Persisted under `com.macrec.ui.dual.channelALocale`,
+  default `"en-US"`.
+- Channel B read-out: provider = `Apple Cloud`, with a locale picker
+  constrained to `SFSpeechRecognizer.supportedLocales()` (~57 locales).
+  Persisted under `com.macrec.ui.dual.channelBLocale`, default
+  `"el-GR"`.
+- Sidecar Transcript Format picker (jsonl / txt / srt / vtt),
+  persisted under `com.macrec.ui.dual.transcriptFormat`, default
+  `"jsonl"`.
+- Optional per-channel enable toggles (OQ-2, Phase 5 design call).
+
+#### FR-DUAL-4 — Parallel execution with channel isolation
+**Status:** PLANNED. **Phase:** plan-010 §B.
+Selecting Dual and starting a recording MUST start BOTH transcription
+sessions concurrently against the same captured audio. Failure of one
+channel MUST NOT terminate the other; the failing channel surfaces an
+inline error in its lane while the other continues. Implemented via
+`DualTranscriptionManager` actor holding two
+`StreamingTranscriptionPipeline` instances with per-channel drain
+`Task`s wrapped in independent `do { ... } catch { ... }` blocks
+(channel-tagged failure events do not propagate across channels nor
+to the audio recorder).
+
+#### FR-DUAL-5 — Audio fan-out
+**Status:** PLANNED. **Phase:** plan-010 §B.
+The capture pipeline MUST deliver identical audio frames to both
+sessions with no measurable drift between channels. Implementation:
+two `AudioDownsampler` instances (the type is not thread-safe;
+investigator §Q2 Option 2A), synchronous fan-out inside the
+`DualTranscriptionManager` actor — `downsamplerA.convert` then
+`pipelineA.ingest`, `downsamplerB.convert` then `pipelineB.ingest`.
+Both `ingest` calls are non-blocking (each session has its own internal
+queue), so sequential fan-out does not stall capture (NFR-3 satisfied).
+
+#### FR-DUAL-6 — Live transcript UI lanes
+**Status:** PLANNED. **Phase:** plan-010 §G.
+The live transcript area MUST render two visually distinct lanes
+(e.g. labelled `"EN — Apple"` and `"EL — Apple Cloud"`), each showing
+partial and final segments from its channel as they arrive, in
+chronological order within the lane. The lane partition is computed
+at render time from `segment.model` (`"apple"` → Channel A,
+`"apple-cloud"` → Channel B). The exact layout (side-by-side, stacked,
+or single chronological feed with channel chips) is OQ-5 and resolved
+by Phase 5 designer.
+
+#### FR-DUAL-7 — Sidecar output with channel tagging
+**Status:** PLANNED. **Phase:** plan-010 §D.
+When the recording stops, the system MUST write a sidecar transcript
+file alongside the audio file that contains BOTH channels' segments,
+each tagged with channel label, locale, segment start/end timestamps,
+and `isFinal` flag. The format MUST be the user-selected one from
+FR-DUAL-3:
+- **JSONL**: existing schema (no breaking change). `model` and
+  `language` fields already distinguish channels. Writer additionally
+  emits an OPTIONAL convenience `channel: "A" | "B"` field in dual
+  mode only (omitted in single mode → byte-identical output preserved).
+- **TXT**: line-prefix `[<channel-label>]` (e.g. `[EN]`, `[EL]`) using
+  uppercased BCP-47 primary language code.
+- **SRT**: cue speaker prefix `EN: ` / `EL: `; overlapping cue start
+  times are allowed (de-facto SRT convention; players stack cues).
+- **VTT**: WebVTT voice tags `<v EN>...</v>` / `<v EL>...</v>`.
+The exact SRT/VTT convention is OQ-4; investigator's defaults above
+are adopted unless the Phase 5 designer overrules.
+
+#### FR-DUAL-8 — Privacy disclosure trigger
+**Status:** PLANNED. **Phase:** plan-010 §J.
+The first time the user enables Dual mode (or selects `apple-cloud`
+indirectly through Dual) without previously accepting the
+`apple-cloud` privacy disclosure, the existing disclosure sheet
+(`PrivacyDisclosureSheet(selectedProvider: "apple-cloud", ...)`) MUST
+appear and the user must accept before the recording can start. The
+existing acknowledged key
+`"com.local.macrec-ui.transcription.privacy.apple-cloud.acknowledged"`
+is reused — a user who has already accepted the apple-cloud disclosure
+under single-mode is NOT re-prompted in Dual mode. The existing
+`appleCloudBodyText` copy is sufficient (no new disclosure text is
+needed).
+
+#### FR-DUAL-9 — Per-channel telemetry
+**Status:** PLANNED. **Phase:** plan-010 §I.
+The UI MUST display per-channel latency (e.g. partial-arrival lag) and,
+for the cloud channel, an incremental cost or quota indicator,
+mirroring the Single-mode display. Implementation: new
+`DualChannelMetrics` struct (per-channel `TranscriptionMetrics`),
+new `dualMetrics: DualChannelMetrics?` published property on
+`RecordingController`, new `DualTranscriptionMetricsView` rendering
+two metric rows (one per channel). The apple-cloud quota indicator
+ships in v1 if observable from `AppleCloudStreamingSession`; deferred
+to a v2 follow-up otherwise.
+
+#### FR-DUAL-10 — CLI parity
+**Status:** PLANNED. **Phase:** plan-010 §H.
+The `macrec` CLI MUST expose Dual mode through a flag set
+(investigator default: `--transcribe-dual` boolean +
+`--transcribe-dual-locale-a <bcp47>` +
+`--transcribe-dual-locale-b <bcp47>` +
+`--transcribe-dual-source <src>` +
+`--transcribe-dual-format <fmt>`, with parallel
+`MACREC_TRANSCRIBE_DUAL_*` env-var names). The exact spelling is OQ-3
+and resolved by Phase 5 designer. The CLI behaviour MUST be
+functionally equivalent to the UI Dual mode (same audio fan-out, same
+sidecar output) — verified by `dual_cli_parity_smoke.sh`.
+
+#### FR-DUAL-11 — Atomic stop / pause / split semantics
+**Status:** PLANNED. **Phase:** plan-010 §B, §C.
+Pause, resume, stop, and split actions MUST be applied to BOTH
+channels atomically — i.e. pausing pauses both, splitting
+(`rotateSidecar`) starts a new sidecar segment for both. Pause is
+achieved at the capture-graph level (existing single-mode mechanism):
+both channels naturally go quiet when `ingestFrame` is not called.
+Stop calls `pipelineA.stop()` and `pipelineB.stop()` concurrently
+(`async let`) with a 5 s drain timeout per channel (matches FR-57
+existing single-mode behaviour). Split calls `rotateSidecar` on both
+pipelines with the same target URL/format. Whether per-channel disable
+is also supported (without leaving Dual mode) is OQ-2 (Phase 5 design
+call).
+
 ---
 
 ## 2. Non-functional requirements
@@ -1306,6 +1462,18 @@ Carried forward from the refined request without modification:
 | NFR-SX-6 | Provider footprint — within the per-process transcription memory bound of NFR-18 (≤ 320 KB per active source for in-flight PCM); the streaming session's own buffers (`URLSessionWebSocketTask` defaults + `bufferingNewest(128)` events stream) are additional and bounded. | PLANNED (Phase D — plan-006) |
 | NFR-SX-7 | No new third-party SPM dependency — strong preference for `URLSessionWebSocketTask` (Foundation, no dep). Hand-rolled per investigation OQ-SX-11 (no Swift SDK exists). Verified at AC-SX-15 (`Package.swift` diff empty). | PLANNED (verified at Phase I — plan-006) |
 
+#### Dual-Provider Transcription NFRs (plan-010)
+
+| NFR | Description | Status |
+|---|---|---|
+| NFR-DUAL-1 | No regression to Single mode — runtime path, UI layout, defaults, and on-disk artefacts MUST be byte-identical to today's behaviour for any previously valid Single-mode invocation. Verified by `SingleModeRegressionTests` (JSONL byte-equivalence) + `SingleModeSidecarRegressionTests` (txt/srt/vtt byte-equivalence) + manual visual diff of the Live Transcription panel before/after merge. | PLANNED (Phase C, D, E — plan-010) |
+| NFR-DUAL-2 | Channel isolation — a crash, exception, or quota error in one channel MUST NOT propagate to the other. Each channel has its own `Task` lifecycle and error surface inside `DualTranscriptionManager`. Verified by `DualChannelIsolationTests` injecting a failing `FakeTranscriptionProvider` for one channel and asserting the other continues to emit `segmentFinalized` events. | PLANNED (Phase B — plan-010) |
+| NFR-DUAL-3 | Audio backpressure — the audio fan-out MUST NOT block the capture pipeline if one consumer (e.g. the cloud channel under network pressure) falls behind. Both `pipeline.ingest` calls inside `DualTranscriptionManager.ingestFrame` are non-blocking; each session's internal queue absorbs the backpressure. A "lagging" indicator (Phase 5 design call) surfaces when per-channel queue depth or partial inter-arrival latency exceeds a threshold. | PLANNED (Phase B, I — plan-010) |
+| NFR-DUAL-4 | Memory footprint — two concurrent sessions MUST NOT raise steady-state memory above ~2× a single Single-mode session (sanity bound, no fixed numeric SLA). Two `AudioDownsampler` accumulators (small, bounded) + two session-level queues; verified by manual long-run test (60 min Dual recording) tracking RSS via `top -pid <pid>`. | PLANNED (Phase B; manual verification in Phase 10 — plan-010) |
+| NFR-DUAL-5 | macOS-26 compatibility — Dual mode MUST work under the project's existing deployment target (macOS 26, per project CLAUDE.md Exception 002). It does not need to be back-ported to macOS 14/15. | PLANNED (Phase A — plan-010; trivially satisfied by existing project target) |
+| NFR-DUAL-6 | Permissions — Dual mode requires both the on-device SpeechAnalyzer prerequisites (already in place) AND the `NSSpeechRecognitionUsageDescription` + Speech Recognition TCC grant that `apple-cloud` already needs. The system MUST surface a clear actionable error (not a crash) if either is missing — verified by `DualChannelIsolationTests` that simulate TCC denial. | PLANNED (Phase B, F, J — plan-010) |
+| NFR-DUAL-7 | Run-mode caveat — the known `apple-cloud` constraint that ad-hoc-signed raw-binary launches of `macrec-ui` cannot call `SFSpeechRecognizer.requestAuthorization` without SIGABRT applies to Dual mode unchanged (the user must run from `dist/macrec-ui.app`). The Dual-mode error path reuses the existing actionable error text via `AppleCloudTranscriptionProvider.openStreamingSession`'s `isRunningFromAppBundle()` gate. No new mitigation is required. | PLANNED (Phase B — plan-010; reuses existing apple-cloud surface) |
+
 ---
 
 ## 3. Open questions (status snapshot)
@@ -1343,6 +1511,12 @@ Carried forward from the refined request without modification:
 | OQ-SX-10 | Data-retention disclosure | Document org-level setting in configuration-guide; no per-request opt-out in v1 | RECOMMENDED by plan-006 §0 (NEEDS USER CONFIRMATION) |
 | OQ-SX-11 | Hand-rolled WS vs Soniox SDK | Hand-rolled (no Swift SDK exists at github.com/soniox) | LOCKED by investigation (RESOLVED) |
 | OQ-SX-12 | Per-provider expiry env var split | Add `MACREC_SONIOX_KEY_EXPIRES_AT` with provider-scoped > shared resolution; keep `MACREC_TRANSCRIBE_KEY_EXPIRES_AT` as fallback | RECOMMENDED by plan-006 §0 (NEEDS USER CONFIRMATION) |
+| OQ-DUAL-1 | Mode-switch control type | Segmented `Picker("Mode")` ["Single" \| "Dual"] at top of Live Transcription panel (investigator §Q4 Option 4A) | RECOMMENDED by plan-010 §1; NEEDS PHASE 5 DESIGNER |
+| OQ-DUAL-2 | Per-channel disable in Dual mode | Atomic-only (no per-channel disable) for v1; designer may overrule | OPEN — PHASE 5 DESIGNER |
+| OQ-DUAL-3 | CLI flag spelling for Dual mode | `--transcribe-dual` boolean + `--transcribe-dual-locale-{a,b}` + `--transcribe-dual-source` + `--transcribe-dual-format` (investigator §IP-11 Option A) | RECOMMENDED by plan-010 §H; NEEDS PHASE 5 DESIGNER |
+| OQ-DUAL-4 | SRT/VTT channel-labelling convention | VTT `<v EN>...</v>` voice tags; SRT `EN: ` / `EL: ` cue prefixes; overlapping cue start times allowed (investigator §Q5) | RECOMMENDED by plan-010 §D; NEEDS PHASE 5 DESIGNER |
+| OQ-DUAL-5 | Dual-lane UI layout | Side-by-side / stacked / single chronological feed with channel chips; designer picks per popover-width readability | OPEN — PHASE 5 DESIGNER |
+| OQ-DUAL-6 | Generic vs specific orchestrator | Specific (`apple` + `apple-cloud` only) for v1; generic N>2 explicitly out of scope per refined request | RECOMMENDED by plan-010 §1; NEEDS PHASE 5 DESIGNER |
 
 Six research-doc follow-ups (SCStream OI-1, OI-2, OI-3 +
 AVAssetWriter 7.1, 7.2, 7.4) are tracked in `Issues - Pending Items.md`

@@ -24,6 +24,20 @@ public enum TranscriptionEvent: Sendable, Codable, Equatable {
 
     /// Non-fatal provider/sidecar error.
     case error(detail: String)
+
+    /// Plan-010 Phase B / §DT-3 — per-channel non-fatal error from
+    /// dual-mode transcription. Emitted by `DualTranscriptionManager`'s
+    /// per-channel drain `Task` when its underlying pipeline terminates
+    /// or errors. The other channel keeps streaming; the merged stream
+    /// is not finished (only `stop()` finishes it). The `channel` tag
+    /// lets `RecordingController` route the error to the correct lane
+    /// error-display surface in the dual-mode UI.
+    ///
+    /// This case is additive — exhaustive switches over
+    /// `TranscriptionEvent` in single-mode code continue to compile
+    /// (Swift warning only, not error). Lane L-5 will add `@unknown
+    /// default` arms where the codebase scan flagged them.
+    case dualChannelError(channel: DualChannelTag, detail: String)
 }
 
 public struct TranscriptionMetrics: Sendable, Codable, Equatable {

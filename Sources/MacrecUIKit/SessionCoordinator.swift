@@ -75,6 +75,15 @@ public protocol RecordingSessionLike: AnyObject, Sendable {
     /// Rotate the encoder while the session continues. See
     /// `RecordingSession.split(nextOutput:)`.
     func split(nextOutput: URL) async throws
+
+    /// Install a per-`CaptureBuffer` level-tap sink. The session
+    /// forwards every captured frame from its mic + system sources
+    /// to this closure (in addition to the recorder/aligner path).
+    /// Set BEFORE `run()` is invoked. nil means "no level metering"
+    /// (the CLI path has no UI to feed). Mock sessions may ignore
+    /// this; the production session wires it into the capture
+    /// sources' `levelTap` properties.
+    func setLevelTapSink(_ sink: (@Sendable (CaptureBuffer) -> Void)?)
 }
 
 /// Closure factory that builds a `RecordingSessionLike` for the given
@@ -115,6 +124,10 @@ public final class LiveRecordingSessionAdapter: RecordingSessionLike, @unchecked
 
     public func split(nextOutput: URL) async throws {
         try await session.split(nextOutput: nextOutput)
+    }
+
+    public func setLevelTapSink(_ sink: (@Sendable (CaptureBuffer) -> Void)?) {
+        session.levelTapSink = sink
     }
 }
 
@@ -402,6 +415,20 @@ public actor SessionCoordinator {
     }
 
     /// Tear down everything. Cancels the forwarder tasks and finishes
+    /// Install (or clear) the per-`CaptureBuffer` level-tap sink.
+    /// Stored on the coordinator AND propagated to the in-flight
+    /// session (if any). Subsequent sessions built by `buildAndRun`
+    /// inherit the sink automatically. Called by `RecordingController`
+    /// in `start()` to wire its `LevelMeterPublisher`.
+    public func setLevelTapSink(_ sink: (@Sendable (CaptureBuffer) -> Void)?) {
+        self.levelTapSink = sink
+        current?.setLevelTapSink(sink)
+    }
+
+    /// Stored sink — applied to every newly-built session in
+    /// `buildAndRun(...)`. Backs `setLevelTapSink(_:)`.
+    private var levelTapSink: (@Sendable (CaptureBuffer) -> Void)?
+
     /// the events stream so consumers' `for await` loops exit. Called
     /// by `RecordingController.cancelAll()` on app shutdown.
     public func teardown() {
@@ -438,6 +465,13 @@ public actor SessionCoordinator {
             throw error
         }
         current = session
+        // Inherit any level-tap sink installed on the coordinator
+        // (typically by `RecordingController` immediately after
+        // `start()`). The sink is per-coordinator-lifetime and
+        // applies to every segment.
+        if let sink = levelTapSink {
+            session.setLevelTapSink(sink)
+        }
         state = .recording(segment: segmentNumber)
         startStateForward(for: session)
         startTranscriptForward(for: session)

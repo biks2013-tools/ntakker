@@ -88,6 +88,23 @@ struct ControlBar: View {
     @AppStorage("com.macrec.ui.transcribeLanguage3")
     private var transcribeLanguageTertiaryRaw: String = ""
 
+    // Dual-mode persisted state (plan-010 Lane L-8). When
+    // `transcriptionModeRaw == "dual"` and `transcriptionEnabled`, the
+    // four `dual.*` keys below feed `DualTranscriptionConfig` instead
+    // of the single-mode `transcribe*` family above. Keys are disjoint
+    // by namespace per DT-ADR-13 so a Single→Dual→Single round-trip
+    // preserves single-mode values intact (AC-2).
+    @AppStorage("com.macrec.ui.transcriptionMode")
+    private var transcriptionModeRaw: String = LiveTranscriptionMode.single.rawValue
+    @AppStorage("com.macrec.ui.dual.channelALocale")
+    private var dualChannelALocale: String = "en-US"
+    @AppStorage("com.macrec.ui.dual.channelBLocale")
+    private var dualChannelBLocale: String = "el-GR"
+    @AppStorage("com.macrec.ui.dual.source")
+    private var dualSourceRaw: String = TranscriptionSource.mixed.rawValue
+    @AppStorage("com.macrec.ui.dual.transcriptFormat")
+    private var dualTranscriptFormatRaw: String = TranscriptFormat.jsonl.rawValue
+
     private let logger = Logger(label: "macrec.ui.controlBar")
 
     /// Resolve an env-var name to its current effective value, preferring
@@ -406,22 +423,73 @@ struct ControlBar: View {
             }
         }()
 
+        // Dual-mode wiring (plan-010 — fix for missing UI start-path
+        // lane discovered post-Phase-10). When the user has selected
+        // Dual mode in the panel AND the master transcription switch
+        // is ON, build a `DualTranscriptionConfig` from the four
+        // persisted `com.macrec.ui.dual.*` keys and pass it as
+        // `RecordingOptions.dualTranscription`. The single-mode
+        // `transcriptionProviderId` is forced to nil in dual mode so
+        // `RecordingSession.setUpTranscriptionPipelineIfNeeded`
+        // builds a `DualTranscriptionManager` (not a
+        // `TranscriptionManager`). Per DT-ADR-11 the providers are
+        // hardwired to "apple" + "apple-cloud" for v1.
+        let dualModeActive = transcriptionEnabled
+            && (LiveTranscriptionMode(rawValue: transcriptionModeRaw) ?? .single) == .dual
+        let dualConfig: DualTranscriptionConfig? = {
+            guard dualModeActive else { return nil }
+            do {
+                return try DualTranscriptionConfig(
+                    channelA: ChannelConfig(
+                        providerId: "apple",
+                        locale: dualChannelALocale,
+                        displayName: "Apple (on-device)"
+                    ),
+                    channelB: ChannelConfig(
+                        providerId: "apple-cloud",
+                        locale: dualChannelBLocale,
+                        displayName: "Apple Cloud"
+                    ),
+                    source: TranscriptionSource(rawValue: dualSourceRaw) ?? .mixed,
+                    sidecarFormat: TranscriptFormat(rawValue: dualTranscriptFormatRaw) ?? .jsonl
+                )
+            } catch {
+                logger.error(
+                    "dual-mode config rejected: \(error.localizedDescription) — falling back to single-mode session for this start"
+                )
+                return nil
+            }
+        }()
+
+        // In dual mode the single-mode transcription fields must be
+        // suppressed so RecordingSession picks the dual dispatcher.
+        let effectiveProviderId = dualConfig != nil ? nil : resolvedProviderId
+        let effectiveTranscriptionSource = dualConfig != nil
+            ? (TranscriptionSource(rawValue: dualSourceRaw) ?? .mixed)
+            : resolvedTranscriptionSource
+        let effectiveTranscriptionFormat = dualConfig != nil
+            ? (TranscriptFormat(rawValue: dualTranscriptFormatRaw) ?? .jsonl)
+            : resolvedTranscriptionFormat
+        let effectiveLanguageHints = dualConfig != nil ? [] : resolvedLanguageHints
+        let effectiveApiKey = dualConfig != nil ? nil : resolvedTranscriptionApiKey
+
         let options = RecordingOptions(
             output: outputURL,
             format: format,
             layout: layout,
             micDevice: micDevice,
-            transcriptionProviderId: resolvedProviderId,
-            transcriptionSource: resolvedTranscriptionSource,
-            transcriptionFormat: resolvedTranscriptionFormat,
-            transcriptionApiKey: resolvedTranscriptionApiKey,
-            transcriptionLanguageHints: resolvedLanguageHints,
+            transcriptionProviderId: effectiveProviderId,
+            transcriptionSource: effectiveTranscriptionSource,
+            transcriptionFormat: effectiveTranscriptionFormat,
+            transcriptionApiKey: effectiveApiKey,
+            transcriptionLanguageHints: effectiveLanguageHints,
             azureOpenAIEndpoint: azureOpenAIEndpoint,
             azureOpenAIDeployment: azureOpenAIDeployment,
             azureOpenAIApiVersion: azureOpenAIApiVersion,
             elevenLabsDiarize: elevenLabsDiarize,
             elevenLabsNumSpeakers: elevenLabsNumSpeakers,
-            elevenLabsKeyterms: elevenLabsKeyterms
+            elevenLabsKeyterms: elevenLabsKeyterms,
+            dualTranscription: dualConfig
         )
 
         let languageHintsForLog = resolvedLanguageHints.isEmpty

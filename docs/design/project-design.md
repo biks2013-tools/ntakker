@@ -10484,3 +10484,1477 @@ P8.
 - Functional requirements file: `docs/design/project-functions.md`
   (P11 adds the new appearance / theming / transcriptionEnabled
   requirements).
+
+---
+
+## Dual Transcription Subsystem (Plan-010)
+
+> **Authoritative source documents** for this section:
+> 1. `docs/design/refined-request-dual-transcription.md` — refined spec
+>    (FR-1..FR-11, NFR-1..NFR-7, AC-1..AC-11, A-1..A-6, OQ-1..OQ-6).
+> 2. `docs/reference/codebase-scan-dual-transcription.md` — 16 integration
+>    points (IP-1..IP-16) with file/line references.
+> 3. `docs/reference/investigation-dual-transcription.md` — recommended
+>    architecture (Option 1A + 2A + 3B + 4A) and per-question rationale.
+> 4. `docs/reference/apple-cloud-stt-investigation-2026-05.md` — reused
+>    (authoritative for Channel B quotas, locale set, TCC, run-mode
+>    SIGABRT caveat).
+> 5. `docs/design/plan-010-dual-transcription.md` — phase plan A..J.
+>    This design section is the **HOW/WHY**; the plan is the **WHAT/WHEN**.
+>
+> **Pre-resolved decisions carried into this design (NOT re-opened):**
+> - **OQ-1 (mode-switch placement)** → segmented `[ Single | Dual ]` Picker
+>   at the **top** of the Live Transcription panel. The four existing
+>   rows below it (Transcribe / Source / Transcript format / Language)
+>   stay PIXEL-IDENTICAL when Single is selected. The Single sub-view is
+>   a verbatim wrapper around today's panel content — no field
+>   reorderings, no styling tweaks, no copy changes (DT-INV-1).
+> - **Failure semantics** → per-channel isolated failure (FR-4, NFR-2,
+>   AC-4). One channel's crash, network drop, auth error, or quota
+>   exhaustion MUST NOT terminate the other channel.
+>
+> **Constraints carried forward (must obey):**
+> - Swift / SwiftUI only — CLAUDE.md Exception 001.
+> - macOS 26 deployment target — CLAUDE.md Exception 002.
+> - **NFR-1 hard constraint:** Single-mode runtime path, UI layout,
+>   defaults, and on-disk artefacts MUST be byte-identical to today's
+>   behaviour for any previously valid Single-mode invocation. Verified
+>   by `SingleModeRegressionTests` (Phase C) + `SingleModeSidecarRegressionTests`
+>   (Phase D) + visual diff (Phase E).
+> - No fallback for required configuration. The spec-mandated defaults
+>   (`en-US` for Channel A, `el-GR` for Channel B) are **persisted UI
+>   defaults** — written into AppStorage at first use, not silent
+>   substitutions at the engine layer. Missing values raise
+>   `MacrecError.transcriptionConfigurationMissing(field:)`.
+> - Database naming convention — N/A (no database is touched).
+
+This section adds the dual-transcription mode to MacrecCore, MacrecUIKit,
+macrec-ui, and the macrec CLI — running the existing `apple` (on-device
+SpeechAnalyzer, Channel A, English by default) and `apple-cloud`
+(SFSpeechRecognizer, Channel B, Greek by default) providers in parallel
+against the same captured audio. The Single-mode runtime and UI are
+preserved unchanged.
+
+The section is organized as twelve sub-sections (DT-1..DT-12) tracking
+the design-content checklist for plan-010.
+
+---
+
+### §DT-1 System architecture
+
+```
+                  ┌──────────────────────────────────────────────┐
+                  │            RecordingSession                   │
+                  │  (capture graph: ScreenCaptureKit + AVF)      │
+                  └──────────────────────────────────────────────┘
+                                       │ AlignedFrame (CMSampleBuffer)
+                                       │ + SourceTag {.system,.microphone}
+                                       ▼
+                  ┌──────────────────────────────────────────────┐
+                  │  RecordingController (MacrecUIKit)            │
+                  │  holds: dispatcher: any TranscriptionDispatcher│
+                  │  publishes: transcriptSegments, dualMetrics?,  │
+                  │             dualChannelErrors?, transcriptionMode│
+                  └──────────────────────────────────────────────┘
+                                       │ ingestFrame(_:from:)
+            ┌──────────────────────────┴──────────────────────────┐
+            │ dispatcher resolution at construction time          │
+            │ (single branch — no per-callsite enum discriminator)│
+            └─────────────┬────────────────────────┬──────────────┘
+                          │                        │
+              .single ────┘                        └──── .dual
+                          │                        │
+                          ▼                        ▼
+       ┌───────────────────────────┐    ┌──────────────────────────────┐
+       │ TranscriptionManager      │    │ DualTranscriptionManager     │
+       │ (existing — UNCHANGED)    │    │ (NEW actor, Sources/MacrecCore│
+       │                           │    │  /Transcription/Dual/)        │
+       └───────────────────────────┘    │                              │
+                                        │  config: DualTranscriptionConfig│
+                                        │  ┌─────────────┐ ┌──────────┐ │
+                                        │  │downsamplerA │ │downsamplerB│ │
+                                        │  └──────┬──────┘ └─────┬────┘ │
+                                        │         │              │      │
+                                        │         ▼              ▼      │
+                                        │ ┌──────────────┐ ┌──────────┐ │
+                                        │ │ pipelineA    │ │pipelineB │ │
+                                        │ │ Streaming-   │ │Streaming-│ │
+                                        │ │ Pipeline     │ │Pipeline  │ │
+                                        │ │ (apple,      │ │(apple-   │ │
+                                        │ │  en-US)      │ │ cloud,   │ │
+                                        │ │              │ │ el-GR)   │ │
+                                        │ └──────┬───────┘ └────┬─────┘ │
+                                        │        │              │       │
+                                        │        │  events      │ events│
+                                        │        ▼              ▼       │
+                                        │ ┌──────────────┐ ┌──────────┐ │
+                                        │ │ drainTaskA   │ │drainTaskB│ │
+                                        │ │ tag→A, catch │ │tag→B,    │ │
+                                        │ │ → .error(A)  │ │catch →   │ │
+                                        │ │              │ │ .error(B)│ │
+                                        │ └──────┬───────┘ └────┬─────┘ │
+                                        │        │              │       │
+                                        │        └──────┬───────┘       │
+                                        │               ▼               │
+                                        │       mergedContinuation      │
+                                        │   AsyncStream<TranscriptionEvent>│
+                                        │               │               │
+                                        │               ▼               │
+                                        │   sharedSidecarWriter         │
+                                        │   (one TranscriptSidecarWriter│
+                                        │    actor — both pipelines     │
+                                        │    inject the SAME instance)  │
+                                        └────────────────┬──────────────┘
+                                                         │
+                                                         ▼
+                                        ┌──────────────────────────────┐
+                                        │ LiveTranscriptPanel +        │
+                                        │ DualLiveTranscriptView        │
+                                        │ (macrec-ui)                   │
+                                        │ partition transcriptSegments │
+                                        │ by segment.model:             │
+                                        │  "apple"      → Lane A (EN)  │
+                                        │  "apple-cloud" → Lane B (EL) │
+                                        └──────────────────────────────┘
+```
+
+Key invariants enforced by this topology:
+
+- **DT-INV-1 (Single-mode preservation).** The `.single` branch holds
+  the existing `TranscriptionManager` unchanged. Single-mode test
+  artefacts (JSONL/TXT/SRT/VTT) are byte-identical pre-/post-feature.
+- **DT-INV-2 (Channel isolation).** Per-channel drain Tasks wrap their
+  `for await` loops in `do/catch`. A throw in one Task yields a
+  channel-tagged error event into the merged stream and **does not**
+  cancel the other Task or finish the merged continuation.
+- **DT-INV-3 (Single sidecar file).** Both pipelines share ONE
+  `TranscriptSidecarWriter` actor instance (identity-checked in tests).
+  Two writers writing to one file would interleave headers and corrupt
+  on-disk state.
+- **DT-INV-4 (Per-channel downsamplers).** `AudioDownsampler` is not
+  thread-safe (carries an internal accumulator). Each channel owns its
+  own instance.
+- **DT-INV-5 (Capture-graph atomicity).** Pause/resume/split act on
+  capture-frame delivery (existing behaviour). Both channels naturally
+  go quiet/active together because both share the same `ingestFrame`
+  call site inside `DualTranscriptionManager`.
+
+---
+
+### §DT-2 Open-question resolutions (OQ-2..OQ-6)
+
+OQ-1 and the failure-semantics question were pre-resolved by the user
+(see top of this section). The remaining five open questions from
+plan-010 are resolved here with rationale.
+
+#### OQ-2 — CLI flag spelling for dual mode
+
+| Option | Shape | Pros | Cons |
+|---|---|---|---|
+| A — extend `--transcribe` | `--transcribe dual --transcribe-dual-locale-a en-US --transcribe-dual-locale-b el-GR --transcribe-dual-source mixed --transcribe-dual-format jsonl` | Adds `dual` as a value to the existing `--transcribe` enum. Symmetric with `--transcribe apple`, `--transcribe apple-cloud`. Single canonical flag families. | `--transcribe` enum gains a value that is structurally a *mode* not a *provider*. Downstream tooling that switches on `--transcribe` value sees a 9th member. |
+| B — dedicated boolean | `--transcribe-dual --transcribe-dual-locale-a en-US ...` (mutually exclusive with `--transcribe <id>`) | Flag name says exactly what it does. No semantic overload of `--transcribe`. | Two top-level flags express one mode choice. Mutual-exclusivity must be enforced by `StartCommand` validation (extra code). |
+| C — reuse `--transcribe-language`/`--transcribe-language2` | `--transcribe dual --transcribe-language en-US --transcribe-language2 el-GR` | No new locale flags. | **Ambiguous** with the existing Apple single-mode dual-locale feature (`apple` provider already accepts a secondary language hint). A reader cannot tell from the flags alone whether dual-PROVIDER mode or dual-LOCALE mode is active. Rejected. |
+
+**Decision: Option A.** Flag set:
+
+```
+macrec start \
+  --transcribe dual \
+  --transcribe-dual-locale-a en-US \
+  --transcribe-dual-locale-b el-GR \
+  --transcribe-dual-source mixed \
+  --transcribe-dual-format jsonl \
+  --output /path/to/recording.m4a
+```
+
+Env-var equivalents (registered in `ConfigResolver.Keys`):
+
+| CLI flag | Env var | Default | Source of truth |
+|---|---|---|---|
+| `--transcribe dual` | `MACREC_TRANSCRIBE=dual` | (no default — explicit choice) | `ConfigResolver.Keys.MACREC_TRANSCRIBE` |
+| `--transcribe-dual-locale-a` | `MACREC_TRANSCRIBE_DUAL_LOCALE_A` | `en-US` | new constant |
+| `--transcribe-dual-locale-b` | `MACREC_TRANSCRIBE_DUAL_LOCALE_B` | `el-GR` | new constant |
+| `--transcribe-dual-source` | `MACREC_TRANSCRIBE_DUAL_SOURCE` | `mixed` | new constant |
+| `--transcribe-dual-format` | `MACREC_TRANSCRIBE_DUAL_FORMAT` | `jsonl` | new constant |
+
+Resolution chain (lowest → highest priority): shell env → `~/.tool-agents/macrec/.env` → local `.env` → CLI flag. Identical to the existing `--transcribe-*` family.
+
+**Rationale for picking Option A:** symmetry trumps naming purity. The
+existing `--transcribe-source`, `--transcribe-format`, `--transcribe-language`
+family already extends `--transcribe` with co-flags. Adding `dual` to the
+enum and `-dual-*` co-flags fits the established ergonomics. Option B
+adds a flag with no analogue elsewhere; Option C is rejected as
+ambiguous.
+
+#### OQ-3 — SRT/VTT channel labelling for overlapping segments
+
+| Option | SRT | VTT | Pros | Cons |
+|---|---|---|---|---|
+| A — speaker prefix (SRT) + voice tag (VTT) | `EN: Hello world` | `<v EN>Hello world</v>` | VTT voice tag is first-class WebVTT. Universally supported. SubRip tolerates speaker prefixes. Overlapping cues allowed in both formats; players (mpv, VLC, browsers) stack them gracefully. | Two conventions across two formats — a small inconsistency. |
+| B — `NOTE` separator + serialised cues | `NOTE Channel B begins\n\n00:00:01,230 --> ...` | analogous | Preserves chronological cue numbering. | `NOTE` is VTT-only; SRT has no comment syntax. Diverges. |
+| C — two parallel cue blocks (interleaved by start time) without channel marker | (raw cues, no prefix) | (raw cues, no prefix) | Smallest schema change. | **Loses channel identity at the cue level.** Downstream readers cannot tell EN from EL without re-running classification. Rejected — violates FR-7 ("preserve the channel/locale labelling"). |
+
+**Decision: Option A.**
+
+- **SRT**: cue text is prefixed with the uppercase BCP-47 primary
+  language code followed by `": "`. Example with overlap:
+  ```
+  1
+  00:00:01,230 --> 00:00:02,110
+  EN: Hello world
+
+  2
+  00:00:01,920 --> 00:00:03,420
+  EL: Καλημέρα
+  ```
+  Note that cue 2 starts BEFORE cue 1 ends — overlap is intentional and
+  documented. Cues are emitted in arrival order; cue numbering is
+  monotonic across both channels.
+
+- **VTT**: cue text uses WebVTT's first-class voice tag. Same overlap
+  policy:
+  ```
+  WEBVTT
+
+  00:00:01.230 --> 00:00:02.110
+  <v EN>Hello world</v>
+
+  00:00:01.920 --> 00:00:03.420
+  <v EL>Καλημέρα</v>
+  ```
+
+The label string is computed by a single helper (`DualSidecarLabel.channelLabel(for:)`)
+that uppercases the BCP-47 primary subtag of `segment.language`. This
+helper is the one canonical source of channel labelling across all four
+sidecar formats.
+
+**Overlap policy (documented in `docs/tools/macrec.md` and tested by
+`srtAllowsOverlappingCues()`):** overlapping cue start/end times are
+ALLOWED and EXPECTED in dual mode. The writer does NOT merge, dedupe,
+or reorder cues to eliminate overlap. Tested players (mpv, VLC, browser
+WebVTT renderers) handle this gracefully by stacking the overlapping
+cues. Players that reject overlap (rare, primarily ancient SubRip
+implementations) are documented as unsupported for dual-mode SRT.
+
+**Rationale:** Option A uses each format's most idiomatic convention
+(VTT's first-class voice tag; SRT's de-facto speaker prefix). Per-format
+divergence is unavoidable because SRT lacks WebVTT's voice tag — Option B
+would require a non-standard SRT extension. Option C drops channel
+identity, which is a hard requirement.
+
+#### OQ-4 — `DualTranscriptionManager` generality
+
+| Option | Shape | Pros | Cons |
+|---|---|---|---|
+| A — specific to Apple+AppleCloud (v1 path) | Constructor takes `DualTranscriptionConfig` with two named locales; internally hardwires `apple` + `apple-cloud` providers. `DualChannelTag` is `{ .channelA, .channelB }`. | Smallest surface; easiest to reason about; matches v1 spec scope; no premature abstraction. | A future "Soniox + Gemini" or "triple-mode" feature requires refactoring. |
+| B — generic N-provider session group | Constructor takes `[ChannelConfig]`; arbitrary length; `ChannelTag` is an int or UUID. | Forward-looking. | Out of scope per refined-request §Out of scope. Larger code surface, more test paths. Single-mode regression risk increases. |
+
+**Decision: Option A (specific for v1).**
+
+- `DualTranscriptionConfig` has two fields named `channelA` and `channelB`
+  of type `ChannelConfig` (provider, locale, displayName). The provider
+  field is constrained to `.appleOnDevice` and `.appleCloud` respectively
+  for v1 — encoded as a phantom-typed field or a `ChannelKind` enum at
+  construction time.
+- `DualChannelTag` is a closed two-case enum (`channelA`, `channelB`)
+  used only internally for routing per-channel metrics, errors, and
+  sidecar convenience fields.
+- A future plan that genericises to N>2 (or to non-Apple provider pairs)
+  rewrites only Phase B and Phase F; Phases A, D, E, G, H, I, J either
+  carry forward unchanged or extend additively.
+
+**Rationale:** the user's stated use case (Greek with English code-
+switching) and the spec's explicit out-of-scope clauses (no triple-mode,
+no other provider pairs) define a narrow target. Generic abstraction
+costs LOC, test surface, and concept count today for hypothetical future
+benefit. The investigator's recommendation is followed.
+
+The migration path to a generic SessionGroup (if ever requested) is
+preserved by: (a) extracting `TranscriptionDispatcher` protocol so the
+caller already polymorphises; (b) keeping `DualChannelTag` as a routing
+tag (not a primary key on `TranscriptSegment`), so generalising to
+`ChannelTag` is a search-and-replace within the dual subsystem.
+
+#### OQ-5 — Dual-lane UI layout
+
+The popover is width-constrained (~360-440 pt typical, user-resizable
+within bounds). Three layout candidates:
+
+| Option | Shape | Pros | Cons |
+|---|---|---|---|
+| A — side-by-side columns | `HStack { laneA; Divider(); laneB }` | Spatial separation = strong channel identity. Eyes can scan one channel without distraction. | At ~400 pt popover width each lane gets ~190 pt — Greek + Latin text wraps aggressively. Hard to read. |
+| B — stacked lanes | `VStack { laneAHeader; laneAList; laneBHeader; laneBList }` | Full popover width per lane = readable line lengths. Idiomatic SwiftUI vertical layout. Compact lane headers (one row each) keep vertical budget reasonable. | Two streams of partials updating independently can feel jumpy as the user's eye chases the active lane. Mitigated by per-lane scroll containers (each lane auto-scrolls independently to its own latest segment). |
+| C — interleaved single feed with channel chips | `VStack { ForEach(allSegments) { row(model: $0.model, ...) } }` (chronological by `lastUpdated`) | Single scroll region; preserves arrival order across channels. Smallest layout footprint. | Channel identity is per-row, not per-region — the eye has to read every chip. Visually busy when both channels stream actively. Confusing when one channel lags (e.g. Channel B is +400 ms behind Channel A — old Channel A finals are mixed with current Channel B partials). |
+
+**Decision: Option B (stacked lanes), with per-lane independent auto-scroll.**
+
+```
+┌─────────────────────────────────────────────────┐
+│  Live Transcript                  [Clear]       │
+├─────────────────────────────────────────────────┤
+│  ── Channel A · EN — Apple (on-device) ──       │
+│  [EN] Hello world                  ✓            │
+│  [EN] this is a test               ✓            │
+│  [EN] the weather is nice…         (italic)     │
+│  ─────────────────────────────────────────────  │
+│  ── Channel B · EL — Apple Cloud ──             │
+│  [EL] Καλημέρα                     ✓            │
+│  [EL] πώς είσαι σήμερα             ✓            │
+│  [EL] ο καιρός είναι ωραίος…       (italic)     │
+└─────────────────────────────────────────────────┘
+```
+
+Layout details:
+
+- Each lane has a one-row sticky header naming the channel.
+- Each lane's segment list is its own `ScrollView` with auto-scroll-to-
+  bottom anchored to that lane's latest segment (independent of the
+  other lane).
+- The two lane heights split the available transcript area 50/50 by
+  default; user-resizable by dragging the divider (deferred to v2 if
+  the divider proves complex; v1 ships with fixed 50/50).
+- Lane header includes the channel's inline error display when
+  `dualChannelErrors?.channelX != nil` — error text rendered in the
+  app's destructive-color token (`SemanticColors.destructive`) below
+  the lane header, replacing the segment list with a single error row
+  if the channel has errored terminally.
+
+**Rationale:**
+- Side-by-side (Option A) sacrifices readability for separation. The
+  popover is too narrow to give Greek + Latin scripts comfortable line
+  lengths.
+- Single feed (Option C) loses regional channel identity. With one
+  channel ~400 ms behind the other, the chronological mix becomes
+  hard to follow.
+- Stacked (Option B) gives each lane the full popover width
+  (readable line lengths) while preserving strong regional channel
+  identity. Independent scrolling means each lane settles to its own
+  latest content without cross-channel jitter. This matches the user's
+  primary use case (Greek-with-English-words: the user wants to see
+  what the EL channel transcribed for the bulk and glance at the EN
+  channel for the inline English fragments — vertically scanning two
+  columns is natural; horizontally jumping between columns is not).
+
+#### OQ-6 — Pause/resume semantics
+
+| Option | Behaviour | Pros | Cons |
+|---|---|---|---|
+| A — atomic both | Pause stops `ingestFrame` calls upstream of `DualTranscriptionManager`; both pipelines naturally go quiet together. Resume flips the same upstream gate; both pipelines resume together. | Matches FR-11 verbatim ("atomically"). Matches AC-7. Implementation is zero new code (existing capture-pause already gates `ingestFrame`). User's mental model: pause = pause everything. Sidecar: a single split timestamp aligns across both channels, which is a property a downstream reviewer will rely on. | No way to mute one channel temporarily (e.g. user knows the next 30s is purely Greek and wants to silence the noisy EN partials). |
+| B — per-channel | Two pause buttons; each gates the corresponding pipeline's `ingest` call independently. | Flexible. Power-user feature. | Diverges from FR-11 ("apply to BOTH channels atomically"). Spec is unambiguous. Adds UI complexity and test surface. |
+| C — atomic pause + per-channel mute (display-only) | Pause is atomic (Option A semantics). A separate "mute display" toggle hides one channel's lane in the UI without stopping its transcription. | Compromise: spec-compliant pause, plus addresses the OQ-2 raised in the refined request (per-channel disable for purely-Greek sections). | OQ-2 in the refined request asks specifically about *disabling* a channel — display-mute does not save quota or CPU. Half-answer. |
+
+**Decision: Option A (atomic both) for v1.**
+
+- Pause: capture-graph pause (existing) stops new frames from reaching
+  `DualTranscriptionManager.ingestFrame`. Both pipelines go quiet.
+  Both providers' internal queues drain naturally; partials in flight
+  finalize (or time out by provider). No new code.
+- Resume: capture resumes; new frames flow; both pipelines wake.
+- Split: `DualTranscriptionManager.rotateSidecar(toAudioURL:format:)`
+  calls `pipelineA.rotateSidecar(...)` and `pipelineB.rotateSidecar(...)`
+  with the SAME target URL and format. Both pipelines write into the
+  same NEW sidecar file from that point. The shared `TranscriptSidecarWriter`
+  is reconstructed by both pipelines pointing at the new URL —
+  `DualTranscriptionManager.rotateSidecar` constructs a single new
+  writer and injects it into both, preserving DT-INV-3.
+- Stop: `async let stopA = pipelineA.stop(); async let stopB = pipelineB.stop()`;
+  await both with a 5-second per-stop timeout (matching plan-005's
+  single-mode timeout). Then finish the merged continuation.
+
+**Per-channel disable (the OQ-2 in the refined request):** rejected
+for v1 to honour FR-11. If the user later requests it, Option C
+(display-mute) is the lowest-cost addition.
+
+**Rationale:** the spec is explicit (FR-11, AC-7) — atomic. Implementing
+per-channel pause would violate the spec without user demand. The
+investigation's Q7 also defaults to atomic. The simplest correct
+implementation reuses the existing capture-pause path and adds zero
+new pause-routing code.
+
+---
+
+### §DT-3 Data models
+
+#### TranscriptionMode (new)
+
+```swift
+// Sources/MacrecCore/Transcription/Dual/TranscriptionMode.swift
+public enum TranscriptionMode: String, Codable, Sendable, CaseIterable {
+    case single
+    case dual
+}
+```
+
+Default: `.single`. Used by `RecordingOptions` (computed accessor) and
+the UI `@AppStorage("com.macrec.ui.transcriptionMode")` key.
+
+#### DualChannelTag (new)
+
+```swift
+// Sources/MacrecCore/Transcription/Dual/DualChannelTag.swift
+public enum DualChannelTag: String, Codable, Sendable, CaseIterable {
+    case channelA   // Apple on-device, English by default
+    case channelB   // Apple Cloud, Greek by default
+}
+```
+
+This is a **routing tag**, not a primary key on `TranscriptSegment`.
+It lives only inside `DualTranscriptionManager` and on the new
+`MacrecError.transcriptionDualChannelFailure(channel:underlying:)` case.
+The investigator's call (no new field on `TranscriptSegment`) is
+**confirmed**: the existing `model` and `language` fields uniquely
+identify the channel for the only provider pair shipping in v1
+(`apple` ↔ `channelA`, `apple-cloud` ↔ `channelB`). Adding `channel`
+as a hard field would couple the data model to the dual-mode feature
+and complicate any future N-way generalisation.
+
+For JSONL **only**, an OPTIONAL convenience field `channel: "A" | "B"`
+is computed at write time inside `DualTranscriptionManager`'s sidecar-
+bound segment construction and written via `encodeIfPresent`. Single-
+mode JSONL output omits the field (preserves byte-equivalence per AC-1).
+
+#### ChannelConfig (new)
+
+```swift
+// Sources/MacrecCore/Transcription/Dual/ChannelConfig.swift
+public struct ChannelConfig: Sendable, Equatable, Codable {
+    public let providerId: String      // "apple" or "apple-cloud" in v1
+    public let locale: String          // BCP-47
+    public let displayName: String     // "Apple (on-device)" / "Apple Cloud"
+
+    public init(providerId: String, locale: String, displayName: String) {
+        self.providerId = providerId
+        self.locale = locale
+        self.displayName = displayName
+    }
+}
+```
+
+Marked `public` so `DualTranscriptionConfig` and CLI/UI construction
+sites can build instances. The `providerId` is intentionally a string
+(matching the existing `TranscriptionProviderFactoryInput.providerId`
+convention) rather than an enum — keeps the v1→generic migration
+path open without an extra enum-to-string mapping layer.
+
+#### DualTranscriptionConfig (new)
+
+```swift
+// Sources/MacrecCore/Transcription/Dual/DualTranscriptionConfig.swift
+public struct DualTranscriptionConfig: Sendable, Equatable, Codable {
+    public let channelA: ChannelConfig         // hardwired to apple in v1
+    public let channelB: ChannelConfig         // hardwired to apple-cloud in v1
+    public let source: TranscriptionSource     // .system | .microphone | .mixed | .both
+    public let sidecarFormat: TranscriptFormat // .jsonl | .txt | .srt | .vtt
+
+    public init(
+        channelA: ChannelConfig,
+        channelB: ChannelConfig,
+        source: TranscriptionSource,
+        sidecarFormat: TranscriptFormat
+    ) throws {
+        // Validation — no fallbacks. Raise on missing/invalid.
+        guard !channelA.locale.isEmpty else {
+            throw MacrecError.transcriptionConfigurationMissing(
+                field: "dualTranscription.channelA.locale")
+        }
+        guard !channelB.locale.isEmpty else {
+            throw MacrecError.transcriptionConfigurationMissing(
+                field: "dualTranscription.channelB.locale")
+        }
+        guard DualLocaleSets.channelASupportedLocales
+                  .map(\.identifier).contains(channelA.locale) else {
+            throw MacrecError.transcriptionDualLocaleUnsupported(
+                channel: .channelA, locale: channelA.locale)
+        }
+        guard DualLocaleSets.channelBSupportedLocales
+                  .map(\.identifier).contains(channelB.locale) else {
+            throw MacrecError.transcriptionDualLocaleUnsupported(
+                channel: .channelB, locale: channelB.locale)
+        }
+        // Defensive: same provider AND same locale → invalid (structurally
+        // unreachable in v1 since providers differ by construction).
+        if channelA.providerId == channelB.providerId
+           && channelA.locale == channelB.locale {
+            throw MacrecError.transcriptionDualLocaleConflict(
+                locale: channelA.locale)
+        }
+        self.channelA = channelA
+        self.channelB = channelB
+        self.source = source
+        self.sidecarFormat = sidecarFormat
+    }
+}
+```
+
+#### TranscriptSegment / TranscriptionEvent — confirmed unchanged
+
+**Confirmation (overrules a future temptation to add a channel field):**
+the investigator's recommendation that no schema change is required is
+**ratified** at the design level. `TranscriptSegment.model` (already
+`"apple"` or `"apple-cloud"`) plus `TranscriptSegment.language` (already
+BCP-47) is sufficient to identify the channel for v1. Adding a `channel`
+field would couple the model to dual-mode and require Codable migration.
+
+For the merged event stream's per-channel error case, **one new case
+is added to `TranscriptionEvent`**:
+
+```swift
+// Sources/MacrecCore/Transcription/TranscriptEvent.swift  (modify)
+public enum TranscriptionEvent: Sendable, Codable, Equatable {
+    // existing cases (unchanged):
+    case segmentAppended(index: Int, segment: TranscriptSegment)
+    case segmentUpdated(index: Int, segment: TranscriptSegment)
+    case segmentFinalized(index: Int, segment: TranscriptSegment)
+    case privacyDisclosure(providerDisplayName: String)
+    case metricsTick(metrics: TranscriptionMetrics)
+    case error(detail: String)
+
+    // NEW (Phase B):
+    case dualChannelError(channel: DualChannelTag, detail: String)
+}
+```
+
+The new `dualChannelError` case is additive: existing single-mode code
+that switches over `TranscriptionEvent` continues to compile (Swift
+warning rather than error if `@unknown default` is missing). The case
+carries the channel tag explicitly so the consumer (RecordingController)
+can route the error to the correct lane error-display surface.
+
+#### DualChannelMetrics (new)
+
+```swift
+// Sources/MacrecCore/Transcription/Dual/DualChannelMetrics.swift
+public struct DualChannelMetrics: Sendable, Equatable, Codable {
+    public let channelA: TranscriptionMetrics
+    public let channelB: TranscriptionMetrics
+
+    public init(channelA: TranscriptionMetrics, channelB: TranscriptionMetrics) {
+        self.channelA = channelA
+        self.channelB = channelB
+    }
+}
+```
+
+`TranscriptionMetrics` itself is reused unchanged (`chunksSent`,
+`billableSeconds`, `lastRttMs`, `errorCount`, `bufferOverflowCount`).
+
+#### MacrecError extensions (new)
+
+```swift
+// Sources/MacrecCore/Errors/MacrecError+Dual.swift
+extension MacrecError {
+    static func transcriptionConfigurationMissing(field: String) -> MacrecError { ... }
+    static func transcriptionDualLocaleUnsupported(
+        channel: DualChannelTag, locale: String) -> MacrecError { ... }
+    static func transcriptionDualLocaleConflict(locale: String) -> MacrecError { ... }
+    static func transcriptionDualChannelFailure(
+        channel: DualChannelTag, underlying: Error) -> MacrecError { ... }
+}
+```
+
+All four cases produce actionable error messages; `transcriptionDualChannelFailure`
+is the failure-isolation channel-tag wrapper that drain Tasks emit
+into the merged stream as `.dualChannelError(channel:detail:)`.
+
+---
+
+### §DT-4 Interfaces
+
+#### TranscriptionDispatcher protocol (new)
+
+```swift
+// Sources/MacrecCore/Transcription/TranscriptionDispatcher.swift
+public protocol TranscriptionDispatcher: AnyObject, Sendable {
+    func start() async throws -> AsyncStream<TranscriptionEvent>
+    func ingest(_ samples: [Float], from tag: SourceTag) async
+    func ingestFrame(_ frame: AlignedFrame, from tag: SourceTag) async
+    func stop() async
+    func rotateSidecar(toAudioURL: URL, format: TranscriptFormat) async throws
+    func currentMetrics() async -> TranscriptionMetrics
+}
+```
+
+Both `TranscriptionManager` (existing) and `DualTranscriptionManager`
+(new) conform. `RecordingSession` holds `private let dispatcher: (any
+TranscriptionDispatcher)?` and dispatches through the protocol. The
+choice between Single and Dual is made ONCE at `RecordingSession`
+construction time — there is NO per-callsite enum discriminator
+(`if dual { ... } else { ... }` patterns are forbidden in
+`RecordingSession`).
+
+For dual-only metrics (per-channel split), `DualTranscriptionManager`
+exposes an additional method NOT on the protocol:
+
+```swift
+extension DualTranscriptionManager {
+    public func currentDualMetrics() async -> DualChannelMetrics
+}
+```
+
+`RecordingController`'s metrics-poll Task calls `currentMetrics()`
+(protocol — returns a single combined `TranscriptionMetrics`) for the
+existing single-mode badge AND, if the dispatcher is a `DualTranscriptionManager`,
+also calls `currentDualMetrics()` (downcast, dual-only) to populate the
+per-channel display. This keeps the protocol minimal while exposing the
+extra surface dual mode needs.
+
+#### DualTranscriptionManager actor (new) — public surface
+
+```swift
+// Sources/MacrecCore/Transcription/Dual/DualTranscriptionManager.swift
+public actor DualTranscriptionManager: TranscriptionDispatcher {
+
+    public init(
+        config: DualTranscriptionConfig,
+        sidecarBaseURL: URL,
+        sidecarPolicy: SidecarPolicy = .streaming,
+        providerFactory: TranscriptionProviderFactory = .shared
+    ) throws
+
+    // TranscriptionDispatcher conformance:
+    public func start() async throws -> AsyncStream<TranscriptionEvent>
+    public func ingest(_ samples: [Float], from tag: SourceTag) async
+    public func ingestFrame(_ frame: AlignedFrame, from tag: SourceTag) async
+    public func stop() async
+    public func rotateSidecar(toAudioURL: URL, format: TranscriptFormat) async throws
+    public func currentMetrics() async -> TranscriptionMetrics  // combined
+
+    // Dual-only:
+    public func currentDualMetrics() async -> DualChannelMetrics
+}
+```
+
+Internals (private):
+
+```swift
+private let config: DualTranscriptionConfig
+private let pipelineA: StreamingTranscriptionPipeline
+private let pipelineB: StreamingTranscriptionPipeline
+private let downsamplerA: AudioDownsampler
+private let downsamplerB: AudioDownsampler
+private let sidecarWriter: TranscriptSidecarWriter   // shared (DT-INV-3)
+private var mergedContinuation: AsyncStream<TranscriptionEvent>.Continuation!
+private var drainTaskA: Task<Void, Never>?
+private var drainTaskB: Task<Void, Never>?
+private var channelAErrored: Bool = false
+private var channelBErrored: Bool = false
+```
+
+#### Method contracts
+
+| Method | Behaviour | Failure semantics |
+|---|---|---|
+| `init` | Constructs both providers via `providerFactory.build(...)`, both `StreamingTranscriptionPipeline` instances injecting the SHARED `TranscriptSidecarWriter`, and both `AudioDownsampler` instances. Validates `DualTranscriptionConfig` (already validated by its own initialiser). | Throws `MacrecError.transcriptionDualLocaleUnsupported` / `.transcriptionConfigurationMissing` from the config init; rethrows provider-construction errors. |
+| `start()` | Calls `pipelineA.start()` and `pipelineB.start()`; spawns `drainTaskA` and `drainTaskB`; returns the merged `AsyncStream<TranscriptionEvent>`. | If one provider fails to start, the manager yields a `.dualChannelError(...)` for that channel and continues with the other. If BOTH fail to start, the manager throws (recording cannot proceed without any transcription — but capture itself is independent and continues at the `RecordingSession` level). |
+| `ingestFrame(_:from:)` | Synchronously calls `downsamplerA.convert(frame.buffer)` → `pipelineA.ingest(samplesA, from: tag)`; then `downsamplerB.convert(frame.buffer)` → `pipelineB.ingest(samplesB, from: tag)`. Both `ingest` calls are non-blocking (each pipeline's underlying session has its own internal buffer/queue). | If either downsampler throws (defensive — should not happen for a sane PCM buffer), log and skip that channel for this frame. Other channel proceeds unaffected. |
+| `ingest(_:from:)` | Same fan-out as above but takes pre-downsampled `[Float]` samples. Used by code paths that bypass `AlignedFrame`. | Same as above. |
+| `stop()` | `async let stopA = pipelineA.stop(); async let stopB = pipelineB.stop()`; `_ = await (stopA, stopB)`; finishes `mergedContinuation`. | 5-second per-stop timeout (matches plan-005 single-mode). On timeout, log and continue. |
+| `rotateSidecar(toAudioURL:format:)` | Constructs a new `TranscriptSidecarWriter` for the target URL; calls `pipelineA.rotateSidecar(...)` and `pipelineB.rotateSidecar(...)` injecting the new shared writer; replaces `self.sidecarWriter`. | Throws on writer construction error; on success both pipelines now write to the new sidecar. |
+| `currentMetrics()` | Returns `pipelineA.currentMetrics() + pipelineB.currentMetrics()` (field-wise sum) for the protocol contract — preserves single-mode badge consumer behaviour. | Pure read; no failure. |
+| `currentDualMetrics()` | Returns `DualChannelMetrics(channelA: pipelineA.currentMetrics(), channelB: pipelineB.currentMetrics())`. | Pure read; no failure. |
+
+#### Drain Task contract (DT-INV-2 enforcement)
+
+```swift
+private func makeDrainTask(
+    pipeline: StreamingTranscriptionPipeline,
+    channel: DualChannelTag
+) -> Task<Void, Never> {
+    Task { [weak self] in
+        do {
+            for await event in await pipeline.events {
+                guard let self else { return }
+                await self.yield(event)         // forwards as-is; segment.model
+                                                // already identifies channel
+            }
+        } catch {
+            guard let self else { return }
+            await self.recordChannelError(channel: channel, error: error)
+            await self.yield(.dualChannelError(
+                channel: channel,
+                detail: String(describing: error)))
+            // NOTE: do NOT cancel the other Task; do NOT finish mergedContinuation.
+            //       The other channel keeps streaming. mergedContinuation is
+            //       finished only by stop().
+        }
+    }
+}
+```
+
+---
+
+### §DT-5 Audio fan-out detailed design
+
+**Two `AudioDownsampler` instances, sequential synchronous fan-out
+inside the actor (Investigator §Q2 Option 2A — confirmed).**
+
+Per `AudioDownsampler`'s thread-safety contract (the type carries an
+internal accumulator across `convert(_:)` calls and is NOT safe to
+share across consumers), each channel must own its own instance.
+Downsampling cost is microseconds per frame and dwarfed by STT
+inference cost — there is no measurable benefit to a shared
+downsampler that would justify the thread-safety risk.
+
+**Fan-out call sequence inside `ingestFrame`:**
+
+```
+ingestFrame(frame, from: tag) [actor-isolated]
+  ├─ samplesA := downsamplerA.convert(frame.buffer)   [sync, bounded CPU]
+  ├─ await pipelineA.ingest(samplesA, from: tag)      [non-blocking; enqueues to session]
+  ├─ samplesB := downsamplerB.convert(frame.buffer)   [sync, bounded CPU]
+  └─ await pipelineB.ingest(samplesB, from: tag)      [non-blocking; enqueues to session]
+```
+
+Both `ingest` calls are non-blocking by contract: `AppleSpeechSession.ingest`
+appends to the SpeechAnalyzer's internal `AnalyzerInput` `AsyncStream`
+(buffering policy verified in Phase B B.4 micro-investigation);
+`AppleCloudStreamingSession.ingest` wraps Float32 into `AVAudioPCMBuffer`
+and appends to the active `SFSpeechAudioBufferRecognitionRequest` (Apple's
+request queue absorbs backpressure).
+
+**Backpressure handling:**
+
+- **Cloud channel slow (network-bound)**: Apple's `SFSpeechAudioBufferRecognitionRequest`
+  buffers internally; the rotation cadence (55 s) caps memory at one
+  task's worth of audio; `AppleCloudStreamingSession` already handles
+  network drops with retry. No change for dual mode.
+- **On-device channel slow** (CPU-bound, theoretically possible):
+  Phase B B.4 verifies `AppleSpeechSession`'s internal `AnalyzerInput`
+  stream's buffering policy. If unbounded, dual mode optionally switches
+  to `.bufferingNewest(N)` to prevent unbounded growth (Phase B coder
+  resolution).
+- **Capture graph**: never blocks on transcription. The `ingestFrame`
+  fan-out completes in O(downsample + enqueue) time (~microseconds);
+  it does not await STT inference. NFR-3 satisfied.
+
+**One channel paused while the other continues:**
+
+Per OQ-6 resolution, pause acts on capture-frame delivery upstream of
+`DualTranscriptionManager`. There is no per-channel pause in v1.
+The case "one channel paused while the other continues" therefore does
+not arise from a user pause action — it can only arise from
+`channelXErrored = true` (one channel terminally failed). In that
+case `ingestFrame` continues to feed both pipelines (no per-channel
+gate); the failed pipeline's underlying session ignores or rejects
+new frames (its drain Task has already exited; no more events emit
+from that pipeline). The healthy channel keeps streaming. Memory does
+not grow because the failed pipeline's session has finished its
+internal buffer drain.
+
+**Memory implications:**
+
+- Per-frame: two `[Float]` allocations (~1024 samples × 4 bytes × 2 =
+  ~8 KB), garbage-collected immediately after `ingest` returns.
+- Steady state per channel: one `AudioDownsampler` accumulator (small,
+  bounded), one session-level queue (~60 s of audio at most for the
+  cloud channel due to 55 s rotation; ~bounded for the on-device
+  channel pending B.4 verification).
+- Total ≤ 2× single-mode steady-state memory footprint (NFR-4 satisfied).
+
+---
+
+### §DT-6 Merged event stream design
+
+**Two drain Tasks, one `AsyncStream<TranscriptionEvent>` continuation,
+channel-tagging happens at insertion time (Investigator §Q3 Option 3B
+— confirmed).**
+
+```swift
+public func start() async throws -> AsyncStream<TranscriptionEvent> {
+    try await pipelineA.start()
+    try await pipelineB.start()
+
+    let (stream, continuation) = AsyncStream<TranscriptionEvent>.makeStream(
+        bufferingPolicy: .unbounded)
+    self.mergedContinuation = continuation
+
+    self.drainTaskA = makeDrainTask(pipeline: pipelineA, channel: .channelA)
+    self.drainTaskB = makeDrainTask(pipeline: pipelineB, channel: .channelB)
+
+    return stream
+}
+```
+
+**Channel tagging for non-error events:** the segment's `model` field
+already identifies the channel (`"apple"` → A, `"apple-cloud"` → B).
+The drain Task forwards `.segmentAppended/.segmentUpdated/.segmentFinalized/.metricsTick`
+events as-is into the merged stream. No new tag is added at this layer.
+
+**Channel tagging for error events:** drain Task catches errors from
+its `for await` loop and yields a `.dualChannelError(channel: X,
+detail: ...)` (new case from §DT-3) into the merged stream. The channel
+tag is explicit because the error itself does not carry a `model` field.
+
+**Ordering guarantees (and the lack of them):**
+
+- **Within one channel**: events are forwarded in arrival order (the
+  drain Task processes them sequentially from `pipeline.events`).
+  Partial → final correlation per channel works correctly because the
+  pipeline's internal `indexForUtteranceId` map is per-pipeline.
+- **Across channels**: NO ordering guarantee. Channel A's `.segmentFinalized`
+  for utterance N may interleave arbitrarily with Channel B's
+  `.segmentAppended` for utterance M depending on Task scheduling.
+  Documented in `DualTranscriptionManager.swift` header comment AND in
+  the test `mergedStreamPreservesPerChannelOrderButNotCrossChannelOrder()`
+  (the test asserts per-channel ordering only).
+
+**Termination semantics:**
+
+- One channel errors → its drain Task catches, yields a
+  `.dualChannelError(...)`, exits its `for await` loop. The merged
+  continuation stays open (DT-INV-2). The other Task continues.
+- Both channels error → both drain Tasks exit. The merged continuation
+  stays open until `stop()` is called. (Recording continues; capture
+  continues; the merged stream is empty until stop.)
+- `stop()` → finishes both pipelines; their `events` streams complete;
+  both drain Tasks fall out of their loops; `mergedContinuation.finish()`
+  is called. Consumers' `for await event in mergedStream` loops exit
+  cleanly.
+
+---
+
+### §DT-7 Sidecar format spec
+
+Single shared `TranscriptSidecarWriter` (DT-INV-3) receives
+`.segmentFinalized` events from both pipelines and routes them to the
+configured `TranscriptFormatWriter`. Mode is communicated to the writer
+via a new `mode: TranscriptionMode` parameter on `TranscriptSidecarWriter.init`
+(default `.single` for backward compat). The format writers branch on
+mode to enable the channel-prefix logic.
+
+#### JSONL — additive, byte-equivalent in single mode
+
+Single-mode `Wire` struct unchanged. Dual-mode adds an OPTIONAL
+convenience field `channel: String?` populated from `segment.model`
+mapping (apple→"A", apple-cloud→"B") and serialised via
+`encodeIfPresent`. Single-mode JSONL output is byte-identical to today.
+
+**Example dual-mode JSONL (one segment per line, abridged):**
+
+```jsonl
+{"id":"E1...","timestamp":"2026-05-01T12:00:01.230Z","text":"Hello world","source":"system","model":"apple","language":"en-US","channel":"A","durationSec":0.88,"isFinal":true}
+{"id":"7C...","timestamp":"2026-05-01T12:00:01.920Z","text":"Καλημέρα","source":"system","model":"apple-cloud","language":"el-GR","channel":"B","durationSec":1.50,"isFinal":true}
+{"id":"4F...","timestamp":"2026-05-01T12:00:03.110Z","text":"this is a test","source":"system","model":"apple","language":"en-US","channel":"A","durationSec":0.95,"isFinal":true}
+```
+
+Field order follows the existing `Wire` struct's CodingKeys; `channel`
+is appended as the last field for grep/jq convenience. Documented in
+`docs/tools/macrec.md` AC-5 schema section as: "the `channel` key is
+present only in dual-mode JSONL; it is omitted in single-mode JSONL".
+
+#### TXT — line-prefix `[<lang>]`
+
+Single-mode line format unchanged. Dual-mode prefixes each line with
+`[<channel-label>] ` (uppercase BCP-47 primary language code).
+
+**Example dual-mode TXT:**
+
+```
+[00:00:01.230] [EN] Hello world
+[00:00:01.920] [EL] Καλημέρα
+[00:00:03.110] [EN] this is a test
+[00:00:04.610] [EL] πώς είσαι σήμερα
+```
+
+Single-mode would emit `[00:00:01.230] Hello world` (no `[EN]` prefix);
+byte-equivalence preserved.
+
+#### SRT — speaker prefix on cue text
+
+Single-mode unchanged. Dual-mode prefixes cue text with `<channel-label>: `.
+
+**Example dual-mode SRT (note overlap on cues 1 and 2):**
+
+```
+1
+00:00:01,230 --> 00:00:02,110
+EN: Hello world
+
+2
+00:00:01,920 --> 00:00:03,420
+EL: Καλημέρα
+
+3
+00:00:03,110 --> 00:00:04,060
+EN: this is a test
+
+4
+00:00:04,610 --> 00:00:06,200
+EL: πώς είσαι σήμερα
+```
+
+Cue numbers are monotonic across both channels (one shared counter in
+the writer). Overlap on cues 1/2 is intentional and tolerated by
+mainstream players (mpv, VLC). Documented under §DT-2 OQ-3.
+
+#### VTT — voice tag `<v EN|EL>`
+
+Single-mode unchanged. Dual-mode wraps cue text in WebVTT voice tags.
+
+**Example dual-mode VTT:**
+
+```
+WEBVTT
+
+00:00:01.230 --> 00:00:02.110
+<v EN>Hello world</v>
+
+00:00:01.920 --> 00:00:03.420
+<v EL>Καλημέρα</v>
+
+00:00:03.110 --> 00:00:04.060
+<v EN>this is a test</v>
+
+00:00:04.610 --> 00:00:06.200
+<v EL>πώς είσαι σήμερα</v>
+```
+
+#### Channel label helper (single source of truth)
+
+```swift
+// Sources/MacrecCore/Transcription/Dual/DualSidecarLabel.swift
+public enum DualSidecarLabel {
+    /// Returns the uppercased BCP-47 primary subtag of `segment.language`.
+    /// e.g. "en-US" → "EN"; "el-GR" → "EL". Returns "??" if language is nil.
+    public static func channelLabel(for segment: TranscriptSegment) -> String {
+        guard let language = segment.language, !language.isEmpty else { return "??" }
+        let primary = language.split(separator: "-").first.map(String.init) ?? language
+        return primary.uppercased()
+    }
+}
+```
+
+All four dual-mode format writers call this helper. Centralising the
+mapping ensures OQ-3's labelling convention has one canonical
+implementation; if a future plan changes the convention (e.g. to ISO
+639-3), only this helper changes.
+
+---
+
+### §DT-8 UI design
+
+#### Mode switch + Single sub-view (DT-INV-1 verbatim wrapper)
+
+The new `TranscriptionModeSwitch` is a segmented `Picker` placed at the
+TOP of the Live Transcription panel, ABOVE the existing field controls.
+When `.single` is selected, the Single sub-view renders the current
+panel content **unchanged**.
+
+**Single mode panel (post-feature) — AC-1 anchor:**
+
+```
+┌─────────────────────────────────────────────────┐
+│  Live Transcription                             │
+│  [ Single | Dual ]    ← NEW (one row, ~28 pt)  │
+│  ───────────────────────────────────────────── │
+│  Transcribe        [ Apple ▼ ]   ← UNCHANGED   │
+│  Source            [ Mixed ▼ ]   ← UNCHANGED   │
+│  Transcript format [ jsonl ▼ ]   ← UNCHANGED   │
+│  Language          [ en-US ▼ ]   ← UNCHANGED   │
+└─────────────────────────────────────────────────┘
+```
+
+The four rows below the mode switch are the EXISTING `TranscriptionPicker`,
+`TranscriptionSourcePicker`, `TranscriptionFormatPicker`, and
+`TranscriptionLanguagePicker` views — extracted into a new
+`SingleTranscriptionControls.swift` wrapper that does **nothing more
+than render those four views in the existing order with the existing
+modifiers**. The extraction is a pure refactor: same `@AppStorage` keys,
+same defaults, same labels, same vertical rhythm.
+
+**Dual mode panel:**
+
+```
+┌─────────────────────────────────────────────────┐
+│  Live Transcription                             │
+│  [ Single |▌Dual▐ ]                             │
+│  ───────────────────────────────────────────── │
+│  Source                  [ Mixed ▼ ]            │
+│                                                 │
+│  Channel A · Apple (on-device)                  │
+│    Locale                [ en-US ▼ ]            │
+│                                                 │
+│  Channel B · Apple Cloud                        │
+│    Locale                [ el-GR ▼ ]            │
+│                                                 │
+│  Sidecar format          [ jsonl ▼ ]            │
+└─────────────────────────────────────────────────┘
+```
+
+When a channel errors mid-recording (FR-4), an inline error row appears
+beneath the affected channel's locale row, in the destructive color
+token:
+
+```
+Channel B · Apple Cloud
+  Locale                  [ el-GR ▼ ]
+  ⚠ Apple Cloud unavailable — network unreachable.
+    Recording continues on Channel A.
+```
+
+#### Locale-picker constraints
+
+Channel A locale picker draws ONLY from `SpeechTranscriber.supportedLocales`
+(macOS 26 on-device set; ~42 locales; **excludes Greek**).
+Channel B locale picker draws from `SFSpeechRecognizer.supportedLocales()`
+(~57 locales; **includes Greek**).
+
+The constraint is enforced by a single helper module:
+
+```swift
+// Sources/MacrecCore/Transcription/Dual/DualLocaleSets.swift
+public enum DualLocaleSets {
+    /// macOS 26 on-device set, sorted with English variants first,
+    /// then alphabetical. EXCLUDES locales not in
+    /// SpeechTranscriber.supportedLocales (e.g. el-GR).
+    public static var channelASupportedLocales: [Locale] { ... }
+
+    /// SFSpeechRecognizer's supported set, sorted with el-GR first,
+    /// then English variants, then alphabetical.
+    public static var channelBSupportedLocales: [Locale] { ... }
+
+    public static let channelADefaultLocale: String = "en-US"
+    public static let channelBDefaultLocale: String = "el-GR"
+}
+```
+
+The Channel A picker MUST source from `DualLocaleSets.channelASupportedLocales`
+(not from the existing `TranscriptionLanguagePicker`'s locale list,
+which uses `SFSpeechRecognizer.supportedLocales()` and would erroneously
+include Greek). The `DualLocalePicker` SwiftUI view takes a
+`supportedLocales: [Locale]` parameter and is constructed by the Dual
+panel passing the correct set per channel — the constraint is enforced
+at construction time.
+
+`DualTranscriptionConfig.init` re-validates the locale against the
+helper's set as a defensive backstop (in case AppStorage holds a stale
+value from a prior macOS version's locale set).
+
+#### Per-channel inline error display (FR-4)
+
+- **Where it appears**: directly below the affected channel's locale
+  picker row in `DualTranscriptionControls`, AND in the affected lane's
+  header in `DualLiveTranscriptView` (replacing the lane's segment list
+  with a single error row when terminal).
+- **What triggers it**: `RecordingController.dualChannelErrors?.channelA != nil`
+  (or `.channelB`). The controller sets these from the `.dualChannelError`
+  events drained from the merged stream.
+- **Recovery**: terminal errors (auth denied, locale unsupported)
+  remain shown for the rest of the recording — the channel does not
+  auto-retry. Transient errors (network drop) may be auto-retried by
+  the underlying provider (`AppleCloudStreamingSession` already has
+  retry logic); the lane error display is cleared when the next
+  successful event from that channel arrives. The clear logic lives
+  in `RecordingController`'s event-drain (`.segmentAppended/Updated/Finalized`
+  on the affected channel clears the corresponding `dualChannelErrors`
+  field).
+
+#### Per-channel metrics display (FR-9)
+
+- **Location**: a new `DualTranscriptionMetricsView` rendered at the
+  bottom of `DualTranscriptionControls`, mirroring the position of
+  `TranscriptionMetricsView` in single mode.
+- **Format**: two compact rows, one per channel:
+  ```
+  EN — Apple  •  120 ms p50  •  47 chunks  •  0 errors
+  EL — Apple Cloud  •  340 ms p50  •  47 chunks  •  0 errors  •  47/1000 quota
+  ```
+  The quota indicator on Channel B is best-effort: if `AppleCloudStreamingSession`
+  exposes the count, it is displayed; if not, the indicator is omitted
+  in v1 and tracked in `Issues - Pending Items.md` as a v2 follow-up.
+
+#### Dual-lane live transcript display
+
+Per OQ-5 resolution, stacked lanes with independent auto-scroll. ASCII
+mockup duplicated here for completeness:
+
+```
+┌─────────────────────────────────────────────────┐
+│  Live Transcript                  [Clear]       │
+├─────────────────────────────────────────────────┤
+│  ── Channel A · EN — Apple (on-device) ──       │
+│  ┌─────────────────────────────────────────┐   │
+│  │ [EN] Hello world                  ✓     │   │
+│  │ [EN] this is a test               ✓     │   │
+│  │ [EN] the weather is nice…         (italic)│ │
+│  └─────────────────────────────────────────┘   │
+│  ─────────────────────────────────────────────  │
+│  ── Channel B · EL — Apple Cloud ──             │
+│  ┌─────────────────────────────────────────┐   │
+│  │ [EL] Καλημέρα                     ✓     │   │
+│  │ [EL] πώς είσαι σήμερα             ✓     │   │
+│  │ [EL] ο καιρός είναι ωραίος…       (italic)│ │
+│  └─────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────┘
+```
+
+Each lane is its own `ScrollView` with auto-scroll-to-bottom anchored
+to the lane's latest segment. Italics + secondary color treatment for
+non-final partials match the existing single-mode segment treatment
+(no styling regression). The `Clear transcript` button clears both
+lanes atomically (one call to `clearTranscriptSegments()` empties the
+underlying `transcriptSegments` array; both lanes re-render empty).
+
+The partition logic lives in `DualLiveTranscriptView`:
+
+```swift
+private var channelASegments: [TranscriptSegment] {
+    recordingController.transcriptSegments.filter { $0.model == "apple" }
+}
+private var channelBSegments: [TranscriptSegment] {
+    recordingController.transcriptSegments.filter { $0.model == "apple-cloud" }
+}
+```
+
+The single source of truth (`transcriptSegments`) is unchanged from
+single mode (one flat array of `TranscriptSegment`); the panel just
+partitions at render time. This preserves AC-1 for single mode: when
+`recordingController.transcriptionMode == .single`, the panel renders
+`transcriptSegments` as a flat list (existing code path verbatim).
+
+---
+
+### §DT-9 Persisted preferences (`@AppStorage` keys)
+
+Five new `@AppStorage` keys in the `com.macrec.ui.dual.*` namespace
+plus one mode key. All independent from the existing 10 single-mode
+keys (verified via the existing `ControlBarStartTappedKeysRegressionTests`).
+
+| Key | Type | Default | Purpose | Migration |
+|---|---|---|---|---|
+| `com.macrec.ui.transcriptionMode` | `String` (TranscriptionMode rawValue) | `"single"` | Mode switch state | New — no migration; existing users see `"single"` (default) → no behaviour change |
+| `com.macrec.ui.dual.channelALocale` | `String` (BCP-47) | `"en-US"` | Channel A (Apple on-device) locale | New |
+| `com.macrec.ui.dual.channelBLocale` | `String` (BCP-47) | `"el-GR"` | Channel B (Apple Cloud) locale | New |
+| `com.macrec.ui.dual.source` | `String` (TranscriptionSource rawValue) | `"mixed"` | Audio source for Dual mode (independent of single-mode `transcribeSource`) | New |
+| `com.macrec.ui.dual.transcriptFormat` | `String` (TranscriptFormat rawValue) | `"jsonl"` | Sidecar format for Dual mode (independent of single-mode `transcriptFormat`) | New |
+
+**Collision check against the 10 single-mode keys** (per
+`docs/reference/codebase-scan-ui-redesign.md` §4f):
+
+| Single-mode key | Collision risk |
+|---|---|
+| `com.macrec.ui.transcribeProvider` | None — different prefix |
+| `com.macrec.ui.transcribeSource` | None — Dual uses `dual.source` |
+| `com.macrec.ui.transcribeLanguage` | None — Dual uses `dual.channelALocale` |
+| `com.macrec.ui.transcribeLanguage2` | None — Dual uses `dual.channelBLocale` |
+| `com.macrec.ui.transcriptFormat` | None — Dual uses `dual.transcriptFormat` |
+| `com.macrec.ui.transcribeKeyExpiresAt` | None |
+| `com.macrec.ui.transcribeModel` | None |
+| `com.macrec.ui.transcribeProviderEnabled` | None |
+| `com.macrec.ui.appearance` | None |
+| `com.macrec.ui.transcriptionEnabled` | None |
+
+**Round-trip preservation (AC-2):** because the single-mode keys and
+dual-mode keys are disjoint, toggling Single→Dual→Single never reads
+or writes the single-mode keys from the Dual sub-view. Single-mode
+state is preserved verbatim across mode toggles.
+
+**No reuse of the apple single-mode `transcribeLanguage` /
+`transcribeLanguage2` keys**, even though semantically they look
+adjacent to `dual.channelALocale` / `dual.channelBLocale`. Reasoning:
+the Apple single-mode dual-locale feature is a property of the `apple`
+provider's `SpeechTranscriber` (one session, two language hints) and
+is selected via the "Add a second language" toggle in
+`TranscriptionLanguagePicker`. The Dual-PROVIDER mode is a different
+feature (two sessions, one provider each) and must not corrupt the
+single-mode key when toggled.
+
+---
+
+### §DT-10 CLI flag spec
+
+Per OQ-2 resolution (Option A — extend `--transcribe`).
+
+**Flag set added to `StartCommand`:**
+
+```
+--transcribe-dual-locale-a <bcp47>
+    Channel A (Apple on-device) locale. Required when --transcribe is "dual".
+    Env: MACREC_TRANSCRIBE_DUAL_LOCALE_A
+    Default: en-US (persisted UI default; CLI must pass explicitly OR rely on env)
+
+--transcribe-dual-locale-b <bcp47>
+    Channel B (Apple Cloud) locale. Required when --transcribe is "dual".
+    Env: MACREC_TRANSCRIBE_DUAL_LOCALE_B
+    Default: el-GR
+
+--transcribe-dual-source <src>
+    Audio source for dual mode: system | mic | mixed | both.
+    Env: MACREC_TRANSCRIBE_DUAL_SOURCE
+    Default: mixed
+
+--transcribe-dual-format <fmt>
+    Sidecar format for dual mode: jsonl | txt | srt | vtt.
+    Env: MACREC_TRANSCRIBE_DUAL_FORMAT
+    Default: jsonl
+```
+
+**Existing flag `--transcribe` accepts new value `dual`:**
+
+```
+--transcribe <id>
+    Live transcription provider:
+        none | apple | apple-cloud | gemini | whisperkit | soniox |
+        azure | azure-openai-realtime | elevenlabs | dual
+    Env: MACREC_TRANSCRIBE
+```
+
+**Resolution chain (lowest → highest priority, identical to existing
+`--transcribe-*` family):**
+
+1. Hardcoded spec defaults (`en-US`, `el-GR`, `mixed`, `jsonl`) —
+   applied ONLY by the UI layer when writing the AppStorage default
+   on first read. The CLI does NOT silently apply spec defaults;
+   the `RecordingOptions.from(cliOverrides:)` factory raises
+   `MacrecError.transcriptionConfigurationMissing(field:)` if any
+   required dual-mode field is missing after the resolution chain
+   completes.
+2. Shell environment (`MACREC_TRANSCRIBE_DUAL_*`).
+3. `~/.tool-agents/macrec/.env`.
+4. Local `.env`.
+5. Explicit CLI flags (highest priority).
+
+This **does not** create a fallback — the no-fallback rule is honoured
+because (a) the AppStorage defaults are spec-defined UX defaults
+written into persistent state at first use, not silent substitutions
+at the engine layer; (b) the CLI raises rather than silently
+substituting when a value is missing.
+
+**Mutual exclusivity validation in `StartCommand`:**
+
+- If `--transcribe dual` AND any of `--transcribe-language`,
+  `--transcribe-language2`, `--transcribe-source` are passed: raise
+  `MacrecError.invalidArgument("--transcribe-language* flags are
+  single-mode only; use --transcribe-dual-locale-a/b in dual mode")`.
+- If `--transcribe dual` AND `--transcribe-dual-locale-a` is missing
+  (post-resolution): raise `MacrecError.transcriptionConfigurationMissing(
+  field: "--transcribe-dual-locale-a")`.
+- Symmetric for `--transcribe-dual-locale-b`.
+
+---
+
+### §DT-11 Privacy disclosure (FR-7 / AC-6)
+
+**Confirmation: the existing `apple-cloud` privacy disclosure copy
+verbatim covers Dual mode. No addendum needed.**
+
+The disclosure body text (`PrivacyDisclosureSheet.appleCloudBodyText`,
+verbatim from `Sources/macrec-ui/Views/Transcription/PrivacyDisclosureSheet.swift:288-300`)
+states:
+
+> macrec-ui will send your captured audio to Apple's Speech Recognition
+> servers via the system `SFSpeechRecognizer` API. macOS prompts you
+> for permission the first time the API is used (the system Speech
+> Recognition toggle). No API key is required and no third-party
+> billing is involved; Apple enforces a device-wide quota of
+> approximately 1,000 requests per hour and roughly 60 seconds of
+> audio per request — macrec automatically rotates the underlying
+> recognition task every 55 seconds to stay inside that limit. Apple
+> states recognition data is processed under their privacy policy;
+> see https://support.apple.com/guide/iphone/control-access-to-information-in-apps-iph251e92810/ios
+> and Apple's Privacy Policy at https://www.apple.com/legal/privacy/
+> for the current terms.
+
+This text describes the privacy posture of sending audio to Apple's
+servers — a property that holds whether `apple-cloud` is the sole
+provider (Single mode) or one of two channels (Dual mode). The fact
+that audio also reaches an on-device provider (Channel A in dual) does
+not change the cloud channel's privacy posture and does not require new
+disclosure.
+
+**Trigger logic (FR-8 / AC-6):**
+
+1. User flips mode switch to "Dual" — no disclosure triggered (the
+   user is just exploring the panel).
+2. User clicks Start with `transcriptionMode == .dual`:
+   - `RootView` (or the Start handler) reads `PrivacyDisclosureViewModel.acknowledgedKey(for: "apple-cloud")`.
+   - If `false`: present `PrivacyDisclosureSheet(selectedProvider: "apple-cloud", ...)`. On accept, set the AppStorage flag and proceed with `startTapped()`. On dismiss, abort the start.
+   - If `true` (user previously accepted under Single-mode `apple-cloud`
+     OR under a previous Dual-mode start): no prompt; proceed.
+
+**No new AppStorage key for Dual disclosure** — the existing per-
+provider key `com.local.macrec-ui.transcription.privacy.apple-cloud.acknowledged`
+is the single source of truth. A user who accepted under Single mode is
+not re-prompted in Dual mode (verified by Phase J test
+`singleAppleCloudAcknowledgement_carriesIntoDualMode()`).
+
+---
+
+### §DT-12 Failure handling matrix
+
+Rows = failure types. Columns = behaviour observed at Channel A,
+Channel B, and overall session level. "✓ continues" means the channel/
+session keeps producing transcripts; "✗ errored" means the channel/
+session reports an inline error and stops emitting; "audio capture"
+column is the recording-file-on-disk independent layer.
+
+| Failure type | Channel A | Channel B | Audio capture | UI surface |
+|---|---|---|---|---|
+| Apple Cloud auth error (`SFSpeechRecognizer authorization denied`) at start | ✓ continues | ✗ errored at session open; `.dualChannelError(.channelB, ...)` emitted; AC-9 actionable error text shown | ✓ unaffected | Channel B lane shows error banner; Channel A lane streams normally |
+| Apple Cloud network drop mid-recording | ✓ continues | ⚠ may auto-retry briefly (existing AppleCloudStreamingSession retry logic); on terminal failure → ✗ errored, `.dualChannelError(.channelB, "network unreachable")` | ✓ unaffected | Channel B lane shows transient "lagging" indicator if available, then error if terminal |
+| On-device permissions denied (Speech Recognition TCC missing — affects Channel B only because Channel A's on-device SpeechAnalyzer does not need TCC) | ✓ continues | ✗ errored at session open; same actionable error as the auth case | ✓ unaffected | Channel B lane error |
+| Channel A locale not supported by `SpeechTranscriber.supportedLocales` (defensive — picker constrains, but stale AppStorage could carry an unsupported value) | ✗ errored at config-init time (`MacrecError.transcriptionDualLocaleUnsupported(.channelA, ...)`) | (recording does not start) | (recording does not start) | UI raises error from Start handler before recording begins; user sees "Channel A locale 'XX-YY' is not supported on this macOS version" |
+| Channel B locale not supported by `SFSpeechRecognizer.supportedLocales()` | (recording does not start) | ✗ errored at config-init time | (recording does not start) | Symmetric to above |
+| Audio source disconnected (microphone unplugged mid-recording) | (depends on capture-graph behaviour — outside dual-mode scope; existing behaviour is to log and continue with available sources) | (same) | (depends on capture-graph) | Existing capture-graph error surface; no dual-mode-specific change |
+| Both channels fail (Apple Cloud denied AND Channel A on-device locale unsupported — defensive) | ✗ errored | ✗ errored | ✓ continues (capture is independent of transcription) | Both lane error banners; live transcript area is empty; sidecar file may be empty or have only initial header but is created on disk |
+| `apple-cloud` SIGABRT under raw binary launch (NFR-7 caveat) | ✓ continues | ✗ errored at session open with the existing actionable text "macrec-ui must be launched from the .app bundle, not as a raw binary" | ✓ unaffected | Same as single-mode; reused verbatim |
+| Apple Cloud quota exhaustion (1,000 req/hr) | ✓ continues | ✗ errored after the threshold; `.dualChannelError(.channelB, "Apple Cloud quota exhausted; recording continues without Channel B")` | ✓ unaffected | Channel B lane error; AC-4-style isolation |
+
+**Recovery:** terminal errors (auth, locale, quota, raw-binary) stay
+errored for the rest of the recording. Transient errors (network drop)
+may recover; on the next successful event from the channel, the
+lane error banner is cleared. The capture-graph layer (audio file on
+disk) is **never** affected by transcription failures — this is true
+in single mode today and remains true in dual mode.
+
+---
+
+### §DT-13 Implementation parallelization map (Phase 6)
+
+The plan-010 phase decomposition (A..J) is sequential at the macro
+level (A→B→C→{D,E,H}→{F,I,J}→G), but within each phase and across
+some phases, multiple Coder agents can work in parallel without
+collision. The interface contracts below are precise enough that two
+agents working concurrently cannot collide on the same file region or
+the same public API surface.
+
+#### Parallel-safe lane assignment
+
+| Lane | Files exclusive to this lane | Public API contract this lane consumes from other lanes |
+|---|---|---|
+| **L-1 — Foundation types** (Phase A) | `Dual/TranscriptionMode.swift`, `Dual/DualChannelTag.swift`, `Dual/ChannelConfig.swift`, `Dual/DualTranscriptionConfig.swift`, `Dual/DualLocaleSets.swift`, `Errors/MacrecError+Dual.swift` | None (Phase A is the bottom of the dependency stack) |
+| **L-2 — RecordingOptions extension** (Phase A) | `Config/RecordingOptions.swift` (additive: optional `dualTranscription` field) | Imports `DualTranscriptionConfig` from L-1; can stub the type for compile until L-1 lands |
+| **L-3 — Manager core** (Phase B) | `Dual/DualTranscriptionManager.swift`, `Dual/DualChannelMetrics.swift`, `Dual/DualSidecarLabel.swift`; modify `TranscriptEvent.swift` (add `.dualChannelError` case) | Imports `DualTranscriptionConfig` (L-1), `MacrecError+Dual` (L-1). Exposes `TranscriptionDispatcher` conformance |
+| **L-4 — Dispatcher protocol + RecordingSession wiring** (Phase C) | `Transcription/TranscriptionDispatcher.swift`, modify `Recording/RecordingSession.swift` | Consumes `DualTranscriptionManager` (L-3) and the existing `TranscriptionManager` |
+| **L-5 — RecordingController surface** (Phase C) | modify `MacrecUIKit/RecordingController.swift` (add published properties + event-drain branch on `.dualChannelError`) | Consumes new `TranscriptionEvent.dualChannelError` case (L-3); does not depend on L-4 directly |
+| **L-6 — Sidecar writer extensions** (Phase D) | modify `Persistence/JSONLTranscriptWriter.swift`, `Persistence/TXTTranscriptWriter.swift`, `Persistence/SRTTranscriptWriter.swift`, `Persistence/VTTTranscriptWriter.swift`; modify `Persistence/TranscriptSidecarWriter.swift` (add `mode` init param) | Consumes `DualSidecarLabel` (L-3); writers can be modified in parallel sub-lanes (one writer per sub-agent) |
+| **L-7 — Mode switch + Single sub-view** (Phase E) | `macrec-ui/Views/Transcription/TranscriptionModeSwitch.swift`, `macrec-ui/Views/Transcription/SingleTranscriptionControls.swift`; modify the panel composition root | Consumes `TranscriptionMode` (L-1); does not depend on Dual-side UI lanes |
+| **L-8 — Dual controls panel** (Phase F) | `macrec-ui/Views/Transcription/Dual/DualTranscriptionControls.swift`, `macrec-ui/Views/Transcription/Dual/DualLocalePicker.swift` | Consumes `DualLocaleSets` (L-1), AppStorage keys (L-1). Renders into the placeholder created by L-7 |
+| **L-9 — Dual live transcript view** (Phase G) | `macrec-ui/Views/Transcription/Dual/DualLiveTranscriptView.swift`, `macrec-ui/Views/Transcription/Dual/DualLiveTranscriptLane.swift`; modify `LiveTranscriptPanel.swift` (add mode branch) | Consumes `RecordingController.transcriptionMode` (L-5) |
+| **L-10 — CLI flags** (Phase H) | modify `Sources/macrec/Commands/StartCommand.swift`, modify `Sources/MacrecCore/Config/ConfigResolver.swift` (add `MACREC_TRANSCRIBE_DUAL_*` constants) | Consumes `DualTranscriptionConfig` (L-1) and `RecordingOptions.dualTranscription` (L-2) |
+| **L-11 — Per-channel metrics view** (Phase I) | `macrec-ui/Views/Transcription/Dual/DualTranscriptionMetricsView.swift`; modify `RecordingController` to call `currentDualMetrics()` on the metrics-poll timer | Consumes `DualChannelMetrics` (L-3); embeds into the panel space owned by L-8 |
+| **L-12 — Privacy disclosure trigger** (Phase J) | modify `RootView.swift` (or wherever the existing single-mode trigger lives) — add Start-tap guard for dual mode | Consumes `transcriptionMode` AppStorage key (L-1); reuses existing `PrivacyDisclosureSheet` and `PrivacyDisclosureViewModel.acknowledgedKey(for:)` (no modification) |
+| **L-13 — Tests** (cross-phase) | One test file per Phase artefact; each test file is exclusive to one Coder agent | Consumes the public API of the target lane only |
+
+**Parallel-safe execution waves** (each wave's lanes can run concurrently):
+
+- **Wave 1 (Phase A):** L-1 ‖ L-2  (L-2 imports L-1; can stub).
+- **Wave 2 (Phase B):** L-3 alone (depends on Wave 1).
+- **Wave 3 (Phase C):** L-4 ‖ L-5  (both depend on L-3; otherwise disjoint files).
+- **Wave 4 (Phases D + E + H):** L-6 ‖ L-7 ‖ L-10  (all depend on Wave 3; touch disjoint files).
+- **Wave 5 (Phases F + I + J):** L-8 ‖ L-11 ‖ L-12  (all depend on L-7 for the panel placeholder and L-5 for the controller surface; touch disjoint files).
+- **Wave 6 (Phase G):** L-9 alone (depends on L-8 for mode being selectable and L-5 for the published mode property).
+
+**Inter-lane interface contracts (the load-bearing surface — agents
+cannot modify these without coordinating):**
+
+1. **`TranscriptionEvent.dualChannelError(channel:detail:)` case** —
+   added by L-3, consumed by L-5. Once L-3 commits the case, L-5 can
+   build against it.
+2. **`TranscriptionDispatcher` protocol signature** — defined by L-4,
+   consumed by L-3 (manager conforms) and the existing
+   `TranscriptionManager` (also conforms). Frozen at L-4 commit.
+3. **`DualTranscriptionConfig` initializer signature** — defined by L-1,
+   consumed by L-3 (manager constructs from it), L-2 (options stores
+   it), L-10 (CLI builds it). Frozen at L-1 commit.
+4. **`DualLocaleSets` static surface** — defined by L-1, consumed by
+   L-8 (locale picker) and `DualTranscriptionConfig.init`'s validation.
+   Frozen at L-1 commit.
+5. **`RecordingController.transcriptionMode`, `dualMetrics`,
+   `dualChannelErrors` published properties** — defined by L-5,
+   consumed by L-7, L-8, L-9, L-11. Property names and types frozen at
+   L-5 commit.
+6. **`com.macrec.ui.dual.*` AppStorage key strings** — defined in
+   plan-010 §3 / §DT-9; consumed by L-7, L-8, L-10. Frozen at design-
+   time (this document).
+7. **`TranscriptSidecarWriter.init(..., mode: TranscriptionMode = .single)`
+   signature** — defined by L-6, consumed by L-3 (manager constructs
+   the writer with `mode: .dual`). Frozen at L-6 commit.
+8. **`DualSidecarLabel.channelLabel(for:)` static helper signature** —
+   defined by L-3, consumed by all four writers in L-6. Frozen at L-3
+   commit.
+
+**Coordination notes:**
+
+- L-3 and L-4 should be claimed by the same agent if possible (the
+  manager-conforms-to-protocol relationship is tight). If split, L-4
+  must commit the protocol BEFORE L-3 implements conformance.
+- L-6's four writer modifications are themselves parallelisable (one
+  writer per sub-agent), gated only on `DualSidecarLabel` (L-3) and
+  the writer mode-init-param (L-6 itself).
+- L-7's `SingleTranscriptionControls.swift` extraction is a pure
+  refactor; it MUST NOT alter rendering, AppStorage keys, or
+  modifiers. Agent owns the pre/post visual diff (Phase E.5 manual
+  ratification).
+- L-9's `LiveTranscriptPanel.swift` modification adds a mode branch;
+  the single-mode rendering path MUST be unchanged byte-for-byte
+  (verified by `LiveTranscriptPanelSingleModeTests`).
+
+**Documentation update assignments (Phase 6, parallel with code lanes):**
+
+- `docs/tools/macrec.md` — owned by the L-10 (CLI) agent; covers all
+  CLI flags, env vars, sidecar conventions for all four formats, and
+  the `apple-cloud` caveat reuse statement. Updated as part of the
+  L-10 commit.
+- `docs/tools/macrec-ui.md` — owned by the L-7 (mode switch) agent;
+  covers the mode switch, dual panel controls (overview), dual live
+  transcript display, per-channel metrics, and privacy disclosure
+  trigger. Cross-references the lane-owner agents for details.
+- `CLAUDE.md` Tools section — both `macrec` and `macrec-ui` summary
+  entries gain one sentence each mentioning Dual mode. Owned by
+  whoever lands the FINAL Phase 6 commit (or the integration verifier
+  in Phase 10).
+- `docs/design/project-design.md` — already updated by this design
+  document (§DT-1..§DT-13). No further updates expected during
+  Phase 6.
+- `docs/design/project-functions.md` — owned by the integration
+  verifier (Phase 10); registers FR-1..FR-11 from the refined
+  request as new functional requirements.
+- `Issues - Pending Items.md` — each lane's owner adds a
+  `PLAN-010-PENDING-{lane-id}` entry on commit; the integration
+  verifier (Phase 10) moves the entries to the Completed section
+  on merge.
+
+---
+
+### §DT-14 Architectural decisions log
+
+| ID | Decision | Alternatives considered | Why this | Where evidence lives |
+|---|---|---|---|---|
+| DT-ADR-1 | New `DualTranscriptionManager` actor (separate from `TranscriptionManager`) — Investigator Option 1A | (1B) Generic N-way SessionGroup; (1C) Composite session conforming to `StreamingTranscriptionSession` | NFR-1 (Single-mode preservation) is guaranteed by construction — Single uses unchanged `TranscriptionManager`, Dual uses new actor. Per-channel telemetry (FR-9) and atomic split (FR-11) are easier with two distinct top-level types. Generic SessionGroup is out of scope per refined request. Composite session buries failure isolation too deep. | Investigation §Q1; this section §DT-1 |
+| DT-ADR-2 | Two `AudioDownsampler` instances, sequential synchronous fan-out — Investigator Option 2A | (2B) Shared downsampler, broadcast `[Float]`; (2C) `AsyncStream` queues with explicit backpressure | `AudioDownsampler` is not thread-safe (per IP-4); shared instance would risk accumulator corruption. Downsampling cost is microseconds, dwarfed by STT inference. Sequential fan-out is non-blocking because both `ingest` calls are non-blocking. Backpressure is absorbed at the session-internal queue layer (NFR-3 satisfied). | Investigation §Q2; this section §DT-5 |
+| DT-ADR-3 | Two-Task drain merging into one `AsyncStream` continuation, channel-tagging at insertion — Investigator Option 3B | (3A) `AsyncAlgorithms.merge`; (3C) No merge, expose two segment arrays | Avoids new SwiftPM dependency on `swift-async-algorithms`. Explicit per-channel error catch + channel-tagged `.dualChannelError` event. Pattern matches existing codebase (`AsyncStream.makeStream` + `eventsContinuation` is the in-codebase convention). | Investigation §Q3; this section §DT-6 |
+| DT-ADR-4 | Mode switch placement: segmented `Picker` at the TOP of the panel; Single sub-view is a verbatim wrapper around today's panel — Investigator Option 4A, ratified by user OQ-1 resolution | (4B) Toggle below the panel; (4C) Add "Dual" to the Transcribe picker; (4D) Tabbed sub-panel | User explicitly accepted the "spirit" reading of NFR-1. Most idiomatic macOS pattern. Smallest vertical footprint. The four field rows below are pixel-identical (DT-INV-1). | User pre-resolution; this section §DT-2 OQ-1 (note: pre-resolved, not re-litigated); §DT-8 ASCII mockup |
+| DT-ADR-5 | No new `channel` field on `TranscriptSegment`; rely on existing `model` and `language` fields. JSONL gains an OPTIONAL `channel: "A" \| "B"` convenience field at write time only | Add `channel` as a hard field on `TranscriptSegment` | Adding a hard field couples the data model to the dual-mode feature; the existing `model` field already uniquely identifies the channel for the v1 provider pair. The optional JSONL convenience field is a write-time computation and preserves single-mode JSONL byte-equivalence (AC-1). | Investigation §Q5 + §Comparison Matrix; this section §DT-3 (TranscriptSegment confirmation) |
+| DT-ADR-6 | One new `TranscriptionEvent` case (`.dualChannelError(channel:detail:)`); no other case modifications | Reuse the existing `.error(detail:)` and embed channel tag in the detail string | Channel tag is structural metadata used by `RecordingController` to route the error to the correct lane; encoding it as a string would require parsing on the consumer side. Additive enum case is source-compatible (warning, not error, in single-mode switches). | This section §DT-3 |
+| DT-ADR-7 | Atomic pause/resume/split (OQ-6 resolution) | Per-channel pause/resume; atomic pause + per-channel mute | Spec is unambiguous (FR-11, AC-7) — atomic. Implementing per-channel pause would violate the spec without user demand. The simplest correct implementation reuses existing capture-pause and adds zero new pause-routing code. | This section §DT-2 OQ-6 |
+| DT-ADR-8 | Stacked dual-lane UI layout with per-lane independent auto-scroll (OQ-5 resolution) | Side-by-side columns; single chronological feed with channel chips | Side-by-side sacrifices readability under tight popover width. Single feed loses regional channel identity and feels jumpy when channels lag at different rates. Stacked lanes give each lane the full popover width (readable line lengths) while preserving strong regional channel identity. | This section §DT-2 OQ-5 |
+| DT-ADR-9 | CLI flag spelling: extend `--transcribe` to accept `dual`; new `--transcribe-dual-locale-{a,b}/source/format` co-flags (OQ-2 resolution) | Dedicated `--transcribe-dual` boolean; reuse `--transcribe-language` / `--transcribe-language2` | Symmetry with existing `--transcribe-source/-format/-language` co-flag family. Reusing `--transcribe-language*` would be ambiguous with the existing Apple single-mode dual-locale feature. | This section §DT-2 OQ-2 |
+| DT-ADR-10 | SRT speaker prefix `EN: ` / `EL: `, VTT voice tag `<v EN>...</v>`, overlapping cues allowed in arrival order (OQ-3 resolution) | `NOTE` separators (VTT-only); raw cues without channel marker | VTT voice tag is first-class WebVTT. SRT speaker prefix is the de-facto standard. Overlap is intentional and tolerated by mainstream players. Raw cues lose channel identity (violates FR-7). | This section §DT-2 OQ-3 |
+| DT-ADR-11 | `DualTranscriptionManager` is specific to Apple+AppleCloud for v1, NOT generic N-provider (OQ-4 resolution) | Generic `TranscriptionSessionGroup<N>` | Out of scope per refined request. Migration path to generic is preserved by the `TranscriptionDispatcher` protocol + routing-tag (not primary-key) `DualChannelTag`. | This section §DT-2 OQ-4 |
+| DT-ADR-12 | Existing `apple-cloud` privacy disclosure copy reused verbatim for dual mode; no new disclosure key (FR-7 confirmation) | New disclosure with addendum text mentioning the dual-channel context | The disclosure body describes the `apple-cloud` provider's privacy posture, which is unchanged by the on-device co-channel. Per-provider keying means a single-mode acceptance carries into dual mode (and vice versa). | This section §DT-11 |
+| DT-ADR-13 | Five new `@AppStorage` keys under `com.macrec.ui.dual.*` namespace (plus one `transcriptionMode` key); no reuse of single-mode keys | Reuse `transcribeSource`, `transcribeLanguage`, `transcribeLanguage2`, `transcriptFormat` for dual mode | Round-trip Single→Dual→Single must preserve single-mode values intact (AC-2). Reuse would corrupt single-mode state on every dual-mode adjustment. Disjoint namespaces are the simplest correct implementation. | This section §DT-9 |
+
+---
+
+### §DT-15 Cross-references
+
+- Plan: `docs/design/plan-010-dual-transcription.md` (Phases A..J,
+  parallelisation map, AC coverage, risk register).
+- Refined request: `docs/design/refined-request-dual-transcription.md`
+  (FR-1..FR-11, NFR-1..NFR-7, AC-1..AC-11, A-1..A-6, OQ-1..OQ-6).
+- Codebase scan: `docs/reference/codebase-scan-dual-transcription.md`
+  (IP-1..IP-16).
+- Investigation: `docs/reference/investigation-dual-transcription.md`
+  (Q1..Q7 with recommended Option 1A + 2A + 3B + 4A).
+- Reused investigation: `docs/reference/apple-cloud-stt-investigation-2026-05.md`
+  (Channel B quotas, locale set, TCC, run-mode SIGABRT caveat).
+- Tools docs touched in Phase 6: `docs/tools/macrec.md` (CLI flag set,
+  sidecar conventions), `docs/tools/macrec-ui.md` (mode switch, dual
+  panel controls, dual lane display, per-channel metrics, privacy
+  trigger).
+- Functional requirements file: `docs/design/project-functions.md`
+  (Phase 10 adds the new FR-1..FR-11 from the refined request).
+- Issues file: `Issues - Pending Items.md` (per-lane PLAN-010-PENDING-*
+  entries during Phase 6; Completed entries on merge).
+

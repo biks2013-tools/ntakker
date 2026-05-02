@@ -235,11 +235,43 @@ public struct ConfigResolver {
         // **plan-006 Phase B (SX-9.1)**: `soniox` joins the enum as a new
         // wire id; the resolver lowers it through unchanged.
         let transcribeRaw = value(Keys.transcribe)
-        let transcribeProviderEnum: TranscriptionProviderId = try parseEnum(
-            key: Keys.transcribe,
-            raw: transcribeRaw,
-            default: .apple
-        )
+
+        // -- plan-010 Phase H: dual-mode short-circuit ------------------
+        //
+        // When the resolved transcription provider is the literal string
+        // `"dual"` (case-insensitive), the resolver bypasses the
+        // single-mode `TranscriptionProviderId` enum entirely. Dual mode
+        // is a *mode* not a provider — it constructs a
+        // `DualTranscriptionConfig` with hardcoded provider ids
+        // (`apple` for Channel A, `apple-cloud` for Channel B per
+        // design §DT-1) and signals single-mode-disabled by returning
+        // `transcriptionProviderId == nil`. The
+        // `RecordingOptions.dualTranscription` non-nil presence is what
+        // `RecordingSession` switches on to pick the dual dispatcher.
+        //
+        // Mutual-exclusivity validation (§DT-10): in dual mode the
+        // single-mode co-flags `--transcribe-language`,
+        // `--transcribe-source`, `--transcribe-format`,
+        // `--transcribe-model` are forbidden — their semantics belong to
+        // the single-mode pipeline only and the dual-mode equivalents are
+        // the four `--transcribe-dual-*` flags. Setting both is a
+        // configuration conflict (exit 64).
+        let isDualMode = (transcribeRaw?.lowercased() == "dual")
+
+        let transcribeProviderEnum: TranscriptionProviderId
+        if isDualMode {
+            // The dual-mode branch does not use the single-provider enum;
+            // resolve to `.none` so the single-mode side of the resolver
+            // short-circuits cleanly (no API key lookup, no language-hint
+            // pre-validation, no provider-source conflict guard).
+            transcribeProviderEnum = .none
+        } else {
+            transcribeProviderEnum = try parseEnum(
+                key: Keys.transcribe,
+                raw: transcribeRaw,
+                default: .apple
+            )
+        }
         let transcribeIsActive = transcribeProviderEnum != .none
         let transcriptionProviderId: String? = {
             guard transcribeIsActive else { return nil }
@@ -654,6 +686,122 @@ public struct ConfigResolver {
             return transcriptionKeyExpiresAt
         }()
 
+        // -- plan-010 Phase H: dual-mode configuration construction ----
+        //
+        // Resolve the four required `--transcribe-dual-*` values from
+        // the standard 4-tier chain. Each missing value raises
+        // `MacrecError.transcriptionConfigurationMissing(field:)` with
+        // the user-facing flag name so the error message is actionable.
+        // No fallbacks (CLAUDE.md): the AppStorage spec defaults
+        // (`en-US` / `el-GR` / `mixed` / `jsonl`) are UI-layer values,
+        // not engine-layer substitutions.
+        //
+        // Mutual-exclusivity guards (§DT-10):
+        //   * `--transcribe-language` / `--transcribe-model` — forbidden
+        //     in dual mode (single-mode-only Apple Speech features; the
+        //     dual mode's per-channel locales come from the
+        //     `--transcribe-dual-locale-{a,b}` flags).
+        //   * `--transcribe-source` — forbidden in dual mode (the dual
+        //     mode's source comes from `--transcribe-dual-source`).
+        //   * `--transcribe-format` — forbidden in dual mode (the dual
+        //     mode's sidecar format comes from `--transcribe-dual-format`).
+        let dualTranscriptionConfig: DualTranscriptionConfig? = try {
+            guard isDualMode else { return nil }
+
+            // Reject single-mode co-flags (mutual exclusivity per §DT-10).
+            if value(Keys.transcribeLanguage) != nil {
+                throw MacrecError.transcriptionConfigConflict(
+                    reason: "--transcribe-language / MACREC_TRANSCRIBE_LANGUAGE is single-mode only; in dual mode use --transcribe-dual-locale-a and --transcribe-dual-locale-b instead."
+                )
+            }
+            if value(Keys.transcribeModel) != nil {
+                throw MacrecError.transcriptionConfigConflict(
+                    reason: "--transcribe-model / MACREC_TRANSCRIBE_MODEL is single-mode only; dual mode pins the providers to apple + apple-cloud and exposes no model override."
+                )
+            }
+            if value(Keys.transcribeSource) != nil {
+                throw MacrecError.transcriptionConfigConflict(
+                    reason: "--transcribe-source / MACREC_TRANSCRIBE_SOURCE is single-mode only; in dual mode use --transcribe-dual-source instead."
+                )
+            }
+            if value(Keys.transcribeFormat) != nil {
+                throw MacrecError.transcriptionConfigConflict(
+                    reason: "--transcribe-format / MACREC_TRANSCRIBE_FORMAT is single-mode only; in dual mode use --transcribe-dual-format instead."
+                )
+            }
+
+            // Resolve the four required values from the chain. Missing →
+            // `transcriptionConfigurationMissing(field:)` (NO fallback).
+            guard let localeARaw = value(Keys.transcribeDualLocaleA),
+                  !localeARaw.trimmingCharacters(in: .whitespaces).isEmpty
+            else {
+                throw MacrecError.transcriptionConfigurationMissing(
+                    field: "--transcribe-dual-locale-a"
+                )
+            }
+            guard let localeBRaw = value(Keys.transcribeDualLocaleB),
+                  !localeBRaw.trimmingCharacters(in: .whitespaces).isEmpty
+            else {
+                throw MacrecError.transcriptionConfigurationMissing(
+                    field: "--transcribe-dual-locale-b"
+                )
+            }
+            guard let sourceRaw = value(Keys.transcribeDualSource),
+                  !sourceRaw.trimmingCharacters(in: .whitespaces).isEmpty
+            else {
+                throw MacrecError.transcriptionConfigurationMissing(
+                    field: "--transcribe-dual-source"
+                )
+            }
+            guard let formatRaw = value(Keys.transcribeDualFormat),
+                  !formatRaw.trimmingCharacters(in: .whitespaces).isEmpty
+            else {
+                throw MacrecError.transcriptionConfigurationMissing(
+                    field: "--transcribe-dual-format"
+                )
+            }
+
+            // Validate enum values (source, format) the same way the
+            // single-mode resolver does. `parseEnum` raises
+            // `invalidConfigValue` (exit 64) for typos.
+            let dualSource: TranscriptionSource = try parseEnum(
+                key: Keys.transcribeDualSource,
+                raw: sourceRaw,
+                default: .mixed
+            )
+            let dualFormat: TranscriptFormat = try parseEnum(
+                key: Keys.transcribeDualFormat,
+                raw: formatRaw,
+                default: .jsonl
+            )
+
+            // Construct the channel triples. Provider ids are hardwired
+            // per design §DT-1 (Channel A = `apple`, Channel B =
+            // `apple-cloud`); display names mirror the UI-layer labels
+            // documented in `Sources/macrec-ui/Views/Transcription/Dual/`.
+            let channelA = ChannelConfig(
+                providerId: "apple",
+                locale: localeARaw,
+                displayName: "Apple (on-device)"
+            )
+            let channelB = ChannelConfig(
+                providerId: "apple-cloud",
+                locale: localeBRaw,
+                displayName: "Apple Cloud"
+            )
+
+            // The throwing init validates locale membership in the
+            // per-channel supported sets and raises
+            // `transcriptionDualLocaleUnsupported(channel:locale:)` for
+            // out-of-set values (e.g. `el-GR` on Channel A's on-device set).
+            return try DualTranscriptionConfig(
+                channelA: channelA,
+                channelB: channelB,
+                source: dualSource,
+                sidecarFormat: dualFormat
+            )
+        }()
+
         // Step 8 (cross-check): `--transcribe gemini-live` with
         //         `--transcribe-source mic` AND `--mic <empty/none>` is a
         //         configuration conflict (asks to transcribe a microphone
@@ -710,7 +858,8 @@ public struct ConfigResolver {
             elevenLabsFileFormat: elevenLabsFileFormat,
             elevenLabsEntityDetection: elevenLabsEntityDetection,
             elevenLabsKeyterms: elevenLabsKeyterms,
-            elevenLabsApiKeyExpiresAt: elevenLabsApiKeyExpiresAt
+            elevenLabsApiKeyExpiresAt: elevenLabsApiKeyExpiresAt,
+            dualTranscription: dualTranscriptionConfig
         )
     }
 
@@ -880,6 +1029,37 @@ public struct ConfigResolver {
 
         /// Optional ISO-8601 expiry timestamp for `ELEVENLABS_API_KEY`.
         public static let elevenLabsApiKeyExpiresAt    = "ELEVENLABS_API_KEY_EXPIRES_AT"
+
+        // -- Dual-mode transcription (plan-010 Phase H; design §DT-10) --
+        //
+        // Activated when the resolved `MACREC_TRANSCRIBE` (or
+        // `--transcribe`) value equals the literal string `"dual"`. There
+        // is intentionally NO `MACREC_TRANSCRIBE_DUAL` boolean — passing
+        // `--transcribe dual` (or setting `MACREC_TRANSCRIBE=dual`) is the
+        // single signal that flips the resolver into the dual-mode
+        // construction branch.
+        //
+        // All four variables MUST be resolvable (CLI flag OR env var)
+        // when dual mode is selected. The resolver raises
+        // `MacrecError.transcriptionConfigurationMissing(field:)` for any
+        // missing required value — NO defaults are silently substituted
+        // (CLAUDE.md "no fallback for missing config"). The §DT-10
+        // documented spec defaults (`en-US` / `el-GR` / `mixed` /
+        // `jsonl`) are AppStorage values written by the UI on first
+        // launch, not engine-layer fallbacks.
+
+        /// Channel A (Apple on-device) BCP-47 locale, e.g. `en-US`.
+        public static let transcribeDualLocaleA  = "MACREC_TRANSCRIBE_DUAL_LOCALE_A"
+
+        /// Channel B (Apple Cloud) BCP-47 locale, e.g. `el-GR`.
+        public static let transcribeDualLocaleB  = "MACREC_TRANSCRIBE_DUAL_LOCALE_B"
+
+        /// Audio source fed to BOTH channels (`system | mic | mixed | both`).
+        public static let transcribeDualSource   = "MACREC_TRANSCRIBE_DUAL_SOURCE"
+
+        /// Sidecar transcript format for dual mode
+        /// (`jsonl | txt | srt | vtt`).
+        public static let transcribeDualFormat   = "MACREC_TRANSCRIBE_DUAL_FORMAT"
     }
 
     // MARK: - Helpers
