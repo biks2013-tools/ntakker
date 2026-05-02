@@ -715,7 +715,7 @@
         | Language hints         | `["el", "en"]` (overridable via `--transcribe-language`) |
         | Language identification| **ON** (per-token language tags exposed in JSONL sidecar) |
         | Endpoint detection     | **ON** (server emits `<end>` markers between utterances) |
-        | Speaker diarization    | **OFF** in v1 (tracked as v2 follow-up)                   |
+        | Speaker diarization    | **ON** by default since plan-012 (overridable via `MACREC_SONIOX_DIARIZE` / `--soniox-diarize`; UI toggle at Settings → Soniox → "Diarize speakers") |
 
         #### Endpoint regions
 
@@ -800,6 +800,33 @@
         > data-handling policy and the Soniox privacy notice
         > (<https://soniox.com/privacy>) before enabling on calls
         > containing confidential content.
+
+        #### Speaker diarization (plan-012)
+
+        When `enable_speaker_diarization=true` (the default since plan-012
+        Phase A), Soniox tags each token with a `speaker` field. The
+        `SonioxTokenAggregator` finalises the active partial whenever
+        the incoming speaker changes, producing one segment per speaker
+        turn. The speaker is propagated via the optional
+        `TranscriptSegment.speaker` field and rendered in every sidecar
+        format:
+
+        | Format | Rendering when `segment.speaker == "spk:1"` |
+        |--------|---------------------------------------------|
+        | JSONL  | optional `"speaker":"spk:1"` field after `language` (RAW provider value, omitted when nil) |
+        | TXT    | `[12:34:56] mic [en] [S1]: hello world`     |
+        | SRT    | cue text becomes `S1: hello world`          |
+        | VTT    | cue text becomes `<v S1>hello world</v>`    |
+
+        The `SpeakerSidecarLabel` helper is the single source of truth
+        for mapping the provider-opaque id to the display label
+        (`spk:N` → `SN`).
+
+        **Override:** set `MACREC_SONIOX_DIARIZE=false` (or pass
+        `--soniox-diarize false`) to revert to non-diarized output.
+        The UI toggle lives at **Settings → Soniox → "Diarize
+        speakers"**. Per-source/non-Soniox sidecars are byte-equivalent
+        to the pre-plan-012 layout (DT-INV preservation).
 
         ### Dual-mode transcription (plan-010)
 

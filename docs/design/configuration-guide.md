@@ -458,6 +458,19 @@ constraints should set the EU endpoint; teams in Japan with
 similar constraints should set the JP endpoint. The default US
 endpoint is appropriate when no residency requirement applies.
 
+### 2.24a `MACREC_SONIOX_DIARIZE` — Soniox speaker diarization override (plan-012)
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| CLI flag               | `--soniox-diarize <bool>` on `macrec start`                        |
+| Env-var name           | `MACREC_SONIOX_DIARIZE`                                            |
+| Type                   | `Bool` (`true` \| `false`; case-insensitive; `1`/`0` and `yes`/`no` also accepted by `parseOptionalBool`) |
+| Default                | `true` (matches `SonioxConfigBuilder.defaultDiarize`)              |
+| Resolution chain       | shell env → `~/.tool-agents/macrec/.env` → `./.env` → `--soniox-diarize` CLI flag (lowest to highest priority) |
+| UI override            | Settings → Soniox → "Diarize speakers" (writes the env var into `~/.tool-agents/macrec-ui/.env` via `EnvFileStore`) |
+| Recommended storage    | project-wide setting; keep in `~/.tool-agents/macrec/.env` for consistent CLI + UI behaviour |
+| Notes                  | controls the Soniox `enable_speaker_diarization` field on the first WebSocket frame. When `true`, Soniox tags each token with a `speaker` value (`spk:N`); the aggregator splits the active partial whenever the incoming speaker changes, producing one `TranscriptSegment.speaker` per speaker turn. JSONL carries the raw `spk:N`; TXT/SRT/VTT render via `SpeakerSidecarLabel` (`SN`). Garbage values raise `MacrecError.invalidConfigValue` (exit 64). |
+
 ### 2.25 `MACREC_SONIOX_KEY_EXPIRES_AT` — Soniox key expiry override (plan-006)
 
 | Field                  | Value                                                              |

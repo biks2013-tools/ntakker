@@ -1059,6 +1059,36 @@ Plan-002 dispatches Phase F (quit-while-recording flow) and Phase G (error-mappi
 
 ## Completed items
 
+### PLAN-012-PHASE-A — Soniox speaker diarization (Closed 2026-05-02)
+
+Plan-012 Phase A (tasks A1–A8) lifts OQ-SX-3's "diarization OFF in v1"
+posture and ships full speaker support across the Soniox stack:
+
+- **Wire-format default** (`SonioxConfigBuilder.defaultDiarize: Bool = true`)
+  flipped — Soniox now sends `enable_speaker_diarization: true` on the
+  first WebSocket frame by default.
+- **Override surface** — `MACREC_SONIOX_DIARIZE` env var (four-tier
+  resolution) + `--soniox-diarize <bool>` CLI flag + Settings → Soniox →
+  "Diarize speakers" UI toggle (env-bound via `EnvFileStore`). Garbage
+  values raise `MacrecError.invalidConfigValue` (exit 64).
+- **Aggregator** (`SonioxTokenAggregator`) tracks an actor-isolated
+  `activeSpeaker` and finalises the active partial whenever an incoming
+  token's speaker differs; resets on `<end>`/`<fin>` markers. Carries
+  through nil-speaker tokens unchanged.
+- **Event chain** — `StreamingTranscriptionEvent.{partial, final}` gain
+  optional `speaker: String?` associated value. `StreamingTranscriptionPipeline.handle`
+  forwards it into `TranscriptSegment.speaker` on partial-append /
+  partial-update / final paths.
+- **Sidecar rendering** — `SpeakerSidecarLabel` is the single source of
+  truth for `spk:N` → `SN`. JSONL carries the raw value; TXT/SRT/VTT
+  render the display label. Non-diarized providers stay byte-equivalent.
+- **UI** — speaker chip rendered next to the language chip in
+  `LiveTranscriptPanel.segmentView` when `segment.speaker != nil`.
+
+Closes OQ-SX-3 (project-functions.md §1647). All paths preserve DT-INV
+byte-equivalence for non-diarized output (Sidecar 64/64, Persistence
+6/6, Soniox 35/35 suites green).
+
 ### PLAN-011-CC-REFACTOR-LANGCHAIN — convo-coach LLM stack swapped from Vercel AI SDK to LangChain.js (Closed 2026-05-02)
 
 User requested replacing the Vercel AI SDK with LangChain.js. **Straight swap with the same 8-provider surface preserved.** Removed `ai@^6` + `@ai-sdk/openai` + `@ai-sdk/anthropic` + `@ai-sdk/google` + `@ai-sdk/azure` + `@ai-sdk/openai-compatible`. Added `@langchain/core@^1.1` + `@langchain/openai@^1.4` + `@langchain/anthropic@^1.3` + `@langchain/google-genai@^2.1` + `@langchain/ollama@^1.2`. js-tiktoken kept for OpenAI-family token counting.

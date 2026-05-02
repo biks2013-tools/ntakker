@@ -1644,7 +1644,7 @@ Carried forward from the refined request without modification:
 | ESC-LT-2 | WebSocket `maxAttempts` parameter                       | Recommended `8` (~110 s worst-case)     | ESCALATED to user (plan-003 §0.2) |
 | OQ-SX-1 | `TranscriptionProvider` protocol extension needed for Soniox? | KEEP existing protocol; `SonioxStreamingSession` bridges internally | LOCKED by plan-006 §0 (RESOLVED) |
 | OQ-SX-2 | Vendor-canonical Soniox API key env var name | `SONIOX_API_KEY` (confirmed by Soniox docs Get-API-key page) | LOCKED by investigation (RESOLVED) |
-| OQ-SX-3 | Diarization / language-id ON by default? | LID ON, endpoint detection ON, diarization OFF | RECOMMENDED by plan-006 §0 (NEEDS USER CONFIRMATION) |
+| OQ-SX-3 | Diarization / language-id ON by default? | LID ON, endpoint detection ON, diarization **ON** by default since plan-012 (overridable via `MACREC_SONIOX_DIARIZE`) | RESOLVED by plan-012 Phase A (2026-05-02) |
 | OQ-SX-4 | Default Soniox model id | `stt-rt-v4` (active, multilingual, native Greek + English) | LOCKED by investigation (RESOLVED) |
 | OQ-SX-5 | Cost / billing for e2e validation | $0.12/hr streaming; user must confirm trial credit at console.soniox.com | DOCUMENTED, USER ACTION |
 | OQ-SX-6 | Latency target | ≤ 1.5 s P95 utterance-end → final on disk; ≤ 500 ms P95 first-partial | RECOMMENDED by plan-006 §0 (NEEDS USER CONFIRMATION) |
@@ -1707,8 +1707,12 @@ with the disposition "validate during Phase 10".
 
 ### Added by plan-006 — Soniox v2 candidates
 
-- Soniox speaker diarization (`enable_speaker_diarization`) — refined-request
-  §Out of scope; OQ-SX-3 v2.
+- Soniox speaker diarization (`enable_speaker_diarization`) — IMPLEMENTED
+  in plan-012 Phase A (2026-05-02). Default-on, overridable via
+  `MACREC_SONIOX_DIARIZE` env / `--soniox-diarize` CLI / Settings →
+  Soniox UI toggle. Speaker labels propagated through
+  `TranscriptSegment.speaker` and rendered in all four sidecar formats
+  (JSONL raw `spk:N`; TXT/SRT/VTT via `SpeakerSidecarLabel`).
 - Soniox translation (`translation: {type, target_language}`) — refined-request
   §Out of scope; v2.
 - Soniox custom vocabulary / context biasing (`context.terms`,
