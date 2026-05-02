@@ -11,6 +11,13 @@ public struct TranscriptSegment: Sendable, Codable, Equatable, Identifiable {
     public let model: String?
     public let durationSec: Double?
     public let language: String?
+    /// Speaker label populated by providers that perform diarization
+    /// (currently Soniox when `enable_speaker_diarization=true`).
+    /// Provider-opaque string (Soniox emits `"spk:1"`, `"spk:2"`, …).
+    /// Renderers convert to a stable display label via
+    /// `SpeakerSidecarLabel.label(for:)`. `nil` for non-diarized
+    /// providers — Codable synthesis omits the key entirely.
+    public let speaker: String?
 
     public init(
         id: UUID = UUID(),
@@ -21,7 +28,8 @@ public struct TranscriptSegment: Sendable, Codable, Equatable, Identifiable {
         confidence: Float? = nil,
         model: String? = nil,
         durationSec: Double? = nil,
-        language: String? = nil
+        language: String? = nil,
+        speaker: String? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -32,5 +40,6 @@ public struct TranscriptSegment: Sendable, Codable, Equatable, Identifiable {
         self.model = model
         self.durationSec = durationSec
         self.language = language
+        self.speaker = speaker
     }
 }
