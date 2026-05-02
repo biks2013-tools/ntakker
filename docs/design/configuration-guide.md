@@ -268,7 +268,7 @@ set `MACREC_TRANSCRIBE=none` explicitly.
 | Env-var name           | `MACREC_TRANSCRIBE`                                                |
 | Type                   | enum string                                                        |
 | Default                | `apple` (changed from `none` in plan-005)                          |
-| Allowed values         | `none`, `apple` (default — on-device via `SpeechAnalyzer`, plan-005), `whisperkit` (on-device via WhisperKit CoreML), `gemini` (REST-batch via Google Gemini), `gemini-live` (deprecated alias for `gemini` — accepted for one release with a `.notice` log line), `soniox` (cloud streaming via Soniox WebSocket, plan-006). |
+| Allowed values         | `none`, `apple` (default — on-device via `SpeechAnalyzer`, plan-005), `whisperkit` (on-device via WhisperKit CoreML), `parakeet` (on-device multilingual via FluidAudio Parakeet TDT V3, plan-012), `gemini` (REST-batch via Google Gemini), `gemini-live` (deprecated alias for `gemini` — accepted for one release with a `.notice` log line), `soniox` (cloud streaming via Soniox WebSocket, plan-006). |
 | Recommended storage    | user `.env` for a personal default; CLI flag for per-recording opt-in |
 | Notes                  | With `none`, no API keys are read, no network connections are opened, no sidecar files are written (AC-LT-1). Setting `gemini` (or its deprecated alias) without `GOOGLE_API_KEY`, or `soniox` without `SONIOX_API_KEY`, raises `MacrecError.transcriptionApiKeyMissing(provider:)` (exit 78) BEFORE any audio capture begins (AC-LT-4 / AC-SX-4). The `apple` provider runs entirely on-device (no API key) but requires the user to grant Speech Recognition in System Settings → Privacy & Security on first run (FR-AS-8). Per plan-004 the detach + transcribe combination is now valid (the REST architecture has no terminal-output dependency); `MacrecError.transcriptionDetachUnsupported` is removed. |
 
@@ -457,6 +457,31 @@ residency requirement. EU residents subject to GDPR data-locality
 constraints should set the EU endpoint; teams in Japan with
 similar constraints should set the JP endpoint. The default US
 endpoint is appropriate when no residency requirement applies.
+
+### 2.24b `MACREC_PARAKEET_MODEL` — Parakeet model override (plan-012)
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| CLI flag               | `--parakeet-model <id>` on `macrec start`                          |
+| Env-var name           | `MACREC_PARAKEET_MODEL`                                            |
+| Type                   | string                                                             |
+| Default                | `parakeet-tdt-0.6b-v3` (FluidAudio's `AsrModelVersion.v3`)         |
+| Resolution chain       | shell env → `~/.tool-agents/macrec/.env` → `./.env` → `--parakeet-model` CLI flag |
+| UI override            | Settings → Parakeet → "Model id" (writes the env var into `~/.tool-agents/macrec-ui/.env` via `EnvFileStore`) |
+| Recommended storage    | leave at default; project-wide override possible via `~/.tool-agents/macrec/.env` |
+| Notes                  | Parakeet-specific override; wins over the shared `MACREC_TRANSCRIBE_MODEL` (which wins over the provider default). FluidAudio v0.8.x exposes the model only via the `AsrModelVersion` enum, not a free-form string — the value is informational; the loader clamps to v3 internally. Kept for parity with WhisperKit and forward-compat with future FluidAudio versions. |
+
+### 2.24c `MACREC_PARAKEET_LANGUAGE` — Parakeet language hint (plan-012)
+
+| Field                  | Value                                                              |
+|------------------------|--------------------------------------------------------------------|
+| CLI flag               | `--parakeet-language <iso639-1>` on `macrec start`                 |
+| Env-var name           | `MACREC_PARAKEET_LANGUAGE`                                         |
+| Type                   | string (bare ISO-639-1, e.g. `el`, `en`, `tr`)                     |
+| Default                | unset (auto-detect)                                                |
+| Resolution chain       | shell env → `~/.tool-agents/macrec/.env` → `./.env` → `--parakeet-language` CLI flag |
+| UI override            | Settings → Parakeet → "Language hint" |
+| Notes                  | **Informational only** — FluidAudio v0.8.x has no per-call language hint API; the multilingual TDT V3 model auto-detects per chunk. Kept so the env-var convention stays consistent with WhisperKit and forward-compat with future FluidAudio versions that expose the surface. |
 
 ### 2.24a `MACREC_SONIOX_DIARIZE` — Soniox speaker diarization override (plan-012)
 

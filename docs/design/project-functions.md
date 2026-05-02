@@ -1742,3 +1742,24 @@ with the disposition "validate during Phase 10".
 - Removal of deprecated view files no longer composed by `RootView`
   after plan-008 (`FilenameField.swift`, `FolderPicker.swift`,
   `SonioxKeyField.swift`, `GeminiKeyField.swift`, `ProviderKeyField.swift`).
+
+### Added by plan-012 — Parakeet TDT V3 multilingual provider
+
+**FR-PK-1** — `macrec` supports a Parakeet TDT V3 multilingual
+on-device transcription provider (`parakeet`) backed by FluidAudio
+v0.8.x. No API key required. Batch-only — `openStreamingSession`
+throws `transcriptionConfigConflict`. Supports ~25 European
+languages including Greek, Polish, Turkish. ~600 MB lazy first-launch
+download to Application Support. Plan-012 Phase B.
+
+**FR-PK-2** — Parakeet model id is configurable via
+`MACREC_PARAKEET_MODEL` / `--parakeet-model` with the standard
+WhisperKit-style precedence (Parakeet-specific override > shared
+`MACREC_TRANSCRIBE_MODEL` > provider default). FluidAudio v0.8.x
+clamps internally to `AsrModelVersion.v3`; the env var is kept for
+parity and forward-compat.
+
+**FR-PK-3** — `MACREC_PARAKEET_LANGUAGE` / `--parakeet-language`
+accepts a bare ISO-639-1 code. Informational only in v1 because
+FluidAudio v0.8.x has no per-call language hint API; the multilingual
+TDT V3 model auto-detects per chunk.

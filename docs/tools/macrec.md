@@ -558,6 +558,7 @@
         | `none`         | Transcription disabled — true no-op.                                                              | _(none)_           |
         | `apple`        | **Default (v1.5+).** On-device Apple SpeechAnalyzer (macOS 26+). No API key, no network. Supports dual-locale parallel recognition via comma-separated `--transcribe-language` (e.g. `en-US,el-GR`). | _(none)_         |
         | `whisperkit`   | On-device WhisperKit (Apple silicon CoreML).  No API key, no network.                              | _(none)_           |
+        | `parakeet`     | **On-device Parakeet TDT V3 multilingual** via FluidAudio (CoreML, ANE). ~25 European languages including Greek. ~600MB lazy first-launch download. Batch architecture. No API key. (plan-012) | _(none)_ |
         | `gemini`       | Google Gemini REST batch API (HTTPS POST; 2.5 s WAV chunks at 16 kHz mono PCM16; plan-004).       | `GOOGLE_API_KEY`   |
         | `gemini-live`  | Deprecated alias for `gemini` (one-release transition; resolver lowers it to `gemini` and warns). | `GOOGLE_API_KEY`   |
         | `soniox`       | **Soniox cloud streaming** (WebSocket; PCM16 16 kHz mono frames; plan-006). Default model `stt-rt-v4`. Supports language identification across multiple BCP-47 hints (e.g. `el,en`); endpoint detection is enabled; speaker diarization is OFF in v1. ~$0.12/hour at list price. | `SONIOX_API_KEY`   |
@@ -827,6 +828,59 @@
         The UI toggle lives at **Settings → Soniox → "Diarize
         speakers"**. Per-source/non-Soniox sidecars are byte-equivalent
         to the pre-plan-012 layout (DT-INV preservation).
+
+        ### Parakeet (on-device, multilingual; plan-012)
+
+        Parakeet is the third on-device option, alongside Apple Speech
+        and WhisperKit. Backed by FluidAudio's CoreML port of NVIDIA's
+        `parakeet-tdt-0.6b-v3` model.
+
+        **Why use it over WhisperKit:** Parakeet TDT V3 is significantly
+        faster than Whisper large-v3 on Apple Silicon (Apple Neural
+        Engine optimised) at comparable WER on the supported European
+        languages. Especially strong on Greek, Polish, Turkish, and
+        other locales where Apple-shipped on-device assets are
+        unavailable.
+
+        **Defaults:**
+
+        | Setting          | Default                                                  |
+        |------------------|----------------------------------------------------------|
+        | Model            | `parakeet-tdt-0.6b-v3` (FluidAudio's `AsrModelVersion.v3` — multilingual) |
+        | Language hint    | _(auto-detect — `MACREC_PARAKEET_LANGUAGE` is informational only because FluidAudio v0.8.x has no per-call language API)_ |
+        | Streaming        | NOT supported (batch-only, mirrors WhisperKit)            |
+        | API key          | Not required                                              |
+        | First-launch DL  | ~600 MB to Application Support (cached after)             |
+
+        **Examples:**
+
+        ```sh
+        # Parakeet — defaults to v3 multilingual.
+        macrec start --transcribe parakeet \
+            --output ~/recordings/greek-meeting.m4a
+
+        # Override the model id (forward-compat — currently
+        # informational, FluidAudio v0.8.x clamps to v3 internally).
+        macrec start --transcribe parakeet \
+            --parakeet-model parakeet-tdt-0.6b-v3 \
+            --parakeet-language el \
+            --output ~/recordings/heavy.m4a
+        ```
+
+        **Model-resolution precedence** (mirrors WhisperKit):
+
+        1. `--parakeet-model` / `MACREC_PARAKEET_MODEL` (Parakeet-specific override).
+        2. `--transcribe-model` / `MACREC_TRANSCRIBE_MODEL` (shared).
+        3. Provider default (`parakeet-tdt-0.6b-v3`).
+
+        **Why the version pin (FluidAudio v0.8.2):** v0.9.x bumped the
+        package's swift-tools-version to 6.0 and the new
+        `StreamingAsrManager.swift` triggers Swift 6 strict-concurrency
+        errors when built. v0.8.x uses tools 5.10 and exposes the same
+        batch ASR surface (`AsrManager` / `AsrModels.downloadAndLoad
+        (version: .v3)`). Because we're batch-only by design, the
+        absence of the streaming manager is irrelevant. Bump the pin
+        once upstream resolves the strict-concurrency issue.
 
         ### Dual-mode transcription (plan-010)
 
