@@ -1079,6 +1079,8 @@ public final class RecordingSession: @unchecked Sendable {
             elevenLabsEntityDetection: options.elevenLabsEntityDetection,
             elevenLabsKeyterms: options.elevenLabsKeyterms,
             elevenLabsApiKeyExpiresAt: options.elevenLabsApiKeyExpiresAt,
+            // Plan-012 Phase A5 — Soniox speaker-diarization toggle.
+            sonioxDiarize: options.sonioxDiarize,
             // WhisperKit on-device tunables (added 2026-05-02).
             whisperKitModel: options.whisperKitModel,
             whisperKitLanguage: options.whisperKitLanguage,

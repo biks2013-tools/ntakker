@@ -503,6 +503,20 @@ public struct ConfigResolver {
             return transcriptionKeyExpiresAt
         }()
 
+        // Step 7c.1 (plan-012 Phase A5): resolve the optional Soniox
+        //         diarization toggle. `nil` here means "use the provider
+        //         default" — the factory falls back to
+        //         `SonioxConfigBuilder.defaultDiarize` (true). Set to
+        //         `false` (via `MACREC_SONIOX_DIARIZE=false` or
+        //         `--soniox-diarize false`) to revert to the
+        //         pre-plan-012 single-speaker transcript form. Any
+        //         non-boolean value raises `invalidConfigValue`
+        //         (exit 64) per the project no-fallback rule.
+        let sonioxDiarize: Bool? = try parseOptionalBool(
+            key: Keys.sonioxDiarize,
+            raw: value(Keys.sonioxDiarize)
+        )
+
         // Step 7d (plan-007 Phase A1 + A2 §A.7): resolve the Azure OpenAI
         //         endpoint, deployment name, and api-version. The api-version
         //         is OPTIONAL with a documented starter (`2025-04-01-preview`,
@@ -885,6 +899,7 @@ public struct ConfigResolver {
             transcriptionLanguageHints: transcriptionLanguageHints,
             sonioxEndpoint: sonioxEndpoint,
             sonioxKeyExpiresAt: sonioxKeyExpiresAt,
+            sonioxDiarize: sonioxDiarize,
             azureOpenAIEndpoint: azureOpenAIEndpoint,
             azureOpenAIDeployment: azureOpenAIDeployment,
             azureOpenAIApiVersion: azureOpenAIApiVersion,
@@ -972,6 +987,14 @@ public struct ConfigResolver {
         /// (D-SX-3 / OQ-SX-12). Backwards-compatible with the existing
         /// Gemini-only configuration.
         public static let sonioxKeyExpiresAt        = "MACREC_SONIOX_KEY_EXPIRES_AT"
+
+        /// Optional Soniox speaker-diarization toggle (plan-012 Phase A5).
+        /// When unset, the resolver forwards `nil` and the factory falls
+        /// back to `SonioxConfigBuilder.defaultDiarize` (true). Accepts the
+        /// usual boolean spellings (`true`/`false`, `1`/`0`, `yes`/`no`).
+        /// Set to `false` to revert to the pre-plan-012 single-speaker
+        /// transcript form.
+        public static let sonioxDiarize             = "MACREC_SONIOX_DIARIZE"
 
         // -- Azure OpenAI provider (plan-007 Phase A1 + A2; §5.2) --
         //

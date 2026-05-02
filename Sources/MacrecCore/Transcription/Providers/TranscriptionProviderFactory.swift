@@ -50,6 +50,12 @@ public struct TranscriptionProviderFactoryInput: Sendable {
     public let elevenLabsKeyterms: [String]?
     public let elevenLabsApiKeyExpiresAt: Date?
 
+    // -- Soniox (cloud) fields (plan-012 Phase A5) --
+    /// Optional Soniox speaker-diarization toggle. `nil` →
+    /// `SonioxConfigBuilder.defaultDiarize` (true). `false` reverts to
+    /// the pre-plan-012 single-speaker transcript form.
+    public let sonioxDiarize: Bool?
+
     // -- WhisperKit (on-device) fields (added 2026-05-02) --
     /// WhisperKit-only model id override. Takes precedence over the
     /// shared `modelId` for the WhisperKit dispatch arm only. `nil` →
@@ -90,6 +96,7 @@ public struct TranscriptionProviderFactoryInput: Sendable {
         elevenLabsEntityDetection: String? = nil,
         elevenLabsKeyterms: [String]? = nil,
         elevenLabsApiKeyExpiresAt: Date? = nil,
+        sonioxDiarize: Bool? = nil,
         whisperKitModel: String? = nil,
         whisperKitLanguage: String? = nil,
         whisperKitTask: String? = nil,
@@ -121,6 +128,7 @@ public struct TranscriptionProviderFactoryInput: Sendable {
         self.elevenLabsEntityDetection = elevenLabsEntityDetection
         self.elevenLabsKeyterms = elevenLabsKeyterms
         self.elevenLabsApiKeyExpiresAt = elevenLabsApiKeyExpiresAt
+        self.sonioxDiarize = sonioxDiarize
         self.whisperKitModel = whisperKitModel
         self.whisperKitLanguage = whisperKitLanguage
         self.whisperKitTask = whisperKitTask
@@ -229,9 +237,14 @@ public enum TranscriptionProviderFactory {
                 return "\(key.prefix(6))…\(key.suffix(4)) (\(key.count) chars)"
             }()
             input.logger.info("soniox: using API key fingerprint \(fingerprint)")
+            // plan-012 Phase A5: forward the optional diarization toggle
+            // (default true via `SonioxConfigBuilder.defaultDiarize`) so
+            // the user can revert to single-speaker output via
+            // `MACREC_SONIOX_DIARIZE=false` / `--soniox-diarize false`.
             return SonioxStreamingTranscriptionProvider(
                 apiKey: key,
                 model: input.modelId ?? SonioxConfigBuilder.defaultModel,
+                diarize: input.sonioxDiarize ?? SonioxConfigBuilder.defaultDiarize,
                 logger: input.logger
             )
         case "azure":

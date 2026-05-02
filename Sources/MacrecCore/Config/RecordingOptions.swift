@@ -251,6 +251,14 @@ public struct RecordingOptions: Sendable, Equatable {
     /// `nil` — no expiry warning is emitted at recording start (AC-SX-16).
     public let sonioxKeyExpiresAt: Date?
 
+    /// Optional Soniox speaker-diarization toggle (plan-012 Phase A5).
+    /// `nil` means "use the provider default" — the
+    /// `TranscriptionProviderFactory` falls back to
+    /// `SonioxConfigBuilder.defaultDiarize` (true). Set to `false` via
+    /// `MACREC_SONIOX_DIARIZE=false` (or `--soniox-diarize false`) to
+    /// revert to the pre-plan-012 single-speaker transcript form.
+    public let sonioxDiarize: Bool?
+
     // MARK: - Azure OpenAI overrides (plan-007 Phase A1 + A2; §5.1 / §A2.4)
     //
     // Per the no-fallback rule the resolver throws when these values are
@@ -402,6 +410,7 @@ public struct RecordingOptions: Sendable, Equatable {
         transcriptionLanguageHints: [String] = [],
         sonioxEndpoint: URL? = nil,
         sonioxKeyExpiresAt: Date? = nil,
+        sonioxDiarize: Bool? = nil,
         azureOpenAIEndpoint: URL? = nil,
         azureOpenAIDeployment: String? = nil,
         azureOpenAIApiVersion: String? = nil,
@@ -452,6 +461,7 @@ public struct RecordingOptions: Sendable, Equatable {
         self.transcriptionLanguageHints = transcriptionLanguageHints
         self.sonioxEndpoint = sonioxEndpoint
         self.sonioxKeyExpiresAt = sonioxKeyExpiresAt
+        self.sonioxDiarize = sonioxDiarize
         self.azureOpenAIEndpoint = azureOpenAIEndpoint
         self.azureOpenAIDeployment = azureOpenAIDeployment
         self.azureOpenAIApiVersion = azureOpenAIApiVersion
@@ -556,6 +566,7 @@ extension RecordingOptions {
             transcriptionLanguageHints: transcriptionLanguageHints,
             sonioxEndpoint: sonioxEndpoint,
             sonioxKeyExpiresAt: sonioxKeyExpiresAt,
+            sonioxDiarize: sonioxDiarize,
             azureOpenAIEndpoint: azureOpenAIEndpoint,
             azureOpenAIDeployment: azureOpenAIDeployment,
             azureOpenAIApiVersion: azureOpenAIApiVersion,

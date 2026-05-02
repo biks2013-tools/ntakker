@@ -113,6 +113,9 @@ public struct StartCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Soniox WebSocket endpoint override (default: wss://stt-rt.soniox.com/transcribe-websocket; for regional endpoints see https://soniox.com/docs/stt/data-residency). Env: MACREC_SONIOX_ENDPOINT.")
     public var sonioxEndpoint: String?
 
+    @Option(name: .long, help: "Override Soniox speaker diarization (true | false). Default: true. Env: MACREC_SONIOX_DIARIZE.")
+    public var sonioxDiarize: Bool?
+
     // MARK: - Dual-mode transcription knobs (plan-010 Phase H; design §DT-10)
     //
     // Required when `--transcribe dual` is selected. NO defaults are
@@ -246,6 +249,7 @@ public struct StartCommand: AsyncParsableCommand {
         if let v = transcribeLanguage      { o[ConfigResolver.Keys.transcribeLanguage] = v }
         if let v = transcribeKeyExpiresAt  { o[ConfigResolver.Keys.transcribeKeyExpiresAt] = v }
         if let v = sonioxEndpoint          { o[ConfigResolver.Keys.sonioxEndpoint] = v }
+        if let v = sonioxDiarize           { o[ConfigResolver.Keys.sonioxDiarize] = v ? "true" : "false" }
         // -- Dual-mode transcription (plan-010 Phase H; design §DT-10) --
         if let v = transcribeDualLocaleA   { o[ConfigResolver.Keys.transcribeDualLocaleA] = v }
         if let v = transcribeDualLocaleB   { o[ConfigResolver.Keys.transcribeDualLocaleB] = v }
