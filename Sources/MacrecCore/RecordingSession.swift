@@ -1176,8 +1176,12 @@ public final class RecordingSession: @unchecked Sendable {
             trSource = dualConfig.source
             summary = "dual (channelA=\(dualConfig.channelA.providerId)/\(dualConfig.channelA.locale), channelB=\(dualConfig.channelB.providerId)/\(dualConfig.channelB.locale), source=\(trSource.rawValue), sidecar=\(dualConfig.sidecarFormat.rawValue))"
         } else {
-            // Single-mode construction (existing path). All of the
-            // single-mode plumbing is below.
+            // Single-mode construction. Plan-012 Phase C4 introduces
+            // a third branch on top of the legacy single path: when
+            // the user picks `--transcribe-source both` we build TWO
+            // single-source TranscriptionManagers (one per SourceTag)
+            // and wrap them in a SourceSplitTranscriptionManager.
+            // Otherwise we fall through to the unchanged single path.
             let providerId = options.transcriptionProviderId ?? "none"
             let normalized = providerId.lowercased()
             guard !normalized.isEmpty, normalized != "none", normalized != "noop" else {
@@ -1185,12 +1189,49 @@ public final class RecordingSession: @unchecked Sendable {
                 // path is unchanged.
                 return
             }
-            let (mgr, source, summaryLine) = try await buildSingleModeManager(
-                normalizedProviderId: normalized
-            )
-            dispatcher = mgr
-            trSource = source
-            summary = summaryLine
+            let kind = TranscriptionDispatcherSelector.chooseKind(for: options)
+            switch kind {
+            case .sourceSplit:
+                // Plan-012 Phase C4 — true `--transcribe-source both`
+                // routing. Build two parallel managers, each driving
+                // its own provider instance, sidecar writer, and
+                // metrics struct, then wrap in
+                // SourceSplitTranscriptionManager.
+                if normalized == "elevenlabs" {
+                    logger.warning(
+                        "ElevenLabs Free/Starter tiers cap concurrent STT requests at 8; --transcribe-source both will run two parallel POSTs and may surface concurrent_limit_exceeded (HTTP 429)."
+                    )
+                }
+                let (sysMgr, _, sysSummary) = try await buildSingleModeManager(
+                    normalizedProviderId: normalized,
+                    sourceOverride: .system,
+                    sidecarSourceTag: .system
+                )
+                let (micMgr, _, micSummary) = try await buildSingleModeManager(
+                    normalizedProviderId: normalized,
+                    sourceOverride: .mic,
+                    sidecarSourceTag: .microphone
+                )
+                let split = SourceSplitTranscriptionManager(
+                    systemManager: sysMgr,
+                    microphoneManager: micMgr,
+                    logger: LoggerFactory.make("macrec.transcription.source-split")
+                )
+                dispatcher = split
+                trSource = .both
+                summary = "source-split (\(sysSummary) || \(micSummary))"
+            case .single, .none, .dual:
+                // .dual is unreachable here (handled by the outer
+                // `if let dualConfig` branch); .none was filtered by
+                // the guard above. The `.single` arm is the legacy
+                // path.
+                let (mgr, source, summaryLine) = try await buildSingleModeManager(
+                    normalizedProviderId: normalized
+                )
+                dispatcher = mgr
+                trSource = source
+                summary = summaryLine
+            }
         }
 
         guard let dispatcher else {
@@ -1311,7 +1352,9 @@ public final class RecordingSession: @unchecked Sendable {
     /// transcription source, and a one-line summary string for the
     /// logger.
     private func buildSingleModeManager(
-        normalizedProviderId: String
+        normalizedProviderId: String,
+        sourceOverride: TranscriptionSource? = nil,
+        sidecarSourceTag: SourceTag? = nil
     ) async throws -> (TranscriptionManager, TranscriptionSource, String) {
         // Per FR / configuration-guide rule: warn if the API key is in
         // its last 7 days of validity. The manager still runs; this is
@@ -1369,21 +1412,25 @@ public final class RecordingSession: @unchecked Sendable {
             )
         }
 
-        // Resolve the per-recording transcription source. The
-        // `TranscriptionManager` natively supports `.both` (it spawns
-        // one `SourceBuffer` per active source tag), so we forward
-        // every value through unchanged.
-        let trSource: TranscriptionSource = options.transcriptionSource
+        // Resolve the per-recording transcription source. When the
+        // caller passes `sourceOverride` (Phase C4 source-split path),
+        // it wins so each child manager sees a single-source filter
+        // (.system or .mic). Otherwise we forward
+        // `options.transcriptionSource` unchanged (the legacy path
+        // where TranscriptionManager handles whatever was requested,
+        // including .both natively).
+        let trSource: TranscriptionSource = sourceOverride ?? options.transcriptionSource
 
-        // Build the sidecar writer. Sidecar URL is derived from the
-        // audio output URL (the part token is already in the stem if
-        // any), so multi-segment recordings naturally produce
-        // `.partNN.transcript.<ext>` siblings via SidecarPathBuilder.
+        // Build the sidecar writer. When `sidecarSourceTag` is non-nil
+        // (Phase C4), the sidecar URL gets a `.system.` / `.microphone.`
+        // infix so two parallel managers don't overwrite the same file.
+        // Otherwise we keep the legacy nil sourceTag for byte-equivalent
+        // single-source naming.
         let sidecarURL = SidecarPathBuilder.sidecarURL(
             forRecording: options.output,
             format: options.transcriptionFormat,
             partNumber: nil,
-            sourceTag: nil
+            sourceTag: sidecarSourceTag
         )
         // Plan-005 Phase F: derive the sidecar policy from the
         // provider's declared modes. Streaming providers persist only

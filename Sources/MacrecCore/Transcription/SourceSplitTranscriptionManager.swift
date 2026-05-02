@@ -136,3 +136,32 @@ private actor SourceSplitMergeFinishCounter {
         return done >= 2
     }
 }
+
+/// Pure selector for choosing the transcription dispatcher kind. Plan-012
+/// Phase C4. Lives alongside `SourceSplitTranscriptionManager` because
+/// they're the same code-organisation unit (the selector is what decides
+/// the manager comes into existence). Unit-testable in isolation.
+public enum TranscriptionDispatcherKind: Equatable, Sendable {
+    case none           // transcription disabled (provider id is none/noop/empty)
+    case single         // single-mode TranscriptionManager (existing path)
+    case dual           // dual-mode DualTranscriptionManager
+    case sourceSplit    // single-mode + source==.both → SourceSplitTranscriptionManager
+}
+
+public enum TranscriptionDispatcherSelector {
+    /// Decide which dispatcher kind matches a given RecordingOptions.
+    /// Pure function — no side effects, no I/O.
+    public static func chooseKind(for opts: RecordingOptions) -> TranscriptionDispatcherKind {
+        if opts.dualTranscription != nil {
+            return .dual
+        }
+        let providerId = (opts.transcriptionProviderId ?? "").lowercased()
+        if providerId.isEmpty || providerId == "none" || providerId == "noop" {
+            return .none
+        }
+        if opts.transcriptionSource == .both {
+            return .sourceSplit
+        }
+        return .single
+    }
+}
