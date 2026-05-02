@@ -70,6 +70,15 @@ public struct TranscriptionProviderFactoryInput: Sendable {
     /// Word-level timestamps toggle. `nil` → false.
     public let whisperKitWordTimestamps: Bool?
 
+    // -- Parakeet (on-device, multilingual) fields (plan-012 Phase B3) --
+    /// Parakeet-only model id override. Wins over the shared `modelId`.
+    /// `nil` → provider default (`parakeet-tdt-0.6b-v3`).
+    public let parakeetModel: String?
+    /// Optional language hint (bare ISO-639-1, e.g. `el`). Informational
+    /// only — FluidAudio v0.8.x has no per-call language hint API; the
+    /// multilingual TDT V3 model auto-detects.
+    public let parakeetLanguage: String?
+
     public init(
         providerId: String,
         apiKey: String?,
@@ -101,7 +110,9 @@ public struct TranscriptionProviderFactoryInput: Sendable {
         whisperKitLanguage: String? = nil,
         whisperKitTask: String? = nil,
         whisperKitTemperature: Float? = nil,
-        whisperKitWordTimestamps: Bool? = nil
+        whisperKitWordTimestamps: Bool? = nil,
+        parakeetModel: String? = nil,
+        parakeetLanguage: String? = nil
     ) {
         self.providerId = providerId
         self.apiKey = apiKey
@@ -134,6 +145,8 @@ public struct TranscriptionProviderFactoryInput: Sendable {
         self.whisperKitTask = whisperKitTask
         self.whisperKitTemperature = whisperKitTemperature
         self.whisperKitWordTimestamps = whisperKitWordTimestamps
+        self.parakeetModel = parakeetModel
+        self.parakeetLanguage = parakeetLanguage
     }
 }
 
@@ -216,6 +229,25 @@ public enum TranscriptionProviderFactory {
                 task: input.whisperKitTask,
                 temperature: input.whisperKitTemperature,
                 wordTimestamps: input.whisperKitWordTimestamps,
+                logger: input.logger
+            )
+        case "parakeet":
+            // plan-012 Phase B — On-device multilingual ASR via
+            // FluidAudio's Parakeet TDT V3 wrapper. No API key.
+            // Model-resolution precedence mirrors WhisperKit:
+            //   1. Parakeet-specific override `parakeetModel`
+            //      (`MACREC_PARAKEET_MODEL` / `--parakeet-model`).
+            //   2. Shared `modelId` (`MACREC_TRANSCRIBE_MODEL`).
+            //   3. Provider default (`parakeet-tdt-0.6b-v3`,
+            //      multilingual, ~25 European languages incl. Greek).
+            //
+            // Language hint is informational only — see provider doc.
+            let parakeetModel = input.parakeetModel
+                ?? input.modelId
+                ?? ParakeetTranscriptionProvider.defaultModelName
+            return ParakeetTranscriptionProvider(
+                modelName: parakeetModel,
+                language: input.parakeetLanguage,
                 logger: input.logger
             )
         case "soniox":
@@ -343,7 +375,7 @@ public enum TranscriptionProviderFactory {
             )
         default:
             // TODO(plan-004 Phase G): use .transcriptionInvalidConfigValue(field:value:)
-            throw MacrecError.transcriptionConfigConflict(reason: "transcribe value '\(normalized)' invalid (allowed: 'none', 'apple', 'apple-cloud', 'gemini', 'whisperkit', 'soniox', 'azure', 'azure-openai-realtime', 'elevenlabs')")
+            throw MacrecError.transcriptionConfigConflict(reason: "transcribe value '\(normalized)' invalid (allowed: 'none', 'apple', 'apple-cloud', 'gemini', 'whisperkit', 'parakeet', 'soniox', 'azure', 'azure-openai-realtime', 'elevenlabs')")
         }
     }
 }

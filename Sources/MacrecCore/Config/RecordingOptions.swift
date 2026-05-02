@@ -259,6 +259,19 @@ public struct RecordingOptions: Sendable, Equatable {
     /// revert to the pre-plan-012 single-speaker transcript form.
     public let sonioxDiarize: Bool?
 
+    // MARK: - Parakeet (on-device, multilingual; plan-012 Phase B)
+
+    /// Optional Parakeet-specific model id override
+    /// (`MACREC_PARAKEET_MODEL` / `--parakeet-model`). Wins over the
+    /// shared `transcriptionModelId`; falls back to the provider
+    /// default `parakeet-tdt-0.6b-v3` when both are nil.
+    public let parakeetModel: String?
+
+    /// Optional Parakeet language hint (bare ISO-639-1, e.g. `el`).
+    /// Informational only — FluidAudio v0.8.x has no per-call language
+    /// hint API; the multilingual model auto-detects per chunk.
+    public let parakeetLanguage: String?
+
     // MARK: - Azure OpenAI overrides (plan-007 Phase A1 + A2; §5.1 / §A2.4)
     //
     // Per the no-fallback rule the resolver throws when these values are
@@ -435,6 +448,8 @@ public struct RecordingOptions: Sendable, Equatable {
         whisperKitTask: String? = nil,
         whisperKitTemperature: Float? = nil,
         whisperKitWordTimestamps: Bool? = nil,
+        parakeetModel: String? = nil,
+        parakeetLanguage: String? = nil,
         dualTranscription: DualTranscriptionConfig? = nil
     ) {
         self.output = output
@@ -486,6 +501,8 @@ public struct RecordingOptions: Sendable, Equatable {
         self.whisperKitTask = whisperKitTask
         self.whisperKitTemperature = whisperKitTemperature
         self.whisperKitWordTimestamps = whisperKitWordTimestamps
+        self.parakeetModel = parakeetModel
+        self.parakeetLanguage = parakeetLanguage
         self.dualTranscription = dualTranscription
     }
 
@@ -591,6 +608,8 @@ extension RecordingOptions {
             whisperKitTask: whisperKitTask,
             whisperKitTemperature: whisperKitTemperature,
             whisperKitWordTimestamps: whisperKitWordTimestamps,
+            parakeetModel: parakeetModel,
+            parakeetLanguage: parakeetLanguage,
             dualTranscription: dualTranscription
         )
     }

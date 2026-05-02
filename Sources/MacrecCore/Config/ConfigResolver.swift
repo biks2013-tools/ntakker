@@ -517,6 +517,22 @@ public struct ConfigResolver {
             raw: value(Keys.sonioxDiarize)
         )
 
+        // Step 7c.2 (plan-012 Phase B3): Parakeet on-device provider
+        //          knobs. Both are optional strings; the factory layers
+        //          MACREC_PARAKEET_MODEL > MACREC_TRANSCRIBE_MODEL >
+        //          provider default. Language is informational only in
+        //          v1 (FluidAudio v0.8.x has no per-call language hint
+        //          API; the multilingual model auto-detects).
+        let parakeetModelRaw = value(Keys.parakeetModel)
+        let parakeetModel: String? =
+            (parakeetModelRaw?.isEmpty == false) ? parakeetModelRaw : nil
+        let parakeetLanguageRaw = value(Keys.parakeetLanguage)
+        let parakeetLanguage: String? = {
+            guard let raw = parakeetLanguageRaw?.trimmingCharacters(in: .whitespaces),
+                  !raw.isEmpty else { return nil }
+            return raw
+        }()
+
         // Step 7d (plan-007 Phase A1 + A2 §A.7): resolve the Azure OpenAI
         //         endpoint, deployment name, and api-version. The api-version
         //         is OPTIONAL with a documented starter (`2025-04-01-preview`,
@@ -924,6 +940,8 @@ public struct ConfigResolver {
             whisperKitTask: whisperKitTask,
             whisperKitTemperature: whisperKitTemperature,
             whisperKitWordTimestamps: whisperKitWordTimestamps,
+            parakeetModel: parakeetModel,
+            parakeetLanguage: parakeetLanguage,
             dualTranscription: dualTranscriptionConfig
         )
     }
@@ -995,6 +1013,21 @@ public struct ConfigResolver {
         /// Set to `false` to revert to the pre-plan-012 single-speaker
         /// transcript form.
         public static let sonioxDiarize             = "MACREC_SONIOX_DIARIZE"
+
+        // -- Parakeet (on-device, multilingual; plan-012 Phase B) --
+
+        /// Optional Parakeet model id override. Mirrors WhisperKit's
+        /// model-resolution chain: this Parakeet-specific key wins over
+        /// the shared `MACREC_TRANSCRIBE_MODEL` which wins over the
+        /// provider default (`parakeet-tdt-0.6b-v3`, multilingual).
+        public static let parakeetModel             = "MACREC_PARAKEET_MODEL"
+
+        /// Optional Parakeet language hint (bare ISO-639-1, e.g. `el`).
+        /// Informational only — FluidAudio v0.8.x has no per-call
+        /// language hint API; the multilingual TDT V3 model auto-
+        /// detects per chunk. Kept so the env-var convention stays
+        /// consistent with WhisperKit.
+        public static let parakeetLanguage          = "MACREC_PARAKEET_LANGUAGE"
 
         // -- Azure OpenAI provider (plan-007 Phase A1 + A2; §5.2) --
         //

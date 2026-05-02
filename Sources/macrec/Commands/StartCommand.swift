@@ -92,7 +92,7 @@ public struct StartCommand: AsyncParsableCommand {
     // (shell → ~/.tool-agents/macrec/.env → ./.env). Putting a key on a
     // command line would leak it into shell history and `ps` output.
 
-    @Option(name: .long, help: "Live transcription provider (none | apple | apple-cloud | gemini | whisperkit | soniox | azure | azure-openai-realtime | elevenlabs | dual). Default: apple (per plan-005 Phase H). Pass `dual` to enable dual-mode transcription (Channel A on-device + Channel B cloud); the four --transcribe-dual-* flags below become required. Env: MACREC_TRANSCRIBE.")
+    @Option(name: .long, help: "Live transcription provider (none | apple | apple-cloud | gemini | whisperkit | parakeet | soniox | azure | azure-openai-realtime | elevenlabs | dual). Default: apple (per plan-005 Phase H). Pass `dual` to enable dual-mode transcription (Channel A on-device + Channel B cloud); the four --transcribe-dual-* flags below become required. Env: MACREC_TRANSCRIBE.")
     public var transcribe: String?
 
     @Option(name: .long, help: "Audio source for transcription (system | mic | mixed | both). Default: mixed. Ignored when --transcribe none. Env: MACREC_TRANSCRIBE_SOURCE.")
@@ -115,6 +115,12 @@ public struct StartCommand: AsyncParsableCommand {
 
     @Option(name: .long, help: "Override Soniox speaker diarization (true | false). Default: true. Env: MACREC_SONIOX_DIARIZE.")
     public var sonioxDiarize: Bool?
+
+    @Option(name: .long, help: "Parakeet-specific model id (defaults to parakeet-tdt-0.6b-v3). Wins over --transcribe-model. Env: MACREC_PARAKEET_MODEL.")
+    public var parakeetModel: String?
+
+    @Option(name: .long, help: "Parakeet language hint (bare ISO-639-1, e.g. 'el'). Informational only — FluidAudio v0.8.x has no per-call language API; the multilingual model auto-detects. Env: MACREC_PARAKEET_LANGUAGE.")
+    public var parakeetLanguage: String?
 
     // MARK: - Dual-mode transcription knobs (plan-010 Phase H; design §DT-10)
     //
@@ -250,6 +256,8 @@ public struct StartCommand: AsyncParsableCommand {
         if let v = transcribeKeyExpiresAt  { o[ConfigResolver.Keys.transcribeKeyExpiresAt] = v }
         if let v = sonioxEndpoint          { o[ConfigResolver.Keys.sonioxEndpoint] = v }
         if let v = sonioxDiarize           { o[ConfigResolver.Keys.sonioxDiarize] = v ? "true" : "false" }
+        if let v = parakeetModel           { o[ConfigResolver.Keys.parakeetModel] = v }
+        if let v = parakeetLanguage        { o[ConfigResolver.Keys.parakeetLanguage] = v }
         // -- Dual-mode transcription (plan-010 Phase H; design §DT-10) --
         if let v = transcribeDualLocaleA   { o[ConfigResolver.Keys.transcribeDualLocaleA] = v }
         if let v = transcribeDualLocaleB   { o[ConfigResolver.Keys.transcribeDualLocaleB] = v }

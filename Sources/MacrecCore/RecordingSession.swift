@@ -1086,7 +1086,10 @@ public final class RecordingSession: @unchecked Sendable {
             whisperKitLanguage: options.whisperKitLanguage,
             whisperKitTask: options.whisperKitTask,
             whisperKitTemperature: options.whisperKitTemperature,
-            whisperKitWordTimestamps: options.whisperKitWordTimestamps
+            whisperKitWordTimestamps: options.whisperKitWordTimestamps,
+            // Parakeet on-device tunables (plan-012 Phase B3).
+            parakeetModel: options.parakeetModel,
+            parakeetLanguage: options.parakeetLanguage
         )
         do {
             return try TranscriptionProviderFactory.build(input)
