@@ -35,6 +35,7 @@ public actor SonioxStreamingTranscriptionProvider: TranscriptionProvider {
     private let apiKey: String
     private let endpoint: URL
     private let model: String
+    private let diarize: Bool
     private let logger: Logger?
     private let transportFactory: @Sendable () -> any WebSocketTransport
 
@@ -57,12 +58,14 @@ public actor SonioxStreamingTranscriptionProvider: TranscriptionProvider {
         apiKey: String,
         endpoint: URL = SonioxStreamingTranscriptionProvider.defaultEndpoint,
         model: String = SonioxConfigBuilder.defaultModel,
+        diarize: Bool = SonioxConfigBuilder.defaultDiarize,
         logger: Logger? = nil,
         transportFactory: (@Sendable () -> any WebSocketTransport)? = nil
     ) {
         self.apiKey = apiKey
         self.endpoint = endpoint
         self.model = model
+        self.diarize = diarize
         self.logger = logger
         self.transportFactory = transportFactory ?? {
             URLSessionWebSocketTaskTransport()
@@ -100,6 +103,7 @@ public actor SonioxStreamingTranscriptionProvider: TranscriptionProvider {
             apiKey: apiKey,
             model: resolvedModel,
             languageHints: mappedHints,
+            diarize: diarize,
             clientReferenceId: "macrec-\(source.rawValue)"
         )
 
@@ -114,4 +118,7 @@ public actor SonioxStreamingTranscriptionProvider: TranscriptionProvider {
         try await session.start()
         return session
     }
+
+    /// Test-only accessor. Used by Phase A3 plumbing tests.
+    internal func currentDiarize() -> Bool { diarize }
 }
