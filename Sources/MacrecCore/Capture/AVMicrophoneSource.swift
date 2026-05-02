@@ -371,8 +371,10 @@ public final class AVMicrophoneSource: NSObject,
 
         // Subscribe to runtime errors BEFORE starting; if startRunning
         // fails async we want to capture that.
+        // 2026-05-02 — `.AVCaptureSessionRuntimeError` was renamed to
+        // `AVCaptureSession.runtimeErrorNotification` in macOS 15.
         let runtimeObserver = NotificationCenter.default.addObserver(
-            forName: .AVCaptureSessionRuntimeError,
+            forName: AVCaptureSession.runtimeErrorNotification,
             object: session,
             queue: nil
         ) { [weak self] note in

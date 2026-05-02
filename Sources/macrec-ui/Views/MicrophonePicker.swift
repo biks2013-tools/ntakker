@@ -79,14 +79,18 @@ struct MicrophonePicker: View {
         .disabled(isLocked)
         .help(String(localized: "Microphone used for the next recording."))
         .task { refreshDevices() }
+        // 2026-05-02 — `.AVCaptureDeviceWasConnected` /
+        // `.AVCaptureDeviceWasDisconnected` were renamed in macOS 15 to
+        // `AVCaptureDevice.wasConnectedNotification` /
+        // `AVCaptureDevice.wasDisconnectedNotification`.
         .onReceive(
             NotificationCenter.default.publisher(
-                for: .AVCaptureDeviceWasConnected
+                for: AVCaptureDevice.wasConnectedNotification
             )
         ) { _ in refreshDevices() }
         .onReceive(
             NotificationCenter.default.publisher(
-                for: .AVCaptureDeviceWasDisconnected
+                for: AVCaptureDevice.wasDisconnectedNotification
             )
         ) { _ in refreshDevices() }
     }

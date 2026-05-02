@@ -686,6 +686,51 @@ public struct ConfigResolver {
             return transcriptionKeyExpiresAt
         }()
 
+        // -- WhisperKit (on-device) tunables (added 2026-05-02) --
+        //
+        // All five values are OPTIONAL. The resolver forwards `nil`
+        // when the env-var is missing / empty (R-Phase C.3 — provider
+        // owns the default). Out-of-range / unknown values raise
+        // `MacrecError.invalidConfigValue(...)` per the project's
+        // no-fallback rule.
+        let whisperKitModelRaw = value(Keys.whisperKitModel)
+        let whisperKitModel: String? =
+            (whisperKitModelRaw?.isEmpty == false) ? whisperKitModelRaw : nil
+
+        let whisperKitLanguageRaw = value(Keys.whisperKitLanguage)
+        let whisperKitLanguage: String? = {
+            guard let raw = whisperKitLanguageRaw?
+                .trimmingCharacters(in: .whitespaces),
+                  !raw.isEmpty else { return nil }
+            return raw.lowercased()
+        }()
+
+        let whisperKitTask: String? = try {
+            guard let raw = value(Keys.whisperKitTask)?
+                .trimmingCharacters(in: .whitespaces),
+                  !raw.isEmpty else { return nil }
+            let lower = raw.lowercased()
+            guard ["transcribe", "translate"].contains(lower) else {
+                throw MacrecError.invalidConfigValue(
+                    key: Keys.whisperKitTask,
+                    value: raw,
+                    expected: "one of: transcribe, translate"
+                )
+            }
+            return lower
+        }()
+
+        let whisperKitTemperature: Float? = try parseOptionalFloat(
+            key: Keys.whisperKitTemperature,
+            raw: value(Keys.whisperKitTemperature),
+            range: 0.0...1.0
+        )
+
+        let whisperKitWordTimestamps: Bool? = try parseOptionalBool(
+            key: Keys.whisperKitWordTimestamps,
+            raw: value(Keys.whisperKitWordTimestamps)
+        )
+
         // -- plan-010 Phase H: dual-mode configuration construction ----
         //
         // Resolve the four required `--transcribe-dual-*` values from
@@ -859,6 +904,11 @@ public struct ConfigResolver {
             elevenLabsEntityDetection: elevenLabsEntityDetection,
             elevenLabsKeyterms: elevenLabsKeyterms,
             elevenLabsApiKeyExpiresAt: elevenLabsApiKeyExpiresAt,
+            whisperKitModel: whisperKitModel,
+            whisperKitLanguage: whisperKitLanguage,
+            whisperKitTask: whisperKitTask,
+            whisperKitTemperature: whisperKitTemperature,
+            whisperKitWordTimestamps: whisperKitWordTimestamps,
             dualTranscription: dualTranscriptionConfig
         )
     }
@@ -1029,6 +1079,48 @@ public struct ConfigResolver {
 
         /// Optional ISO-8601 expiry timestamp for `ELEVENLABS_API_KEY`.
         public static let elevenLabsApiKeyExpiresAt    = "ELEVENLABS_API_KEY_EXPIRES_AT"
+
+        // -- WhisperKit (on-device) provider tunables --
+        //
+        // Added 2026-05-02 alongside the WhisperKit Settings panel so the
+        // user can override the WhisperKit-only knobs WITHOUT touching
+        // the shared `MACREC_TRANSCRIBE_MODEL` (which other providers
+        // also read). All five values are OPTIONAL — missing → the
+        // provider's pinned defaults apply at construction time
+        // (R-Phase C.3 — model-id default lives at the provider layer,
+        // not as a config-resolver fallback substitution; the resolver
+        // forwards `nil` and the provider applies the documented
+        // default). Per CLAUDE.md no-fallback rule, *invalid* values
+        // (out-of-range temperature, unknown task name, etc.) raise
+        // `MacrecError.invalidConfigValue(...)` at config-load time.
+
+        /// WhisperKit model id override (e.g. `openai_whisper-base`,
+        /// `openai_whisper-large-v3-v20240930_626MB`). Unset → provider
+        /// default (`large-v3-v20240930_626MB`). When set, takes
+        /// precedence over the shared `MACREC_TRANSCRIBE_MODEL` for the
+        /// WhisperKit provider only.
+        public static let whisperKitModel           = "MACREC_WHISPERKIT_MODEL"
+
+        /// Whisper language code override — bare ISO-639-1 (e.g. `en`,
+        /// `el`, `tr`, `de`). Empty / unset → Whisper auto-detects per
+        /// chunk. NOT a BCP-47 tag (Whisper's tokenizer wants the bare
+        /// 2-letter form).
+        public static let whisperKitLanguage        = "MACREC_WHISPERKIT_LANGUAGE"
+
+        /// Decoding task: `transcribe` (default — text in source
+        /// language) or `translate` (translate to English).
+        public static let whisperKitTask            = "MACREC_WHISPERKIT_TASK"
+
+        /// Decoding temperature 0.0..1.0. Default 0 (verbatim, lowest
+        /// hallucination). Higher values diversify decoding but reduce
+        /// stability — only useful when the model returns repeated /
+        /// degenerate text on a tricky chunk.
+        public static let whisperKitTemperature     = "MACREC_WHISPERKIT_TEMPERATURE"
+
+        /// When true, request per-word timestamps. Adds compute cost
+        /// (~10–20 % per chunk) but is required for accurate SRT / VTT
+        /// sidecars. Default false.
+        public static let whisperKitWordTimestamps  = "MACREC_WHISPERKIT_WORD_TIMESTAMPS"
 
         // -- Dual-mode transcription (plan-010 Phase H; design §DT-10) --
         //

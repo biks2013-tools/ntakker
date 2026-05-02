@@ -21,3 +21,5 @@ IDEWorkspaceChecks.plist
 
 # Git worktrees created by the using-git-worktrees skill
 .worktrees/
+
+node_modules/

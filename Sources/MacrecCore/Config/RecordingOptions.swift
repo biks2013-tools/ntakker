@@ -333,6 +333,35 @@ public struct RecordingOptions: Sendable, Equatable {
     /// Plan-007 §B.7 — optional ISO-8601 expiry for `ELEVENLABS_API_KEY`.
     public let elevenLabsApiKeyExpiresAt: Date?
 
+    // MARK: - WhisperKit (on-device) tunables (added 2026-05-02)
+    //
+    // All five fields are OPTIONAL. `nil` means "use the WhisperKit
+    // provider's pinned default" (matching the existing R-Phase C.3
+    // pattern for `transcriptionModelId`). The resolver validates
+    // *invalid* values eagerly (out-of-range temperature, unknown
+    // task name) per the project no-fallback rule, but never
+    // substitutes defaults at config-load time.
+
+    /// WhisperKit-only model id override. Takes precedence over the
+    /// shared `transcriptionModelId` for the WhisperKit provider only.
+    /// `nil` → provider's pinned default.
+    public let whisperKitModel: String?
+
+    /// Whisper bare ISO-639-1 language code (e.g. `en`, `el`, `tr`).
+    /// `nil` / empty → Whisper auto-detects per chunk.
+    public let whisperKitLanguage: String?
+
+    /// `transcribe` (default) or `translate` (translate to English).
+    /// `nil` → `transcribe`.
+    public let whisperKitTask: String?
+
+    /// Decoding temperature `0.0...1.0`. `nil` → `0` (verbatim).
+    public let whisperKitTemperature: Float?
+
+    /// When true, the provider asks WhisperKit for per-word timestamps
+    /// (~10–20 % extra compute per chunk). `nil` → false.
+    public let whisperKitWordTimestamps: Bool?
+
     // MARK: - Dual-transcription (plan-010 Phase A; design §DT-3)
 
     /// Resolved dual-transcription configuration. NON-NIL means
@@ -392,6 +421,11 @@ public struct RecordingOptions: Sendable, Equatable {
         elevenLabsEntityDetection: String? = nil,
         elevenLabsKeyterms: [String]? = nil,
         elevenLabsApiKeyExpiresAt: Date? = nil,
+        whisperKitModel: String? = nil,
+        whisperKitLanguage: String? = nil,
+        whisperKitTask: String? = nil,
+        whisperKitTemperature: Float? = nil,
+        whisperKitWordTimestamps: Bool? = nil,
         dualTranscription: DualTranscriptionConfig? = nil
     ) {
         self.output = output
@@ -437,6 +471,11 @@ public struct RecordingOptions: Sendable, Equatable {
         self.elevenLabsEntityDetection = elevenLabsEntityDetection
         self.elevenLabsKeyterms = elevenLabsKeyterms
         self.elevenLabsApiKeyExpiresAt = elevenLabsApiKeyExpiresAt
+        self.whisperKitModel = whisperKitModel
+        self.whisperKitLanguage = whisperKitLanguage
+        self.whisperKitTask = whisperKitTask
+        self.whisperKitTemperature = whisperKitTemperature
+        self.whisperKitWordTimestamps = whisperKitWordTimestamps
         self.dualTranscription = dualTranscription
     }
 
@@ -536,6 +575,11 @@ extension RecordingOptions {
             elevenLabsEntityDetection: elevenLabsEntityDetection,
             elevenLabsKeyterms: elevenLabsKeyterms,
             elevenLabsApiKeyExpiresAt: elevenLabsApiKeyExpiresAt,
+            whisperKitModel: whisperKitModel,
+            whisperKitLanguage: whisperKitLanguage,
+            whisperKitTask: whisperKitTask,
+            whisperKitTemperature: whisperKitTemperature,
+            whisperKitWordTimestamps: whisperKitWordTimestamps,
             dualTranscription: dualTranscription
         )
     }

@@ -174,3 +174,21 @@ Notes:
 
 - The bundle id (`com.local.macrec-ui`) is identical between `dist/…` and `/Applications/…`, so existing Microphone, Screen Recording, and Speech Recognition TCC grants carry over — no need to re-approve permissions after deploying.
 - After upgrading the bundle in `/Applications`, relaunch the menu-bar icon (quit via the popover's Quit action, then `open` again). macOS does not auto-restart it.
+
+### dual-transcript-merger
+
+TypeScript CLI that merges dual-channel JSONL sidecar transcripts produced by `macrec --transcribe dual` (Channel A = Apple on-device, Channel B = Apple Cloud) into a single chronologically-ordered file. Interleaves both channels by timestamp and applies a configurable cross-language hallucination filter (`conservative` / `aggressive` / `off`), outputting either metadata-preserving JSONL or human-readable TXT.
+
+Documentation: [docs/tools/dual-transcript-merger.md](docs/tools/dual-transcript-merger.md)
+
+#### Install as a direct command
+
+```sh
+cd tools/dual-transcript-merger
+npm install               # also runs the `prepare` script: tsc + chmod +x dist/cli.js
+npm link                  # installs `dual-transcript-merger` on PATH globally
+
+dual-transcript-merger /path/to/sidecar.jsonl --filter aggressive --format txt
+```
+
+`npm link` creates a symlink in your global `bin` directory (e.g. `/opt/homebrew/bin/dual-transcript-merger` on Apple Silicon Homebrew, `~/.npm-global/bin/...` for user-scoped npm setups). The `prepare` + `postbuild` scripts in `package.json` keep the binary executable across rebuilds — you don't need to `chmod +x` manually after `npm run build`. To uninstall, run `npm unlink -g dual-transcript-merger` from anywhere.

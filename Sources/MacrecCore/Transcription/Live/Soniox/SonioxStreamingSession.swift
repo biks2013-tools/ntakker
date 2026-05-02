@@ -208,7 +208,13 @@ public actor SonioxStreamingSession: StreamingTranscriptionSession {
                 // terminated due to a server-side error envelope —
                 // otherwise we'd emit a redundant "soniox.receive_failed:
                 // Socket is not connected" right after the real cause.
-                if await self.isFinished { return }
+                // The enclosing Task inherits this actor's isolation
+                // (see comment above at line ~193) so reading
+                // `self.isFinished` is a same-actor access, not an
+                // async hop — the `await` was redundant. Compiler
+                // started flagging it on Swift 6 with strict
+                // concurrency (no-async-in-await diagnostic).
+                if self.isFinished { return }
                 self.recordError("soniox.receive_failed: \(error.localizedDescription)")
             }
         }

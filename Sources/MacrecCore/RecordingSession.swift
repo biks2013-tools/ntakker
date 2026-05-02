@@ -1078,7 +1078,13 @@ public final class RecordingSession: @unchecked Sendable {
             elevenLabsFileFormat: options.elevenLabsFileFormat,
             elevenLabsEntityDetection: options.elevenLabsEntityDetection,
             elevenLabsKeyterms: options.elevenLabsKeyterms,
-            elevenLabsApiKeyExpiresAt: options.elevenLabsApiKeyExpiresAt
+            elevenLabsApiKeyExpiresAt: options.elevenLabsApiKeyExpiresAt,
+            // WhisperKit on-device tunables (added 2026-05-02).
+            whisperKitModel: options.whisperKitModel,
+            whisperKitLanguage: options.whisperKitLanguage,
+            whisperKitTask: options.whisperKitTask,
+            whisperKitTemperature: options.whisperKitTemperature,
+            whisperKitWordTimestamps: options.whisperKitWordTimestamps
         )
         do {
             return try TranscriptionProviderFactory.build(input)

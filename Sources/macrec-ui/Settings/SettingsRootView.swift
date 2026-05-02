@@ -19,6 +19,7 @@ import SwiftUI
 enum SettingsCategory: String, Identifiable, CaseIterable, Hashable {
     case general
     case permissions
+    case whisperkit
     case gemini
     case soniox
     case azure
@@ -33,6 +34,7 @@ enum SettingsCategory: String, Identifiable, CaseIterable, Hashable {
         switch self {
         case .general:       return String(localized: "General")
         case .permissions:   return String(localized: "Permissions")
+        case .whisperkit:    return String(localized: "WhisperKit (on-device)")
         case .gemini:        return String(localized: "Gemini")
         case .soniox:        return String(localized: "Soniox")
         case .azure:         return String(localized: "Azure OpenAI")
@@ -47,6 +49,7 @@ enum SettingsCategory: String, Identifiable, CaseIterable, Hashable {
         switch self {
         case .general:       return "gearshape"
         case .permissions:   return "checkmark.shield"
+        case .whisperkit:    return "cpu"
         case .gemini:        return "sparkles"
         case .soniox:        return "waveform.path"
         case .azure:         return "cloud"
@@ -92,6 +95,7 @@ struct SettingsRootView: View {
         switch category {
         case .general:       GeneralSettingsView()
         case .permissions:   PermissionsSettingsView()
+        case .whisperkit:    WhisperKitSettingsView()
         case .gemini:        GeminiSettingsView()
         case .soniox:        SonioxSettingsView()
         case .azure:         AzureBatchSettingsView()

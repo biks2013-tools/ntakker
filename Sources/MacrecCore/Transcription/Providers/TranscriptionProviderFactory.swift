@@ -50,6 +50,20 @@ public struct TranscriptionProviderFactoryInput: Sendable {
     public let elevenLabsKeyterms: [String]?
     public let elevenLabsApiKeyExpiresAt: Date?
 
+    // -- WhisperKit (on-device) fields (added 2026-05-02) --
+    /// WhisperKit-only model id override. Takes precedence over the
+    /// shared `modelId` for the WhisperKit dispatch arm only. `nil` →
+    /// provider default.
+    public let whisperKitModel: String?
+    /// Whisper bare ISO-639-1 language code. `nil` → auto-detect.
+    public let whisperKitLanguage: String?
+    /// `transcribe` (default) or `translate`. `nil` → `transcribe`.
+    public let whisperKitTask: String?
+    /// Decoding temperature `0.0...1.0`. `nil` → 0.
+    public let whisperKitTemperature: Float?
+    /// Word-level timestamps toggle. `nil` → false.
+    public let whisperKitWordTimestamps: Bool?
+
     public init(
         providerId: String,
         apiKey: String?,
@@ -75,7 +89,12 @@ public struct TranscriptionProviderFactoryInput: Sendable {
         elevenLabsFileFormat: String? = nil,
         elevenLabsEntityDetection: String? = nil,
         elevenLabsKeyterms: [String]? = nil,
-        elevenLabsApiKeyExpiresAt: Date? = nil
+        elevenLabsApiKeyExpiresAt: Date? = nil,
+        whisperKitModel: String? = nil,
+        whisperKitLanguage: String? = nil,
+        whisperKitTask: String? = nil,
+        whisperKitTemperature: Float? = nil,
+        whisperKitWordTimestamps: Bool? = nil
     ) {
         self.providerId = providerId
         self.apiKey = apiKey
@@ -102,6 +121,11 @@ public struct TranscriptionProviderFactoryInput: Sendable {
         self.elevenLabsEntityDetection = elevenLabsEntityDetection
         self.elevenLabsKeyterms = elevenLabsKeyterms
         self.elevenLabsApiKeyExpiresAt = elevenLabsApiKeyExpiresAt
+        self.whisperKitModel = whisperKitModel
+        self.whisperKitLanguage = whisperKitLanguage
+        self.whisperKitTask = whisperKitTask
+        self.whisperKitTemperature = whisperKitTemperature
+        self.whisperKitWordTimestamps = whisperKitWordTimestamps
     }
 }
 
@@ -164,14 +188,26 @@ public enum TranscriptionProviderFactory {
             // On-device, multilingual fallback for locales whose Apple
             // Speech asset is not downloadable (e.g. el-GR confirmed
             // unavailable on the user's Mac, 2026-04-29). No API key
-            // required. Honours `MACREC_TRANSCRIBE_MODEL` for picking
-            // a non-default model (e.g. a smaller `tiny` / `base` /
-            // `small` variant for lower-RAM machines). Bare model
-            // value passes through unchanged — the WhisperKit loader
-            // resolves the canonical HuggingFace model id.
-            let model = input.modelId ?? WhisperKitTranscriptionProvider.defaultModelName
+            // required.
+            //
+            // Model resolution precedence (added 2026-05-02):
+            //   1. WhisperKit-specific override `whisperKitModel`
+            //      (`MACREC_WHISPERKIT_MODEL`).
+            //   2. Shared `modelId` (`MACREC_TRANSCRIBE_MODEL`).
+            //   3. Provider default (`large-v3-v20240930_626MB`).
+            //
+            // The four other tunables (`language`, `task`, `temperature`,
+            // `wordTimestamps`) are forwarded as-is — the provider
+            // applies its own defaults when each is `nil`.
+            let model = input.whisperKitModel
+                ?? input.modelId
+                ?? WhisperKitTranscriptionProvider.defaultModelName
             return WhisperKitTranscriptionProvider(
                 modelName: model,
+                language: input.whisperKitLanguage,
+                task: input.whisperKitTask,
+                temperature: input.whisperKitTemperature,
+                wordTimestamps: input.whisperKitWordTimestamps,
                 logger: input.logger
             )
         case "soniox":

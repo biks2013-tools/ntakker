@@ -145,7 +145,7 @@ public final class RecordingController {
     /// key. SwiftUI's `@AppStorage("com.macrec.ui.transcriptionMode")`
     /// in the picker views writes to the same `UserDefaults.standard`
     /// slot this controller observes (mirroring §DT-9 / DT-ADR-13).
-    public static let transcriptionModeStorageKey: String = "com.macrec.ui.transcriptionMode"
+    public nonisolated static let transcriptionModeStorageKey: String = "com.macrec.ui.transcriptionMode"
 
     /// Mirror of the `@AppStorage("com.macrec.ui.transcriptionMode")`
     /// value, kept in sync via a `UserDefaults.didChangeNotification`
@@ -893,7 +893,14 @@ public final class RecordingController {
     /// `UserDefaults.standard`. Bad / missing values collapse to
     /// `.single` (matches `LiveTranscriptionMode`'s documented default
     /// — first launch and unparseable raw values).
-    private static func loadTranscriptionMode() -> LiveTranscriptionMode {
+    ///
+    /// Marked `nonisolated` (2026-05-02) — pure read against
+    /// `UserDefaults.standard` (itself thread-safe) with no
+    /// actor-isolated state touched. Lets the
+    /// `installTranscriptionModeObserver()` `@Sendable` closure call
+    /// it synchronously without the Swift 6 strict-concurrency
+    /// implicit-async-call warning.
+    private nonisolated static func loadTranscriptionMode() -> LiveTranscriptionMode {
         guard let raw = UserDefaults.standard.string(forKey: transcriptionModeStorageKey),
               let parsed = LiveTranscriptionMode(rawValue: raw)
         else {

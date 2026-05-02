@@ -61,6 +61,17 @@ public actor WhisperKitTranscriptionProvider: TranscriptionProvider {
     }
 
     private nonisolated let modelName: String
+    /// Optional language override (bare ISO-639-1, e.g. `en`, `el`).
+    /// `nil` → Whisper auto-detects per chunk.
+    private nonisolated let configuredLanguage: String?
+    /// Optional task override — `transcribe` (default) or `translate`.
+    /// `nil` → `transcribe`. Validated by the resolver before reaching
+    /// here, so any non-nil value is one of the two known strings.
+    private nonisolated let configuredTask: String?
+    /// Optional decoding temperature `0.0...1.0`. `nil` → 0 (verbatim).
+    private nonisolated let configuredTemperature: Float?
+    /// Word-timestamp toggle. `nil` → false.
+    private nonisolated let configuredWordTimestamps: Bool?
     private let logger: Logger
 
     /// The loaded pipeline. `nil` until the first `transcribe` call
@@ -78,9 +89,17 @@ public actor WhisperKitTranscriptionProvider: TranscriptionProvider {
         // expressions (Swift covariant-Self limitation), hence the
         // explicit type name here.
         modelName: String = WhisperKitTranscriptionProvider.defaultModelName,
+        language: String? = nil,
+        task: String? = nil,
+        temperature: Float? = nil,
+        wordTimestamps: Bool? = nil,
         logger: Logger = Logger(label: "macrec.transcription.whisperkit")
     ) {
         self.modelName = modelName
+        self.configuredLanguage = language
+        self.configuredTask = task
+        self.configuredTemperature = temperature
+        self.configuredWordTimestamps = wordTimestamps
         self.logger = logger
     }
 
@@ -179,22 +198,56 @@ public actor WhisperKitTranscriptionProvider: TranscriptionProvider {
     }
 
     /// Map the project's `TranscriptionOptions` onto WhisperKit's
-    /// `DecodingOptions`. The first language hint becomes the
-    /// `language` parameter (Whisper accepts the bare language code,
-    /// e.g. `"el"` not `"el-GR"`); empty hints leave WhisperKit's
-    /// auto-detect on. Temperature is pinned to 0 for verbatim
-    /// stability — the recorder's downstream coalescer relies on
-    /// repeatable text across chunks.
+    /// `DecodingOptions`.
+    ///
+    /// Resolution precedence (highest first):
+    ///   * `configuredLanguage` (`MACREC_WHISPERKIT_LANGUAGE` —
+    ///     persisted in the WhisperKit Settings panel) wins. Bare
+    ///     ISO-639-1 (e.g. `el`).
+    ///   * Else the first BCP-47 entry in `opts.languageHints` is
+    ///     truncated to its bare language part (`"el-GR"` → `"el"`).
+    ///   * Else WhisperKit auto-detects per chunk.
+    ///
+    /// Other configured knobs (`task`, `temperature`,
+    /// `wordTimestamps`) override the WhisperKit defaults whenever the
+    /// user has set them. Temperature defaults to `0` (verbatim,
+    /// lowest hallucination — the recorder's downstream coalescer
+    /// relies on repeatable text across chunks).
     private nonisolated func decodingOptions(
         from opts: TranscriptionOptions
     ) -> DecodingOptions {
         var d = DecodingOptions()
-        d.temperature = 0
-        if let primary = opts.languageHints.first,
-           let langPart = primary.split(separator: "-").first,
-           !langPart.isEmpty {
+        d.temperature = configuredTemperature ?? 0
+
+        if let lang = configuredLanguage, !lang.isEmpty {
+            d.language = lang
+        } else if let primary = opts.languageHints.first,
+                  let langPart = primary.split(separator: "-").first,
+                  !langPart.isEmpty {
             d.language = String(langPart).lowercased()
         }
+
+        // `task` is an enum on WhisperKit's `DecodingOptions`. We map
+        // the validated string from the resolver into the enum here
+        // so the provider stays the single source of truth on the
+        // mapping. `transcribe` is the WhisperKit default; we still
+        // assign explicitly so the value is observable in logs.
+        switch configuredTask?.lowercased() {
+        case "translate":
+            d.task = .translate
+        case "transcribe", nil:
+            d.task = .transcribe
+        default:
+            // Defensive — the resolver already validated this; treat
+            // an unknown value as `transcribe` so a stale .env entry
+            // can't break recording at runtime.
+            d.task = .transcribe
+        }
+
+        if let wt = configuredWordTimestamps {
+            d.wordTimestamps = wt
+        }
+
         return d
     }
 }
