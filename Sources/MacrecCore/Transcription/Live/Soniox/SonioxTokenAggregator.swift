@@ -52,6 +52,16 @@ public actor SonioxTokenAggregator {
     private var currentUtteranceId: UUID?
     private var buffer: [SonioxToken] = []
 
+    /// The diarisation label currently associated with the in-flight
+    /// utterance, or `nil` when no token in the active utterance has
+    /// carried a speaker yet. Adopted from the first non-nil token.
+    /// Carried through tokens with `speaker == nil`. Reset on marker
+    /// flush. A new non-nil token whose label DIFFERS from
+    /// `activeSpeaker` triggers an in-utterance flush so the
+    /// previous-speaker fragment is surfaced as its own `.final`
+    /// before the new speaker begins accumulating. (plan-012 Phase A4)
+    private var activeSpeaker: String?
+
     public init() {}
 
     /// Process one server-message batch. Returns events to emit.
@@ -90,6 +100,38 @@ public actor SonioxTokenAggregator {
                 continue
             }
 
+            // Speaker-boundary handling (plan-012 Phase A4):
+            // If THIS token carries a speaker AND we already have an
+            // active speaker AND they differ, flush the buffered
+            // material as a final tagged with the OLD speaker before
+            // we append the new token. This produces one
+            // `TranscriptSegment` per speaker even when the server
+            // does not insert an `<end>` marker between speakers.
+            if let incoming = token.speaker,
+               let active = activeSpeaker,
+               incoming != active {
+                if let event = flush(now: now) {
+                    events.append(event)
+                }
+                // flush() reset activeSpeaker; adopt the new label.
+                activeSpeaker = incoming
+                // The buffer was just emptied so the discard step is
+                // already satisfied for this batch — but we still need
+                // to make sure subsequent non-final tokens within the
+                // same batch see the discard flag set so we don't drop
+                // the just-appended new-speaker token on the next
+                // iteration.
+                didDiscardPriorNonFinals = true
+            } else if activeSpeaker == nil, let incoming = token.speaker {
+                // No active speaker yet — adopt the first non-nil
+                // label without flushing (the active partial has not
+                // had any speaker stamped yet).
+                activeSpeaker = incoming
+            }
+            // When token.speaker == nil we deliberately leave
+            // activeSpeaker untouched so the prevailing label keeps
+            // flowing through silent / unlabelled tokens.
+
             if !didDiscardPriorNonFinals {
                 // First new content token in this batch — the prior
                 // batch's non-finals are now stale. Finals stay
@@ -114,7 +156,8 @@ public actor SonioxTokenAggregator {
                 .partial(
                     utteranceId: id,
                     text: concatenatedText(buffer),
-                    confidence: lastConfidence
+                    confidence: lastConfidence,
+                    speaker: activeSpeaker
                 )
             )
         }
@@ -138,6 +181,7 @@ public actor SonioxTokenAggregator {
     private func flush(now: Date) -> StreamingTranscriptionEvent? {
         guard !buffer.isEmpty else {
             currentUtteranceId = nil
+            activeSpeaker = nil
             return nil
         }
         let id = currentUtteranceId ?? UUID()
@@ -152,16 +196,19 @@ public actor SonioxTokenAggregator {
         }
         let language = buffer.last?.language ?? "und"
         let range = computeRange(buffer: buffer, now: now)
+        let speaker = activeSpeaker
 
         let event = StreamingTranscriptionEvent.final(
             utteranceId: id,
             text: text,
             confidence: avgConfidence,
             range: range,
-            language: language
+            language: language,
+            speaker: speaker
         )
         buffer.removeAll(keepingCapacity: true)
         currentUtteranceId = nil
+        activeSpeaker = nil
         return event
     }
 

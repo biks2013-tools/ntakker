@@ -419,7 +419,8 @@ public actor AppleCloudStreamingSession: StreamingTranscriptionSession {
                     text: text,
                     confidence: nil,
                     range: openedAt...now,
-                    language: locale.identifier
+                    language: locale.identifier,
+                    speaker: nil
                 )
             )
             // Apple's task closes itself after a final; clear our
@@ -439,7 +440,8 @@ public actor AppleCloudStreamingSession: StreamingTranscriptionSession {
                 .partial(
                     utteranceId: utteranceId,
                     text: text,
-                    confidence: nil
+                    confidence: nil,
+                    speaker: nil
                 )
             )
         }

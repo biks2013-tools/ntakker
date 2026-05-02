@@ -35,7 +35,7 @@ final class SonioxTokenAggregatorTests: XCTestCase {
         )
         let events = await agg.ingest([tok])
         XCTAssertEqual(events.count, 1)
-        guard case let .partial(_, text, confidence) = events[0] else {
+        guard case let .partial(_, text, confidence, _) = events[0] else {
             return XCTFail("Expected .partial; got \(events[0])")
         }
         XCTAssertEqual(text, "hello")
@@ -53,7 +53,7 @@ final class SonioxTokenAggregatorTests: XCTestCase {
         let t3 = SonioxToken(text: " δούμε",       isFinal: false, confidence: 0.8, language: "el")
         let events = await agg.ingest([t1, t2, t3])
         XCTAssertEqual(events.count, 1, "expected exactly one partial per batch")
-        guard case let .partial(_, text, _) = events[0] else {
+        guard case let .partial(_, text, _, _) = events[0] else {
             return XCTFail("Expected .partial; got \(events[0])")
         }
         XCTAssertEqual(text, "Κάπως θα δούμε")
@@ -67,7 +67,7 @@ final class SonioxTokenAggregatorTests: XCTestCase {
         let endMarker = SonioxToken(text: "<end>", isFinal: true, confidence: 1.0)
         let events = await agg.ingest([t1, endMarker])
         XCTAssertEqual(events.count, 1)
-        guard case let .final(_, text, _, _, _) = events[0] else {
+        guard case let .final(_, text, _, _, _, _) = events[0] else {
             return XCTFail("Expected .final; got \(events[0])")
         }
         XCTAssertEqual(text, "hello")
@@ -80,7 +80,7 @@ final class SonioxTokenAggregatorTests: XCTestCase {
         let finMarker = SonioxToken(text: "<fin>", isFinal: true, confidence: 1.0)
         let events = await agg.ingest([t1, finMarker])
         XCTAssertEqual(events.count, 1)
-        guard case let .final(_, text, _, _, _) = events[0] else {
+        guard case let .final(_, text, _, _, _, _) = events[0] else {
             return XCTFail("Expected .final; got \(events[0])")
         }
         XCTAssertEqual(text, "yes")
@@ -102,7 +102,7 @@ final class SonioxTokenAggregatorTests: XCTestCase {
         // No interim partials are emitted on the same batch because the
         // marker fires before we'd emit a post-batch partial.
         XCTAssertEqual(events.count, 1, "expected one .final from the <end> marker; got \(events)")
-        guard case let .final(_, text, _, _, language) = events[0] else {
+        guard case let .final(_, text, _, _, language, _) = events[0] else {
             return XCTFail("Expected .final; got \(events[0])")
         }
         XCTAssertEqual(text, "hello world!")
@@ -133,7 +133,7 @@ final class SonioxTokenAggregatorTests: XCTestCase {
         let events = await agg.ingest(b4)
 
         XCTAssertEqual(events.count, 1)
-        guard case let .final(_, text, _, _, _) = events[0] else {
+        guard case let .final(_, text, _, _, _, _) = events[0] else {
             return XCTFail("Expected .final; got \(events[0])")
         }
         // CRITICAL — must be ONLY the latest revision, not the
@@ -168,7 +168,7 @@ final class SonioxTokenAggregatorTests: XCTestCase {
         let events = await agg.ingest([SonioxToken(text: "<end>", isFinal: true, confidence: 1.0)])
 
         XCTAssertEqual(events.count, 1)
-        guard case let .final(_, text, _, _, _) = events[0] else {
+        guard case let .final(_, text, _, _, _, _) = events[0] else {
             return XCTFail("Expected .final; got \(events[0])")
         }
         // Committed finals: "Hello" + " world" + " are you"
@@ -205,7 +205,7 @@ final class SonioxTokenAggregatorTests: XCTestCase {
         XCTAssertEqual(e3.count, 1)
 
         let texts: [String] = [e1, e2, e3].compactMap { batch in
-            guard case let .final(_, text, _, _, _) = batch[0] else { return nil }
+            guard case let .final(_, text, _, _, _, _) = batch[0] else { return nil }
             return text
         }
         XCTAssertEqual(texts, ["first", "second", "third"])
@@ -229,7 +229,7 @@ final class SonioxTokenAggregatorTests: XCTestCase {
         ])
         let drained = await agg.drain()
         XCTAssertEqual(drained.count, 1)
-        guard case let .final(_, text, _, _, _) = drained[0] else {
+        guard case let .final(_, text, _, _, _, _) = drained[0] else {
             return XCTFail("Expected .final from drain; got \(drained[0])")
         }
         // Drain emits both finals AND the still-pending non-final

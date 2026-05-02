@@ -245,7 +245,7 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
             partialsByItem[payload.itemId] = accumulated
             let utteranceId = utteranceIdFor(itemId: payload.itemId)
             metrics.partialsEmitted += 1
-            await emit(.partial(utteranceId: utteranceId, text: accumulated, confidence: nil))
+            await emit(.partial(utteranceId: utteranceId, text: accumulated, confidence: nil, speaker: nil))
 
         case .transcriptionCompleted(let payload):
             let utteranceId = utteranceIdFor(itemId: payload.itemId)
@@ -258,7 +258,8 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
                 text: payload.transcript,
                 confidence: nil,
                 range: now...now,
-                language: language
+                language: language,
+                speaker: nil
             ))
 
         case .transcriptionFailed(let payload):

@@ -190,7 +190,7 @@ final actor StreamingTranscriptionPipeline {
     private func handle(_ event: StreamingTranscriptionEvent,
                         from tag: SourceTag) async {
         switch event {
-        case .partial(let uttId, let text, let conf):
+        case .partial(let uttId, let text, let conf, let speaker):
             if let idx = indexForUtteranceId[uttId] {
                 let seg = TranscriptSegment(
                     id: uttId,
@@ -198,7 +198,8 @@ final actor StreamingTranscriptionPipeline {
                     text: text,
                     source: tag,
                     confidence: conf,
-                    model: provider.id
+                    model: provider.id,
+                    speaker: speaker
                 )
                 eventsContinuation?.yield(.segmentUpdated(index: idx, segment: seg))
             } else {
@@ -211,12 +212,13 @@ final actor StreamingTranscriptionPipeline {
                     text: text,
                     source: tag,
                     confidence: conf,
-                    model: provider.id
+                    model: provider.id,
+                    speaker: speaker
                 )
                 eventsContinuation?.yield(.segmentAppended(index: idx, segment: seg))
             }
 
-        case .final(let uttId, let text, let conf, let range, let language):
+        case .final(let uttId, let text, let conf, let range, let language, let speaker):
             let idx: Int
             if let existing = indexForUtteranceId[uttId] {
                 idx = existing
@@ -235,7 +237,8 @@ final actor StreamingTranscriptionPipeline {
                 confidence: conf,
                 model: provider.id,
                 durationSec: durationSec,
-                language: language
+                language: language,
+                speaker: speaker
             )
             eventsContinuation?.yield(.segmentFinalized(index: idx, segment: seg))
             await sidecarWriter?.write(.segmentFinalized(index: idx, segment: seg))

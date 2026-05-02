@@ -383,13 +383,14 @@ struct DualTranscriptionManagerFailureIsolationTests {
 
         // Step 2: Channel B emits a partial AFTER Channel A has errored.
         let utteranceId = UUID()
-        await sessionB.push(.partial(utteranceId: utteranceId, text: "gamma", confidence: 0.6))
+        await sessionB.push(.partial(utteranceId: utteranceId, text: "gamma", confidence: 0.6, speaker: nil))
         await sessionB.push(.final(
             utteranceId: utteranceId,
             text: "gamma delta",
             confidence: 0.9,
             range: Date()...Date(),
-            language: "el-GR"
+            language: "el-GR",
+            speaker: nil
         ))
 
         try await Task.sleep(for: .milliseconds(100))
@@ -539,13 +540,13 @@ struct DualTranscriptionManagerFailureIsolationTests {
 
         // Push multiple Channel B events AFTER Channel A fully closed.
         let id1 = UUID()
-        await sessionB.push(.partial(utteranceId: id1, text: "alpha", confidence: 0.5))
+        await sessionB.push(.partial(utteranceId: id1, text: "alpha", confidence: 0.5, speaker: nil))
         await sessionB.push(.final(utteranceId: id1, text: "alpha beta", confidence: 0.9,
-                                   range: Date()...Date(), language: "el-GR"))
+                                   range: Date()...Date(), language: "el-GR", speaker: nil))
         let id2 = UUID()
-        await sessionB.push(.partial(utteranceId: id2, text: "gamma", confidence: 0.4))
+        await sessionB.push(.partial(utteranceId: id2, text: "gamma", confidence: 0.4, speaker: nil))
         await sessionB.push(.final(utteranceId: id2, text: "gamma delta", confidence: 0.85,
-                                   range: Date()...Date(), language: "el-GR"))
+                                   range: Date()...Date(), language: "el-GR", speaker: nil))
 
         try await Task.sleep(for: .milliseconds(150))
 

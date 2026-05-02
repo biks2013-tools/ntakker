@@ -49,7 +49,7 @@ struct AppleSpeechSessionReconciliationTests {
         var finals: [String] = []
         var winnerLanguage: String?
         for await ev in session.events {
-            if case .final(_, let text, _, _, let lang) = ev {
+            if case .final(_, let text, _, _, let lang, _) = ev {
                 finals.append(text)
                 winnerLanguage = lang
             }
@@ -77,7 +77,7 @@ struct AppleSpeechSessionReconciliationTests {
 
         var sawPartial = false
         for await ev in session.events {
-            if case .partial(_, let text, _) = ev, text == "hello" {
+            if case .partial(_, let text, _, _) = ev, text == "hello" {
                 sawPartial = true
             }
         }

@@ -172,7 +172,7 @@ public actor AppleSpeechTranscriptionProvider: TranscriptionProvider {
         await session.finish()
         var collected = ""
         for await event in session.events {
-            if case .final(_, let text, _, _, _) = event {
+            if case .final(_, let text, _, _, _, _) = event {
                 collected += (collected.isEmpty ? "" : " ") + text
             }
         }
@@ -261,7 +261,8 @@ final class AppleSpeechSession: StreamingTranscriptionSession, @unchecked Sendab
                 .partial(
                     utteranceId: Self.utteranceIdToUUID(utteranceId),
                     text: result.text,
-                    confidence: result.confidence
+                    confidence: result.confidence,
+                    speaker: nil
                 )
             )
             return
@@ -325,7 +326,8 @@ final class AppleSpeechSession: StreamingTranscriptionSession, @unchecked Sendab
                 text: winner.result.text,
                 confidence: winner.result.confidence,
                 range: range,
-                language: winner.locale.identifier
+                language: winner.locale.identifier,
+                speaker: nil
             )
         )
     }

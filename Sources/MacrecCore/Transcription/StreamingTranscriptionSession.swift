@@ -64,16 +64,27 @@ public protocol StreamingTranscriptionSession: Sendable {
 /// language tag (BCP-47), and any provider-supplied confidence.
 public enum StreamingTranscriptionEvent: Sendable {
     /// Volatile partial for an in-flight utterance.
-    case partial(utteranceId: UUID, text: String, confidence: Float?)
+    ///
+    /// `speaker` carries the diarisation label for the active utterance
+    /// when the provider supports it (Soniox `spk:N` after plan-012
+    /// Phase A). Providers without diarisation pass `nil`.
+    case partial(utteranceId: UUID,
+                 text: String,
+                 confidence: Float?,
+                 speaker: String?)
 
     /// Stable final for `utteranceId`. Subsequent partials with the
     /// same id MUST NOT be emitted by the provider; subsequent
     /// utterances arrive with a fresh id.
+    ///
+    /// `speaker` carries the diarisation label for the utterance when
+    /// the provider supports it; `nil` otherwise.
     case final(utteranceId: UUID,
                text: String,
                confidence: Float?,
                range: ClosedRange<Date>,
-               language: String)
+               language: String,
+               speaker: String?)
 
     /// Snapshot of the per-session streaming metrics. Caller receives
     /// these on the same channel as transcript events so a single
