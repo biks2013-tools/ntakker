@@ -635,7 +635,12 @@ public final class RecordingController {
     /// `segmentUpdated`, and replaces `providerStateChange` /
     /// `sessionEnded` with `metricsTick` + the manager's final tick at
     /// `stop()`.
-    private func applyTranscriptionEvent(_ event: TranscriptionEvent) {
+    ///
+    /// Access is `internal` (not `private`) so the unit-test target can
+    /// drive the controller via `@testable import MacrecUIKit` — see
+    /// `RecordingControllerLongSessionTests`. Production callers MUST
+    /// continue to go through the events-forwarder loop.
+    internal func applyTranscriptionEvent(_ event: TranscriptionEvent) {
         switch event {
         case let .segmentAppended(index, segment):
             logger.info("transcript event: segmentAppended idx=\(index) text='\(segment.text.prefix(40))…' total=\(transcriptSegments.count + 1)")
@@ -709,52 +714,72 @@ public final class RecordingController {
         }
     }
 
-    /// Append a coalesced segment, capping at
-    /// `maxLiveTranscriptSegments` (drop-oldest). The sidecar file
-    /// remains the persistent record for everything we drop.
-    ///
-    /// The `index` payload is the manager's authoritative position.
-    /// Under normal operation it is `transcriptSegments.count`; we
-    /// honour explicit indices defensively in case events arrive out of
-    /// order under load.
+    // MARK: - Segment store
+    //
+    // The streaming pipeline emits monotonic absolute indices
+    // (`StreamingTranscriptionPipeline.nextSegmentIndex` keeps growing
+    // for the lifetime of the session). The previous implementation
+    // treated those indices as positions inside this length-capped
+    // array — once the cap engaged (~100 utterances ≈ 8–12 min on
+    // Soniox cadence), every absolute index >= count produced a
+    // duplicate row: the first partial appended at the end, subsequent
+    // partials silently no-oped (`index < count` was false), and the
+    // final appended a *second* row. The user observed this as "each
+    // line rendered twice" plus accelerated eviction of older content.
+    //
+    // The fix keys the store on `TranscriptSegment.id` (the utterance
+    // UUID, which is identical across `.segmentAppended`,
+    // `.segmentUpdated`, and `.segmentFinalized` for the same
+    // utterance — see `StreamingTranscriptionPipeline.handle(_:)`).
+    // The `index` payload is now advisory (kept in the signature so
+    // call sites are unchanged); routing decisions are made by id.
+
+    /// Append a new segment, or replace an existing entry that already
+    /// carries the same `id`. The rolling cap is enforced after each
+    /// mutation. The sidecar file remains the persistent record for
+    /// everything dropped from the head.
     private func appendOrInsertSegment(at index: Int, segment: TranscriptSegment) {
-        if index == transcriptSegments.count {
-            transcriptSegments.append(segment)
-        } else if index >= 0 && index < transcriptSegments.count {
-            // An out-of-order event; treat as an in-place update.
-            transcriptSegments[index] = segment
+        _ = index  // advisory — segment.id is the source of truth
+        if let existing = transcriptSegments.firstIndex(where: { $0.id == segment.id }) {
+            transcriptSegments[existing] = segment
         } else {
-            // Index past the end (gap) — pad with the segment so the
-            // panel still renders something meaningful.
             transcriptSegments.append(segment)
         }
+        enforceSegmentCap()
+    }
+
+    /// Replace an existing entry that already carries the same `id`.
+    /// No-op when the segment has already been evicted by the rolling
+    /// cap (subsequent partials for an evicted utterance are silently
+    /// dropped — the sidecar file still records them).
+    private func updateSegment(at index: Int, segment: TranscriptSegment) {
+        _ = index
+        if let existing = transcriptSegments.firstIndex(where: { $0.id == segment.id }) {
+            transcriptSegments[existing] = segment
+        }
+    }
+
+    /// Plan-005 Phase H: replace the entry carrying `segment.id` with
+    /// its finalised counterpart (non-nil `durationSec`, populated
+    /// `language` tag). Falls back to `append` when the row was already
+    /// evicted — the late-arriving final still surfaces in the panel
+    /// instead of being dropped silently.
+    private func finalizeSegment(at index: Int, segment: TranscriptSegment) {
+        _ = index
+        if let existing = transcriptSegments.firstIndex(where: { $0.id == segment.id }) {
+            transcriptSegments[existing] = segment
+        } else {
+            transcriptSegments.append(segment)
+            enforceSegmentCap()
+        }
+    }
+
+    /// Drop the oldest segments until `transcriptSegments.count` no
+    /// longer exceeds `maxLiveTranscriptSegments`.
+    private func enforceSegmentCap() {
         if transcriptSegments.count > Self.maxLiveTranscriptSegments {
             let overflow = transcriptSegments.count - Self.maxLiveTranscriptSegments
             transcriptSegments.removeFirst(overflow)
-        }
-    }
-
-    /// Replace the segment at `index` with the updated value. No-op if
-    /// the index is out of range — the cap may have already evicted it.
-    private func updateSegment(at index: Int, segment: TranscriptSegment) {
-        guard index >= 0 && index < transcriptSegments.count else { return }
-        transcriptSegments[index] = segment
-    }
-
-    /// Plan-005 Phase H: replace the segment at `index` with its
-    /// finalised counterpart (non-nil `durationSec`, populated
-    /// `language` tag). Falls back to `append` when the index is past
-    /// the end so the row still renders even if the upstream
-    /// `segmentAppended` was lost or evicted by the drop-oldest cap.
-    private func finalizeSegment(at index: Int, segment: TranscriptSegment) {
-        if index >= 0 && index < transcriptSegments.count {
-            transcriptSegments[index] = segment
-        } else {
-            transcriptSegments.append(segment)
-            if transcriptSegments.count > Self.maxLiveTranscriptSegments {
-                let overflow = transcriptSegments.count - Self.maxLiveTranscriptSegments
-                transcriptSegments.removeFirst(overflow)
-            }
         }
     }
 

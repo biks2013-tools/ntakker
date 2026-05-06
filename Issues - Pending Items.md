@@ -6,6 +6,28 @@
 
 ## Pending items (most critical first)
 
+### ENV-PENDING-1 — `swift test` blocked by missing PreviewsMacros plugin in CommandLineTools (important — testing only)
+Multiple `#Preview { … }` macro blocks in the `macrec-ui` executable target (`Sources/macrec-ui/Views/Transcription/ApiKeyStatusChip.swift:32`, `…/ApiKeyStatusRow.swift:134,146`, `…/Header/AppearanceSwitcher.swift:97`, `…/Settings/Sections/GeneralSettingsView.swift:48`, and several more) fail to expand with `external macro implementation type 'PreviewsMacros.SwiftUIView' could not be found for macro 'Preview(_:body:)'; plugin for module 'PreviewsMacros' not found`. The plugin ships with full Xcode but not with the bare CommandLineTools toolchain currently configured on this Mac. Effect: `swift test` (which builds the whole package) fails before any test bundle is linked. Workarounds: (a) install/select a full Xcode (`xcode-select -p` should point at `Xcode.app/Contents/Developer`), or (b) wrap the offending `#Preview` blocks in `#if DEBUG && canImport(SwiftUICore)` or behind a `// swift-format-ignore` and gate them on a `PREVIEWS` swift-setting flag. `swift build --target MacrecUIKit` still succeeds, so library-level work and ad-hoc compile checks on the `MacrecUIKit` / `MacrecCore` targets are unaffected. Severity: important — only blocks the automated test runner, not production code.
+
+### SONIOX-DONE-DUP-2026-05-06 (RESOLVED 2026-05-06) — Soniox live transcript: each line rendered twice + gradual stream loss after ~10 minutes
+**Background.** During Soniox-backed live transcription the popover panel started rendering each new utterance twice once the session passed roughly 100 utterances (≈ 8–12 min on Soniox's natural-pause cadence), and older content was evicted from the rolling 100-segment window at ~2× the expected rate ("losing portions of the stream").
+
+**Root cause.** `Sources/MacrecUIKit/RecordingController.swift` was routing `.segmentAppended` / `.segmentUpdated` / `.segmentFinalized` events by the `index` payload, which the streaming pipeline (`Sources/MacrecCore/Transcription/StreamingTranscriptionPipeline.swift:59,207,226-228`) generates as a *monotonic absolute* counter. Once `transcriptSegments.count == maxLiveTranscriptSegments` (100), every event with `index >= count` triggered an `append` for the first partial AND another `append` for the eventual final, doubling the row count per utterance and corrupting `Identifiable.id` uniqueness in `LiveTranscriptPanel`'s `ForEach`.
+
+**Fix landed.**
+- `RecordingController.appendOrInsertSegment(at:segment:)`, `updateSegment(at:segment:)`, `finalizeSegment(at:segment:)` now key on `TranscriptSegment.id` (the utterance UUID, stable across the partial→final lifecycle) instead of the absolute index. The `index` parameter is now advisory; signatures are unchanged so call sites stay intact.
+- `applyTranscriptionEvent(_:)` access bumped from `private` to `internal` so the test target can drive long-session sequences via `@testable import MacrecUIKit`.
+- `enforceSegmentCap()` extracted as a single helper used by all three mutation paths.
+
+**Regression coverage.** New `Tests/MacrecUITests/RecordingControllerLongSessionTests.swift` drives ≥ `maxLiveTranscriptSegments + 25` synthetic utterances (each: partial → revised partial → final) and asserts:
+- below cap, every utterance ends as a single FINAL row;
+- past cap, no duplicate `id` entries in `transcriptSegments`;
+- past cap, every retained row carries the FINAL text + `durationSec` (no stale partials);
+- past cap, late `.segmentUpdated` for an evicted utterance is a silent no-op;
+- past cap, late `.segmentFinalized` for an evicted utterance re-appears once at the tail with the final text.
+
+End-to-end `swift test` execution is currently gated by ENV-PENDING-1 above; the user is verifying the fix in real use.
+
 ### PLAN-011-CC-PENDING-5 — convo-coach `Unknown model` warning for current models (cosmetic)
 The `model-context-windows.ts` lookup table does not include several current models (notably `gpt-5.1`, `gpt-5`, `gpt-5-mini`). When the user passes `--model gpt-5.1` the budget guard logs `Unknown model 'gpt-5.1' — assuming 8000-token context window` and falls back to a conservative 8000-token budget. Advice still works (the budget guard truncates more aggressively than necessary), but the warning is noisy and the truncation may be over-aggressive on long transcripts. Recommendation: extend the table with current OpenAI / Anthropic / Google model IDs in a small follow-up. Severity: cosmetic (no functional impact for short transcripts).
 
