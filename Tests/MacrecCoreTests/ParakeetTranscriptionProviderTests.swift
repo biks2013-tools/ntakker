@@ -51,6 +51,35 @@ struct ParakeetTranscriptionProviderTests {
         #expect(result.isEmpty)
     }
 
+    /// Regression for "Parakeet transcribe error: Invalid audio data
+    /// provided. Must be at least 1 second of 16kHz audio." — FluidAudio's
+    /// `AsrTranscription.swift:11` requires at least 16_000 samples. Our
+    /// guard MUST short-circuit before that point or FluidAudio raises
+    /// `ASRError.invalidAudioData` (which our code re-wraps as
+    /// `transcriptionProviderUnavailable`). This case used to pass the
+    /// 6_400-threshold guard and reach FluidAudio.
+    @Test("transcribe returns empty for chunks shorter than 1 second (FluidAudio's minimum)")
+    func belowOneSecondThreshold() async throws {
+        let p = ParakeetTranscriptionProvider(logger: Logger(label: "t"))
+        // Boundary cases that previously fell INTO the buggy gap
+        // (6_400 ≤ count < 16_000): the old guard passed them through,
+        // FluidAudio rejected them. Both must short-circuit to "".
+        for count in [6_400, 8_000, 12_000, 15_999] {
+            let result = try await p.transcribe(
+                samples: [Float](repeating: 0, count: count),
+                source: .system,
+                options: TranscriptionOptions(
+                    providerId: "parakeet",
+                    apiKey: nil,
+                    modelId: nil,
+                    customSystemInstruction: nil,
+                    keyExpiresAt: nil
+                )
+            )
+            #expect(result.isEmpty, "Sub-1s chunk (\(count) samples) must short-circuit before reaching FluidAudio")
+        }
+    }
+
     @Test("displayName surfaces the model id")
     func displayNameMentionsModel() {
         let p = ParakeetTranscriptionProvider(logger: Logger(label: "t"))

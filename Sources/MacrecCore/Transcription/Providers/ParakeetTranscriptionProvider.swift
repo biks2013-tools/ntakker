@@ -82,9 +82,16 @@ public actor ParakeetTranscriptionProvider: TranscriptionProvider {
         // FluidAudio's Parakeet pipeline operates on 16 kHz mono Float
         // samples. Sub-threshold input is treated as silence per the
         // protocol contract ("Returns "" for non-speech input — does
-        // NOT throw"). Threshold mirrors WhisperKit's 6_400 (~400 ms
-        // @ 16 kHz).
-        guard samples.count >= 6_400 else { return "" }
+        // NOT throw"). The threshold MUST match FluidAudio's own
+        // minimum at AsrTranscription.swift:11 — `audioSamples.count
+        // >= 16_000` — otherwise short chunks (typically the first
+        // drain after recording start, when the buffer has only ~400
+        // ms accumulated) reach FluidAudio and trigger
+        // `ASRError.invalidAudioData("Must be at least 1 second of
+        // 16kHz audio.")`. Mirroring WhisperKit's 6_400 (~400 ms) here
+        // is wrong for Parakeet — WhisperKit accepts shorter input,
+        // FluidAudio does not. Use 16_000 (1 second @ 16 kHz).
+        guard samples.count >= 16_000 else { return "" }
 
         let manager: AsrManager
         do {
