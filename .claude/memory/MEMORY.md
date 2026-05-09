@@ -1,0 +1,2 @@
+- [Swift exception for recording-tool](project_swift_exception.md) — recording-tool is Swift not TypeScript; system-audio capture needs ScreenCaptureKit + AVFoundation
+- [Autonomous commits during plan execution](feedback_autonomous_commits.md) — when running a written multi-task plan, commit after each task without per-commit confirmation
