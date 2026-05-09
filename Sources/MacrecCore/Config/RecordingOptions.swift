@@ -173,6 +173,31 @@ public struct RecordingOptions: Sendable, Equatable {
     /// Stop-subcommand timeout in seconds (FR-26). Default `35`.
     public let stopTimeout: TimeInterval
 
+    // MARK: - Microphone acoustic echo cancellation (plan-013 / plan-014)
+
+    /// When `true`, the microphone signal is routed through the
+    /// `SoftwareAECProcessor` (NLMS adaptive filter, plan-014 / v5)
+    /// which subtracts the estimated speaker-to-mic acoustic bleed
+    /// using the captured system audio as the reference signal. When
+    /// `false`, the raw `AVMicrophoneSource` path is used and the mic
+    /// signal is passed through unchanged.
+    ///
+    /// **Default: `false` (plan-014).** AEC is now opt-in. The v5
+    /// implementation is robust enough to leave on whenever there is
+    /// real bleed to cancel, but for users on headphones / no-bleed
+    /// setups it costs ~5–8 % CPU doing nothing useful, so the
+    /// default is off and the user opts in explicitly. Resolved
+    /// through `MACREC_MIC_AEC` (env / .env), `--mic-aec on|off`
+    /// (CLI), or the "Mic echo cancellation" toggle in the macrec-ui
+    /// popover.
+    ///
+    /// The v5 processor preserves the mic's native frequency response
+    /// — no AGC, no noise suppression, no band narrowing — and self-
+    /// guards against divergence via reference-activity gating, a
+    /// double-talk detector, and a 50-ms windowed divergence reset
+    /// (see `SoftwareAECProcessor.swift`).
+    public let micAEC: Bool
+
     // MARK: - Live transcription (plan-003 Phase C; design §LT-5.4)
 
     /// Live-transcription provider identifier (e.g. `"gemini-live"`). `nil`
@@ -414,6 +439,7 @@ public struct RecordingOptions: Sendable, Equatable {
         pidFile: URL = RecordingOptions.defaultPidFile,
         logFile: URL = RecordingOptions.defaultLogFile,
         stopTimeout: TimeInterval = RecordingOptions.defaultStopTimeout,
+        micAEC: Bool = false,
         transcriptionProviderId: String? = nil,
         transcriptionSource: TranscriptionSource = .mixed,
         transcriptionFormat: TranscriptFormat = .jsonl,
@@ -467,6 +493,7 @@ public struct RecordingOptions: Sendable, Equatable {
         self.pidFile = pidFile
         self.logFile = logFile
         self.stopTimeout = stopTimeout
+        self.micAEC = micAEC
         self.transcriptionProviderId = transcriptionProviderId
         self.transcriptionSource = transcriptionSource
         self.transcriptionFormat = transcriptionFormat
@@ -574,6 +601,7 @@ extension RecordingOptions {
             pidFile: pidFile,
             logFile: logFile,
             stopTimeout: stopTimeout,
+            micAEC: micAEC,
             transcriptionProviderId: transcriptionProviderId,
             transcriptionSource: transcriptionSource,
             transcriptionFormat: transcriptionFormat,

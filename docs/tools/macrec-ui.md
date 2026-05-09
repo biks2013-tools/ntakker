@@ -196,6 +196,59 @@
         `AVCaptureDeviceWasDisconnectedNotification`. Disabled while
         recording.
 
+        ### Mic echo cancellation toggle (plan-013, revised; plan-014)
+
+        Sits directly under the microphone device picker. SwiftUI
+        `Toggle` bound to the `@AppStorage("com.macrec.ui.micAEC")`
+        slot — **defaults to off (plan-014)**. When on, the popover
+        composes `RecordingOptions(micAEC: true)` at start-time,
+        which causes `RecordingSession.run()` to construct a
+        `SoftwareAECProcessor` (v5) wired between the existing capture
+        sources and the aligner. When off, the processor is not
+        constructed and the mic and system buffers go directly to the
+        aligner exactly as they did pre-plan-013. The mic source is
+        always `AVMicrophoneSource` (the `AVCaptureSession`-backed
+        path) regardless of the toggle's state. Persistence is
+        automatic — the toggle remembers its last state across
+        popover dismissals and process relaunches.
+
+        The custom software AEC, when enabled, eliminates the
+        system-audio bleed that the built-in mic would otherwise pick
+        up from the speakers (the long-standing "I can hear my
+        Spotify on the mic channel" problem in `--layout split` /
+        `stereo-split` recordings) by running an NLMS adaptive filter
+        against the captured system-audio reference signal. Unlike
+        Apple's voice-processing AEC (which the original plan-013
+        attempt used and which turned out to be incompatible with
+        this project's `SCStream` capture), the software path:
+
+          - Preserves the native mic frequency response (no band
+            narrowing).
+          - Does not apply AGC or noise suppression — quiet voice
+            stays quiet, ambient room tone is captured as-is.
+          - Needs 3–10 s (speech / music) to converge from cold start
+            with v5's calmer μ=0.01 step. After convergence the
+            residual bleed stabilises 15–25 dB below the uncancelled
+            level.
+          - Self-guards via PTS-aligned reference windowing, a
+            reference-activity gate (no adapt during system silence),
+            a double-talk detector (no adapt while mic dominates
+            ref), a 50 ms windowed divergence reset, and a soft-knee
+            output limiter (see plan-014 §2 for the full layer
+            description).
+
+        For music capture or any workflow where the convergence
+        delay matters, turn the toggle off; that records the raw
+        mic verbatim. The toggle's help text carries the same
+        guidance.
+
+        Locked while recording. Flipping the toggle mid-session has
+        no effect on the in-flight recording — the AEC processor is
+        constructed from the immutable `RecordingOptions` snapshot
+        at `run()` — so the control is disabled until `state`
+        returns to `.idle` / `.stopped` / `.failed`. Stop, flip,
+        click Start to apply.
+
         ### Level meters (FR-43)
 
         Two horizontal bars side by side (system-audio submix and

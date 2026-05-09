@@ -30,6 +30,12 @@ struct GeneralSection: View {
             FormatPicker()
             LayoutPicker()
             MicrophonePicker()
+            // plan-013 — Apple voice-processing AEC toggle. Sits
+            // directly under the microphone row because it is a mic-
+            // capture concern. AppStorage key `com.macrec.ui.micAEC`,
+            // default `true`. Read at `start()` by `ControlBar` and
+            // forwarded into `RecordingOptions.micAEC`.
+            MicEchoCancellationToggle()
         }
     }
 }

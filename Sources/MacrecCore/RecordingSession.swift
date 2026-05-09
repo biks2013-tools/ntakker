@@ -232,6 +232,12 @@ public final class RecordingSession: @unchecked Sendable {
 
     private var _systemSource: (any SystemAudioSource)?
     private var _micSource: (any MicrophoneSource)?
+    /// plan-013 (revised) — software AEC processor. Constructed in
+    /// `run()` only when `options.micAEC == true`; nil otherwise. Held
+    /// for the lifetime of the session so its NLMS-filter state
+    /// converges across the whole recording instead of restarting per
+    /// buffer. Released when `run()` exits.
+    private var _aecProcessor: SoftwareAECProcessor?
 
     /// Optional side-channel for per-source level metering.
     /// `RecordingController` sets this to forward each captured
@@ -423,12 +429,28 @@ public final class RecordingSession: @unchecked Sendable {
             channelCount: 2,
             logger: LoggerFactory.make("macrec.capture.system")
         )
+        // plan-013 (revised) — `AVMicrophoneSource` is the only mic
+        // source. The previous plan-013 attempt used `AVAudioEngine`
+        // + `setVoiceProcessingEnabled(true)` to get Apple's AEC, but
+        // that path's underlying `AUVoiceProcessingIO` audio unit
+        // could not coexist with our `SCStream` system-audio capture
+        // (HAL conflict: VP IO needs unobstructed access to the system
+        // OUTPUT device for its AEC reference; SCStream taps the same
+        // mix). Symptom: VP delivered exactly one warm-up buffer and
+        // then halted permanently. The current AEC path is a custom
+        // software adaptive filter (`SoftwareAECProcessor`) wired
+        // downstream of this source — see `SoftwareAECProcessor.swift`
+        // and the wiring further down in `run()` — so the mic source
+        // itself stays the proven `AVCaptureSession` path.
         let micSource: any MicrophoneSource = injectedMicSource ?? AVMicrophoneSource(
             deviceQuery: options.micDevice,
             targetSampleRate: options.sampleRate,
             targetChannelCount: 2,
             logger: LoggerFactory.make("macrec.capture.mic")
         )
+        if injectedMicSource == nil {
+            logger.info("mic source = AVMicrophoneSource (AEC processor=\(options.micAEC ? "on" : "off"))")
+        }
 
         // ---- Step 5: aligner. ----
         let aligner = HostClockAligner(
@@ -449,6 +471,24 @@ public final class RecordingSession: @unchecked Sendable {
             throw error
         }
 
+        // ---- Step 6b: AEC processor (plan-013 revised). ----
+        //
+        // When `options.micAEC == true`, build a `SoftwareAECProcessor`
+        // that sits between the mic source and the aligner. Its NLMS
+        // adaptive filter takes the system-audio buffers as the
+        // reference and subtracts the estimated echo from the mic
+        // signal. The processor's `onCleanedMic` becomes the new
+        // entry point into `aligner.ingest` for the mic side; the
+        // system source is teed (still feeds the aligner directly,
+        // and additionally feeds the processor's reference).
+        let aecProcessor: SoftwareAECProcessor? = options.micAEC ? SoftwareAECProcessor(
+            config: SoftwareAECProcessor.Configuration(
+                channels: 2,
+                sampleRate: Double(options.sampleRate)
+            ),
+            logger: LoggerFactory.make("macrec.aec")
+        ) : nil
+
         // Stash so `requestStop` / signal handlers can reach them.
         // The recorder lives behind `_recorderLock` (project-design
         // §15.3.2 / AMB-2) so the aligner-frame callback can read it
@@ -457,18 +497,42 @@ public final class RecordingSession: @unchecked Sendable {
             self._aligner = aligner
             self._systemSource = systemSource
             self._micSource = micSource
+            self._aecProcessor = aecProcessor
         }
         _recorderLock.withLock { current in
             current = recorder
         }
 
         // ---- Step 7: wire callbacks. ----
-        // Source → aligner.
-        systemSource.onSampleBuffer = { [weak aligner] cb in
-            aligner?.ingest(cb)
-        }
-        micSource.onSampleBuffer = { [weak aligner] cb in
-            aligner?.ingest(cb)
+        // Source → aligner (and AEC reference, when enabled).
+        if let aec = aecProcessor {
+            // AEC's cleaned-mic output feeds the aligner.
+            aec.onCleanedMic = { [weak aligner] cb in
+                aligner?.ingest(cb)
+            }
+            // System buffers fan out to BOTH the aligner (recorded as
+            // the system track) and the AEC reference. The two paths
+            // are independent — the aligner stores the system buffer
+            // verbatim while the processor copies the samples into
+            // its reference ring.
+            systemSource.onSampleBuffer = { [weak aligner, weak aec] cb in
+                aligner?.ingest(cb)
+                aec?.feedReference(cb)
+            }
+            // Mic buffers go through the AEC processor instead of
+            // directly to the aligner. The processor calls
+            // `onCleanedMic` synchronously on the mic capture queue,
+            // so end-to-end latency is unchanged.
+            micSource.onSampleBuffer = { [weak aec] cb in
+                aec?.processMic(cb)
+            }
+        } else {
+            systemSource.onSampleBuffer = { [weak aligner] cb in
+                aligner?.ingest(cb)
+            }
+            micSource.onSampleBuffer = { [weak aligner] cb in
+                aligner?.ingest(cb)
+            }
         }
         // Source → level meter (optional). The sink is set by
         // `RecordingController` before `run()` is invoked; CLI

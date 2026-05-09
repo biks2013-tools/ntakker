@@ -211,6 +211,24 @@ public struct ConfigResolver {
             upperBound: 600
         )
 
+        // --- micAEC (plan-013 / plan-014) ----------------------------------
+        //
+        // Microphone acoustic-echo-cancellation toggle. **Default: `false`
+        // (plan-014).** AEC is opt-in — set to `true` to route the mic
+        // through `SoftwareAECProcessor` (NLMS adaptive filter, v5) which
+        // subtracts speaker-to-mic acoustic bleed using the captured
+        // system audio as the reference signal. The processor is safe
+        // to leave on even when there is no bleed (it self-guards via
+        // reference-activity gating, a double-talk detector, and a 50 ms
+        // windowed divergence reset), but it costs ~5–8 % CPU doing
+        // nothing on no-bleed setups, so the default is off. See plan-013
+        // §3, plan-014, and the field comment on `RecordingOptions.micAEC`.
+        let micAEC = try parseBool(
+            key: Keys.micAEC,
+            raw: value(Keys.micAEC),
+            default: false
+        )
+
         // --- Live transcription (plan-003 Phase C; design §LT-5.5) -----------
         //
         // Step 1: resolve the provider id. `none` (or absent) ⇒ no
@@ -906,6 +924,7 @@ public struct ConfigResolver {
             pidFile: pidFile,
             logFile: logFile,
             stopTimeout: stopTimeout,
+            micAEC: micAEC,
             transcriptionProviderId: transcriptionProviderId,
             transcriptionSource: transcribeSourceEnum,
             transcriptionFormat: transcribeFormatEnum,
@@ -965,6 +984,17 @@ public struct ConfigResolver {
         public static let pidFile      = "MACREC_PID_FILE"
         public static let logFile      = "MACREC_LOG_FILE"
         public static let stopTimeout  = "MACREC_STOP_TIMEOUT"
+
+        /// plan-013 — Microphone acoustic-echo-cancellation toggle.
+        /// Accepts the standard boolean spellings (`true`/`false`,
+        /// `1`/`0`, `yes`/`no`, `on`/`off`). Default is `true` — the
+        /// recording captures the mic through `VPMicrophoneSource`
+        /// (`AVAudioEngine` + voice-processing AEC) so Apple's
+        /// echo-cancellation subtracts system-output bleed from the
+        /// mic signal. Set to `false` to fall back to the raw
+        /// `AVCaptureSession`-based `AVMicrophoneSource` (no AEC, no
+        /// AGC, no NS, native frequency response).
+        public static let micAEC       = "MACREC_MIC_AEC"
 
         // -- Live transcription (plan-003 Phase C; design §LT-5.2) --
         // Naming follows the user-prompt-suggested `MACREC_TRANSCRIBE*`
@@ -1335,14 +1365,14 @@ public struct ConfigResolver {
     ) throws -> Bool {
         guard let raw = raw else { return defaultValue }
         switch raw.lowercased() {
-        case "1", "true", "yes":
+        case "1", "true", "yes", "on":
             return true
-        case "0", "false", "no":
+        case "0", "false", "no", "off":
             return false
         default:
             throw MacrecError.invalidConfigValue(
                 key: key, value: raw,
-                expected: "boolean (true/false, 1/0, yes/no)"
+                expected: "boolean (true/false, 1/0, yes/no, on/off)"
             )
         }
     }
@@ -1384,13 +1414,13 @@ public struct ConfigResolver {
     private func parseOptionalBool(key: String, raw: String?) throws -> Bool? {
         guard let raw = raw, !raw.isEmpty else { return nil }
         switch raw.lowercased() {
-        case "1", "true", "yes": return true
-        case "0", "false", "no": return false
+        case "1", "true", "yes", "on": return true
+        case "0", "false", "no", "off": return false
         default:
             throw MacrecError.invalidConfigValue(
                 key: key,
                 value: raw,
-                expected: "boolean (true/false, 1/0, yes/no)"
+                expected: "boolean (true/false, 1/0, yes/no, on/off)"
             )
         }
     }

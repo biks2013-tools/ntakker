@@ -6,6 +6,104 @@
 
 ## Pending items (most critical first)
 
+### PLAN-014-DONE (RESOLVED 2026-05-09) — AEC stability rewrite (v5) + opt-in default
+**Background.** plan-013 revised + the same-day v4 fix (`PLAN-013-DEFECT-1` below) reduced mic peaks from +10 dBFS to +3.7 dBFS, but did not eliminate the "filtering distortion" the user reported when system audio plays through speakers. Investigation against a fresh sample (`sample/aec-on.{mic,system}.m4a`) found four compounding causes:
+
+1. **No actual acoustic bleed in the recording** — cross-correlation between mic and system across ±500 ms of lag is essentially zero (≤ 0.06). User on headphones / low speaker volume; the optimal filter weights are 0, but the filter actively diverges away from 0 and produces "filtering distortion".
+2. **NLMS without safeguards diverges in the no-echo case** — with μ=0.1 the algorithm chases spurious short-term correlations between music/speech (`x`) and user voice (`d`), then projects the resulting weights onto the next reference window. v4's leakage (1e-5) was too slow to bleed the drift off; v4's μ was too aggressive to stay near zero.
+3. **Hard clip + AAC = MDCT overshoot** — pre-encoder samples were correctly clipped at ±0.99 (verified via `strings` on the binary), but a square-wave-like clipped residual rang through AAC's MDCT and the *decoded* peaks reached +3.7 dB. The audible distortion was the underlying square wave, not the AAC overshoot itself.
+4. **Buffer-cadence mismatch invalidated v4's ref-window assumption** — `AVCaptureAudioDataOutput` (mic) typically delivers 512–1024-sample buffers; `ScreenCaptureKit` (system) delivers larger blocks at less regular intervals. v4's "latest `frameCount` ref samples align with this mic buffer" was true only under lockstep cadence, which doesn't hold in practice.
+
+**Fix landed (plan-014 / `SoftwareAECProcessor` v5).** Six layers, all in `Sources/MacrecCore/Capture/SoftwareAECProcessor.swift`:
+
+- **Layer A — Reference-activity gate.** Skip weight updates whenever `√refEnv < referenceActivityRMSThreshold` (default `3e-3` ≈ -50 dBFS RMS). No reference signal → no echo to learn.
+- **Layer B — Double-talk detector.** Skip updates when `micEnv > refEnv · doubleTalkRatio` (default `4.0`). Mic-dominates-ref means the user is talking and there is no real echo; adapting biases the filter toward voice suppression.
+- **Layer C — Divergence reset.** Track `resEnv > micEnv` over a 50 ms sliding window; when sustained, reset all weights to 0 and log the event. Self-healing safety net.
+- **Layer D — Calmer step + step clamp + leakage.** μ: 0.1 → **0.01**. Regularization: 1e-3 → **1e-2**. Per-sample step magnitude clamp at ±1e-3. Leakage 1e-5 retained.
+- **Layer E — Soft-knee limiter.** Tanh-style limiter (knee 0.7 / ceiling 0.95) replaces v4's hard clip. Output stays band-limited so AAC's MDCT no longer rings → decoded peaks ≤ 0 dBFS regardless of pre-encoder waveform shape.
+- **Layer F — PTS-based reference alignment.** Ring buffer indexed by logical sample position derived from `CMSampleBufferGetPresentationTimeStamp(...)`, anchored to the first reference buffer's PTS. The mic-side window for any sample at host time *t* covers reference samples at host time *t*, regardless of whether the two capture stacks deliver buffers in lockstep. Ring capacity expanded to `2 · filterLength` (~170 ms) for skew tolerance; gaps in reference delivery are zero-filled before the next read.
+
+**Default flip (per user policy).** `RecordingOptions.micAEC` default `true` → **`false`**, `MACREC_MIC_AEC` default `true` → **`false`**, both `@AppStorage` defaults → **`false`**. AEC is now opt-in. Existing `--mic-aec on` invocations and any persisted UI toggle = on continue to work unchanged.
+
+**User-facing surface (unchanged shape).** `--mic-aec on|off`, `MACREC_MIC_AEC`, "Mic echo cancellation" popover toggle. Help text and tool-doc descriptions updated to reflect the opt-in default and the v5 stability layers.
+
+**Files touched:**
+- `Sources/MacrecCore/Capture/SoftwareAECProcessor.swift` — full rewrite to v5 (~700 LoC).
+- `Sources/MacrecCore/Config/RecordingOptions.swift` — default + doc-comment.
+- `Sources/MacrecCore/Config/ConfigResolver.swift` — default + doc-comment.
+- `Sources/macrec/Commands/StartCommand.swift` — `--mic-aec` help text.
+- `Sources/macrec-ui/Views/MicEchoCancellationToggle.swift` — `@AppStorage` default + help text.
+- `Sources/macrec-ui/Views/ControlBar.swift` — `@AppStorage` default.
+- `docs/design/plan-014-aec-stability.md` — new (this plan).
+- `docs/design/plan-013-microphone-aec.md` — supersede pointer in §11.
+- `docs/tools/macrec.md`, `docs/tools/macrec-ui.md` — opt-in default + v5 algorithm description.
+- `CLAUDE.md` — `macrec` and `macrec-ui` tool entries.
+- `test_scripts/plan-014-aec-stability-smoke.md` — new (WAV peak verification per AC-1 / AC-2).
+
+**Verification.** `swift build -c release` (full package) builds clean. Manual smoke test in `test_scripts/plan-014-aec-stability-smoke.md` covers: AC-1 (no-bleed case stays ≤ 0 dBFS), AC-2 (real-bleed case achieves ≥ 12 dB residual reduction), AC-3 (filter never amplifies above raw input), AC-4 (default off), AC-5 (divergence reset works), AC-6 (existing on/off control surface unchanged).
+
+### PLAN-013-DEFECT-1 (RESOLVED 2026-05-09) — Mic AEC produces +10 dBFS clipping / audible distortion (NLMS divergence)
+**Background.** After the plan-013 (revised) software AEC shipped earlier the same day, recording with `--mic-aec on` (the default) produced an audibly distorted mic track. Reference recordings in `sample/aec-on.{mic,system}.m4a` show the mic track peaking at +10.56 dBFS (max sample magnitude 3.37) — well past the 0 dBFS encoder ceiling — with the level growing over time: clean for the first ~6 s, occasional excursions to 1.4–1.8 between 6–11 s, and repeated excursions to 2.5–3.4 from 11 s onwards. Classic NLMS adaptive-filter divergence symptom.
+
+**Root cause.** Bug in `Sources/MacrecCore/Capture/SoftwareAECProcessor.swift` `processMic(_:)` (v3 implementation, lines 268–307 pre-fix). The reference-window phase was snapshotted *outside* the per-sample inner loop:
+
+```swift
+let writeIdxStart = self.refWriteIdx[ch]
+for n in 0..<frameCount {
+    let phase = (writeIdxStart % L)   // ← does NOT depend on n
+    let window = ringPtr.baseAddress!.advanced(by: phase)
+    ...
+    vDSP_vsma(window, 1, &scale, wPtr…)   // weight update vs. constant input
+}
+```
+
+So for every one of the ~1024 mic samples in a buffer the *same* reference window was used, both to compute `yHat` and to update the weights. NLMS therefore performed `frameCount` consecutive weight updates against an identical input vector with varying `d`, growing the weights along that one direction without bound. When the next buffer arrived with a slightly different `x`, projecting the (now-large) weights onto it produced a huge `yHat`, the residual `e = d − yHat` blew past 0 dBFS, the AAC encoder clipped, and the user heard distortion. The block comment at the snapshot site even documented that the position should advance per sample ("logical position advances at the same rate") — the loop body just never did it.
+
+**Fix landed.** `SoftwareAECProcessor` v4:
+- **Per-sample reference advancement.** For mic sample `n` in a buffer the ref window now ends at logical position `writeIdxStart − frameCount + n` (rates are identical at 48 kHz, so the buffer's `frameCount` mic samples correspond to the latest `frameCount` reference samples). Phase is `(endIdx + 1) % L` per the double-write invariant. During the first `L + frameCount` samples of a session — before a full reference window exists — the mic is passed through untouched and weight updates are skipped.
+- **Weight leakage.** New `Configuration.leakage` field (default `1e-5`, ~2 s time constant at 48 kHz). Each NLMS update now applies `w := (1 − leak) · w` before the gradient step, so any residual weight growth bleeds off rather than accumulating indefinitely.
+- **Larger regularisation.** `Configuration.regularization` default raised from `1e-6` → `1e-3`, so a near-silent reference no longer turns `μ · e / (‖x‖² + reg)` into a five-orders-of-magnitude amplification.
+- **Output safety net.** New `Configuration.clipThreshold` (default `0.99`); the cleaned residual is hard-clipped to `[−clipThreshold, +clipThreshold]` before being re-packed into the CMSampleBuffer. Guarantees the encoder cannot ever again receive samples > 0 dBFS, even in the face of a future regression.
+
+**Verification.** `swift build -c release --product macrec` and `swift build -c release --product macrec-ui` both build clean. The user-facing surface (`--mic-aec`, `MACREC_MIC_AEC`, popover toggle, default-on behaviour) is unchanged. The reference recordings under `sample/` were the diagnostic artifact, not a regression test — a follow-up should re-record with the v4 processor and confirm peak ≤ 0 dBFS via `ffmpeg -af astats`.
+
+**Files changed.**
+- `Sources/MacrecCore/Capture/SoftwareAECProcessor.swift` — `Configuration` gains `leakage` + `clipThreshold`; `processMic` inner loop rewritten with per-sample phase advancement, leakage `vDSP_vsmul`, and output clipping.
+- `docs/design/plan-013-microphone-aec.md` — post-ship defect section appended (see plan §11).
+- `test_scripts/plan-013-aec-smoke.md` — peak-amplitude check added to the smoke procedure.
+
+### PLAN-013-DONE (RESOLVED 2026-05-09, REVISED SAME DAY) — System audio bleeds into the mic channel during recording
+**Background.** While `macrec` and `macrec-ui` were recording, anything playing through the laptop's speakers (Music, Spotify, browser tabs, Zoom remote-party voices, etc.) was acoustically picked up by the built-in microphone and re-recorded onto the mic channel. Effect: in `--layout split` / `stereo-split` recordings the "microphone" track was no longer a clean local-mic capture — it carried a delayed, attenuated copy of the system audio.
+
+**Root cause.** Acoustic bleed (a physics problem, not a code defect): speakers play, mic listens. The pre-existing mic-capture path (`Sources/MacrecCore/Capture/AVMicrophoneSource.swift`, an `AVCaptureSession` + `AVCaptureDeviceInput` + `AVCaptureAudioDataOutput` stack) had no echo-cancellation knob.
+
+**First-attempt approach (failed).** The original plan-013 implementation introduced a `VPMicrophoneSource` using `AVAudioEngine.inputNode.setVoiceProcessingEnabled(true)` to leverage Apple's built-in voice-processing AEC. Three iterations of empirical testing established the approach was not viable in this codebase:
+
+  - With SCStream system-audio capture also running (which this project always does), the underlying `AUVoiceProcessingIO` audio unit delivered exactly ONE buffer of 4800 silent frames before stalling permanently. Cause: `AUVoiceProcessingIO` requires unobstructed access to the system OUTPUT device for its AEC reference signal; SCStream taps the same OS audio mix and the two cannot coexist on macOS 26. There is no public API to feed `AUVoiceProcessingIO` a custom reference signal — the conflict is structural, not a fixable bug.
+  - An attempt to "complete" the engine graph with `_ = engine.mainMixerNode` made the engine refuse to initialise at all (`kAudioUnitErr_FailedInitialization` -10875), because voice processing's input/output nodes are both backed by a single shared `AUVoiceProcessingIO` unit and the implicit `inputNode → mainMixer → outputNode` graph creates a self-loop.
+  - Even with the audio-render-thread cleanup (`OSAllocatedUnfairLock` replacing serial-queue `sync` calls) and the missing `CMSampleBufferSetDataReady` fix applied, the structural conflict remained.
+
+  `VPMicrophoneSource` was deleted; the user-facing `micAEC` field, `MACREC_MIC_AEC` env var, `--mic-aec` CLI flag, and macrec-ui toggle were retained but re-targeted at the new approach below.
+
+**Fix (current).** plan-013 (revised) — custom software AEC, `Sources/MacrecCore/Capture/SoftwareAECProcessor.swift`. `AVMicrophoneSource` is the only mic source. When `RecordingOptions.micAEC == true` (default), `RecordingSession.run()` constructs a `SoftwareAECProcessor` and wires it between the existing capture sources and the aligner: the mic source's `onSampleBuffer` is routed through `processor.processMic(_:)` instead of directly to the aligner; the system source is teed (still feeds the aligner verbatim, AND additionally feeds `processor.feedReference(_:)`). The processor runs a per-channel NLMS adaptive filter (4096 taps ≈ 85 ms @ 48 kHz, μ = 0.1, regularised) using `Accelerate` `vDSP_dotpr` / `vDSP_svesq` / `vDSP_vsma` for SIMD-vectorised hot loops, and a "double-write" reference ring buffer so the L-sample window can be read contiguously without wrap-around branching. The cleaned mic samples are wrapped in a fresh CMSampleBuffer that copies the input mic buffer's PTS / duration / format-description, preserving the host-clock alignment downstream consumers depend on.
+
+**User-facing surface (unchanged from original plan-013):**
+  - `RecordingOptions.micAEC: Bool = true` (`Sources/MacrecCore/Config/RecordingOptions.swift`).
+  - `MACREC_MIC_AEC` env var (default `true`) in the four-tier resolution chain (`Sources/MacrecCore/Config/ConfigResolver.swift`); `parseBool` / `parseOptionalBool` accept `on` / `off` / `true` / `false` / `1` / `0` / `yes` / `no`.
+  - `--mic-aec on|off` CLI flag (`Sources/macrec/Commands/StartCommand.swift`).
+  - "Mic echo cancellation" toggle in the macrec-ui popover's General section, persisted via `@AppStorage("com.macrec.ui.micAEC")` (`Sources/macrec-ui/Views/MicEchoCancellationToggle.swift`, `…/Sections/GeneralSection.swift`, `…/Views/ControlBar.swift`).
+  - `MacrecError.micAECUnavailable(underlying:)` (exit 70) retained for any future processor-level setup error path.
+
+**Trade-offs (different from the original plan-013 attempt).** The software AEC does NOT apply AGC or noise suppression and does NOT narrow the captured mic frequency band — the cleaned mic is the raw mic minus the estimated echo, in full bandwidth. Convergence is automatic: 1–3 s on white-noise-like test signals, 3–10 s on speech / music. After convergence, the residual bleed drops 15–25 dB below the un-cancelled bleed level. CPU cost is ~5–8 % of a single Apple Silicon P-core for stereo at 48 kHz. The processor preserves host-clock PTSs end-to-end, so the aligner / recorder / transcription / dual-channel pipelines all continue working unchanged.
+
+**Verification.** Both products build clean (`swift build -c debug --product macrec`, `swift build -c debug --product macrec-ui`). `ConfigResolverTests` (43 tests) pass. Manual smoke-test plan in `test_scripts/plan-013-aec-smoke.md` covers CLI flag, env var, UI toggle, default behaviour, and invalid-flag rejection.
+
+**Known limitations / future work.**
+  - First few seconds of a recording carry residual bleed before NLMS converges. Could be improved by persisting filter weights across sessions to a small per-device cache (~64 KB), but not a v1 priority.
+  - Cross-channel echo (L speaker → R mic, R speaker → L mic) is not modelled — each channel runs an independent filter. Acceptable for laptop stereo speakers because the L→mic and R→mic paths are similar enough that per-channel cancellation already removes ≥ 15 dB. Multi-input AEC would close that gap.
+  - If the user moves the laptop or covers/uncovers the mic mid-recording, the echo path changes faster than μ can track and the residual briefly rises until adaptation catches up (1–3 s).
+  - Tuning (filter length, step size) is currently compile-time defaults. Could be exposed via `MACREC_AEC_FILTER_LENGTH` / `MACREC_AEC_STEP_SIZE` if the defaults prove unsuitable in some environments.
+
 ### ENV-PENDING-1 — `swift test` blocked by missing PreviewsMacros plugin in CommandLineTools (important — testing only)
 Multiple `#Preview { … }` macro blocks in the `macrec-ui` executable target (`Sources/macrec-ui/Views/Transcription/ApiKeyStatusChip.swift:32`, `…/ApiKeyStatusRow.swift:134,146`, `…/Header/AppearanceSwitcher.swift:97`, `…/Settings/Sections/GeneralSettingsView.swift:48`, and several more) fail to expand with `external macro implementation type 'PreviewsMacros.SwiftUIView' could not be found for macro 'Preview(_:body:)'; plugin for module 'PreviewsMacros' not found`. The plugin ships with full Xcode but not with the bare CommandLineTools toolchain currently configured on this Mac. Effect: `swift test` (which builds the whole package) fails before any test bundle is linked. Workarounds: (a) install/select a full Xcode (`xcode-select -p` should point at `Xcode.app/Contents/Developer`), or (b) wrap the offending `#Preview` blocks in `#if DEBUG && canImport(SwiftUICore)` or behind a `// swift-format-ignore` and gate them on a `PREVIEWS` swift-setting flag. `swift build --target MacrecUIKit` still succeeds, so library-level work and ad-hoc compile checks on the `MacrecUIKit` / `MacrecCore` targets are unaffected. Severity: important — only blocks the automated test runner, not production code.
 

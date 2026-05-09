@@ -40,6 +40,12 @@ public enum MacrecError: Error, LocalizedError, CustomStringConvertible {
     case scStreamFailedToStart(underlying: Error)
     case scStreamSilentStopExceeded(restartCount: Int)
     case avCaptureFailedToStart(underlying: Error)
+    /// plan-013 — Apple voice-processing AEC could not be enabled on the
+    /// resolved input device (`AVAudioEngine.inputNode.setVoiceProcessingEnabled`
+    /// or `AVAudioEngine.start` threw). Maps to EX_SOFTWARE (70) like the
+    /// other capture-startup errors. The user can re-run with `--mic-aec off`
+    /// (or toggle off in the UI) to fall back to the raw `AVMicrophoneSource`.
+    case micAECUnavailable(underlying: Error)
 
     // Encoding
     case writerFailedToStart(underlying: Error)
@@ -108,6 +114,7 @@ public enum MacrecError: Error, LocalizedError, CustomStringConvertible {
              .scStreamFailedToStart,
              .scStreamSilentStopExceeded,
              .avCaptureFailedToStart,
+             .micAECUnavailable,
              .writerFailedToStart,
              .stopTimeout,
              .transcriptionProviderUnavailable:
@@ -174,6 +181,9 @@ public enum MacrecError: Error, LocalizedError, CustomStringConvertible {
 
         case let .avCaptureFailedToStart(underlying):
             return "microphone capture failed to start: \(underlying.localizedDescription)"
+
+        case let .micAECUnavailable(underlying):
+            return "microphone echo cancellation (AEC) could not be enabled: \(underlying.localizedDescription)"
 
         case let .writerFailedToStart(underlying):
             return "output writer failed to initialize: \(underlying.localizedDescription)"
@@ -273,6 +283,9 @@ public enum MacrecError: Error, LocalizedError, CustomStringConvertible {
 
         case .avCaptureFailedToStart:
             return "Confirm Microphone permission and that the selected device is available (see 'macrec list-devices')."
+
+        case .micAECUnavailable:
+            return "Re-run with --mic-aec off to use the raw mic source (no echo cancellation), or pick a different microphone with --mic-device."
 
         case .writerFailedToStart:
             return "Verify the output path is writable and the parent directory exists."

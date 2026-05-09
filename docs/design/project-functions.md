@@ -1787,3 +1787,57 @@ parity and forward-compat.
 accepts a bare ISO-639-1 code. Informational only in v1 because
 FluidAudio v0.8.x has no per-call language hint API; the multilingual
 TDT V3 model auto-detects per chunk.
+
+
+### Added by plan-013 (revised) — Microphone acoustic echo cancellation
+
+**FR-AEC-1** — By default, `macrec` and `macrec-ui` cancel the
+speaker-to-microphone acoustic bleed in software. When
+`RecordingOptions.micAEC == true`, `RecordingSession.run()`
+constructs a `SoftwareAECProcessor` and wires it between the
+existing capture sources and the aligner: the mic source's
+buffers are routed through `processor.processMic(_:)` instead of
+directly to the aligner; the system source is teed (still feeds
+the aligner verbatim AND additionally feeds
+`processor.feedReference(_:)`). The processor runs a per-channel
+NLMS adaptive filter (default 4096 taps ≈ 85 ms @ 48 kHz, μ = 0.1,
+regularised) using `Accelerate` SIMD primitives, subtracting the
+estimated speaker→air→mic echo from the mic signal before it
+flows downstream. plan-013 §3 / §3.1.
+
+**FR-AEC-1a** — The original plan-013 design used Apple's
+`AVAudioEngine.inputNode.setVoiceProcessingEnabled(true)` (a
+`VPMicrophoneSource` mic-source conformer). That path is NOT
+viable in this codebase: the underlying `AUVoiceProcessingIO`
+audio unit cannot coexist with `SCStream` system-audio capture
+(both compete for unobstructed access to the system OUTPUT
+device). `VPMicrophoneSource` was deleted; the user-facing
+surface (flag / env / toggle) is unchanged but now routes
+through the software processor. plan-013 §0.
+
+**FR-AEC-2** — The behaviour is controlled by a stored boolean
+`RecordingOptions.micAEC` (default `true`), resolved via the
+standard four-tier chain (shell env / `~/.tool-agents/macrec/.env` /
+local `.env` / CLI flag). The env-var name is `MACREC_MIC_AEC`;
+the CLI flag is `--mic-aec on|off` on `macrec start`. The
+macrec-ui popover exposes a "Mic echo cancellation" toggle in
+the General section (persisted under
+`@AppStorage("com.macrec.ui.micAEC")`). Both `parseBool` and
+`parseOptionalBool` accept `on` / `off` alongside
+`true` / `false` / `1` / `0` / `yes` / `no`. plan-013 §4.
+
+**FR-AEC-3** — When `micAEC == false`, the AEC processor is not
+constructed; mic and system buffers go directly to the aligner
+exactly as they did pre-plan-013. The session-start log emits
+`mic source = AVMicrophoneSource (AEC processor=on)` or
+`mic source = AVMicrophoneSource (AEC processor=off)` so the
+choice is observable in stderr / detach logs. plan-013 §5 / §6.
+
+**FR-AEC-4** — `MacrecError.micAECUnavailable(underlying:)`
+(exit 70 / `EX_SOFTWARE`) is retained for any future
+processor-level setup error path; the software AEC has no
+device-level initialisation that can fail at start (its NLMS
+state is in-memory only), so currently no code path raises it
+during normal operation. The macrec-ui surface maps the error
+into a "Mic echo cancellation unavailable" banner with a
+`.retry` action.

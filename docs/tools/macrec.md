@@ -96,6 +96,23 @@
           --max-duration <max-duration>
                                   Auto-stop after N seconds. Default: run until SIGINT.
           --overwrite             Overwrite an existing output file.
+          --mic-aec <on|off>      Microphone echo cancellation. Default: off
+                                  (opt-in as of plan-014). When on, runs a
+                                  custom software NLMS adaptive filter
+                                  (`SoftwareAECProcessor` v5) using the
+                                  captured system-audio buffers as the
+                                  reference signal to subtract speaker-to-
+                                  mic acoustic bleed from the mic. Native
+                                  mic bandwidth is preserved (no AGC, no
+                                  noise suppression, no band narrowing).
+                                  v5 self-guards via PTS-aligned ref
+                                  windowing, a reference-activity gate,
+                                  a double-talk detector, a 50 ms windowed
+                                  divergence reset, and a soft-knee
+                                  output limiter. Filter converges over
+                                  the first 3–10 s of audio. Off (default)
+                                  bypasses the processor (raw mic). Env:
+                                  MACREC_MIC_AEC. (plan-013 / plan-014)
           --detach                Run the recording in the background (double-fork
                                   daemon). The shell prompt returns immediately; PID is
                                   written to --pid-file. Stop with 'macrec stop'.
@@ -504,6 +521,175 @@
 
         See `Issues - Pending Items.md` (R-2) and design §8.
 
+        ## Microphone acoustic echo cancellation (AEC)
+
+        AEC is **opt-in** as of plan-014. Pass `--mic-aec on` (or set
+        `MACREC_MIC_AEC=on` / flip the popover toggle) to route the
+        mic through the custom software AEC (`SoftwareAECProcessor`
+        v5). The processor sits between the existing mic and
+        system-audio capture sources and the aligner: it takes the
+        captured system-audio buffers as the reference signal for an
+        NLMS (Normalized Least Mean Squares) adaptive filter,
+        estimates the speaker→air→mic echo path on each channel, and
+        subtracts the estimate from the raw mic samples before they
+        are written to disk. With AEC on, the long-standing "I can
+        hear Spotify / Zoom / browser audio on the mic channel"
+        problem in `--layout split` / `stereo-split` recordings goes
+        away.
+
+        > **Why opt-in?** The default-on shipping of v3/v4 produced
+        > "filtering distortion" on setups where there was no actual
+        > speaker bleed (headphones, low speaker volume, etc.) — see
+        > plan-014 §0 and the v5 stability layers below for the fix.
+        > With v5 the processor is safe to leave on whenever there
+        > is real bleed to cancel, but for headphone users it costs
+        > ~5–8 % CPU doing nothing useful. Opt-in matches behaviour
+        > to user intent.
+
+        > **History.** The first plan-013 attempt used Apple's
+        > built-in `AVAudioEngine.inputNode.setVoiceProcessingEnabled`
+        > path. That approach turned out to be incompatible with this
+        > project's `SCStream` system-audio capture: the underlying
+        > `AUVoiceProcessingIO` audio unit needs unobstructed access
+        > to the system OUTPUT device for its AEC reference, and
+        > `SCStream` taps the same OS audio mix. The `AVMicrophoneSource`
+        > path therefore stays the proven `AVCaptureSession` capture;
+        > the AEC is implemented in software downstream, where there
+        > is no HAL-level conflict. See `docs/design/plan-013-microphone-aec.md` §0
+        > for the full story.
+
+        ### Trade-offs
+
+        Compared to Apple's voice processing, the software AEC has a
+        very different trade-off envelope:
+
+        - **No AGC.** The captured mic gain is unchanged — quiet
+          speakers stay quiet; loud peaks are not compressed. If you
+          need automatic levelling, apply it as a post-processing
+          step.
+        - **No noise suppression.** Constant noise (fans, HVAC,
+          street rumble) is captured as-is. NLMS only cancels what
+          appears in the reference signal — i.e. system audio
+          playing through the speakers — not the mic's ambient room
+          tone.
+        - **Native bandwidth.** The mic frequency response is
+          unchanged. Music / wide-band capture works; this is the
+          biggest improvement vs. the old voice-processing path.
+        - **Convergence delay.** The filter starts with all weights
+          at zero and adapts conservatively (μ=0.01 in v5, an order
+          of magnitude slower than v3/v4). It needs 3–10 s of speech
+          / music reference to converge. During convergence the
+          residual bleed drops gradually; after convergence it is
+          typically 15–25 dB below the uncancelled level.
+
+        ### v5 stability layers (plan-014)
+
+        v5 adds five safeguards against the divergence that plagued
+        v3 and v4:
+
+        - **Reference-activity gate.** Adaptation is frozen whenever
+          the reference RMS is below `~ -50 dBFS` (system silence).
+        - **Double-talk detector.** Adaptation is frozen whenever the
+          mic short-term power exceeds the reference short-term
+          power × 4 (user is talking; no real echo to learn).
+        - **Divergence reset.** A 50 ms sustained-violation window
+          on `residualEnergy > micEnergy` triggers a weight reset to
+          zero — the filter recovers from any momentary instability
+          rather than locking it in.
+        - **Calmer NLMS step + leakage.** μ is 0.01 (10× v3/v4),
+          regularization is 1e-2, the per-sample weight delta is
+          clamped at ±1e-3, and a slow leakage of `1e-5` per sample
+          bleeds off any stray growth.
+        - **Soft-knee output limiter.** A tanh-style limiter at
+          knee=0.7 / ceiling=0.95 replaces v4's hard clip, so the
+          residual signal stays band-limited and AAC can never
+          overshoot 0 dBFS on the encoded output.
+
+        v5 also indexes the reference ring buffer by **PTS-derived
+        logical position** (Layer F), so the ref window for any mic
+        sample at host time *t* covers the corresponding system
+        samples at host time *t*, regardless of whether the two
+        capture stacks happen to deliver buffers in lockstep.
+        - **No tracking of fast environmental changes.** If you
+          move the laptop or cover the mic mid-recording, the echo
+          path changes; the filter takes another 1–3 s to re-adapt
+          and the residual briefly rises during that window.
+        - **CPU cost ≈ 5–8 % of one Apple Silicon P-core** for
+          stereo at 48 kHz with the default 4096-tap filter.
+
+        AEC is off by default. Turn it on per session with
+        `--mic-aec on` (CLI), `MACREC_MIC_AEC=on` (env or
+        `~/.tool-agents/macrec/.env`), or the popover toggle in
+        `macrec-ui`. With AEC off the mic is recorded verbatim and
+        the system source feeds the aligner directly, exactly as in
+        pre-plan-013 builds.
+
+        ### What you'll see in the logs
+
+        At session start, `macrec` prints one of these two lines on
+        `stderr` (or to the detach log file) so it is easy to verify
+        which path is active:
+
+        ```
+        … mic source = AVMicrophoneSource (AEC processor=on)
+        … mic source = AVMicrophoneSource (AEC processor=off)
+        ```
+
+        When the processor is active, you will additionally see (on
+        the `macrec.aec` logger):
+
+        ```
+        … SoftwareAECProcessor v5 (plan-014: PTS-aligned NLMS + ref-activity gate + double-talk detector + divergence reset + soft limiter) initialised: filterLength=4096 (~85 ms) μ=0.01 reg=0.01 stepMax=0.001 leak=1e-05 …
+        … SoftwareAECProcessor first reference: frames=… channels=2 bufferStartPTS=…
+        … SoftwareAECProcessor first mic processed: frames=… channels=2 micFirstPTS=…
+        ```
+
+        If v5's divergence reset ever fires, you will also see:
+
+        ```
+        … AEC divergence reset fired N time(s) — weights re-zeroed (cumulative resets=…)
+        ```
+
+        On a healthy long-form recording the cumulative count should
+        stay ≤ 1–2 over the entire session. Sustained reset activity
+        (multiple per minute) usually means the reference signal is
+        genuinely uncorrelated with what the mic is hearing — turn
+        AEC off, or reduce the speaker-to-mic distance / volume.
+
+        The pre-existing 1 Hz `mic_health: …` heartbeat from
+        `AVMicrophoneSource` continues to fire unchanged — a healthy
+        run shows non-zero `recentPeakAmp` while you speak. (The
+        cleaned mic feeds the aligner, but the heartbeat is a
+        diagnostic on the raw mic source itself, so it always
+        reflects the unprocessed signal.)
+
+        ### Limitations
+
+        - **The reference signal is the system audio that `SCStream`
+          captures.** If the user is playing audio through a route
+          `SCStream` does not see (e.g. an external audio interface
+          set as the default output without screen-recording
+          permission on it), the bleed will not be cancelled because
+          the reference is silent.
+        - **Cross-channel echo is not modelled.** Each channel runs
+          an independent NLMS filter; if the L speaker's echo
+          dominantly shows up on the R mic capsule (or vice versa),
+          a single-channel filter cannot fully cancel it. In
+          practice the residual is still substantially reduced
+          because the L→mic and R→mic acoustic paths are similar
+          enough on a laptop chassis that per-channel cancellation
+          recovers most of the gain.
+        - **No adaptive resampling.** The processor assumes mic and
+          reference are both at the same sample rate (48 kHz, the
+          pipeline canonical rate). Other rates would require the
+          processor to handle resampling — not a v1 concern because
+          the canonical pipeline normalises everything before this
+          point.
+        - **Filter weights are not persisted across sessions.** Each
+          recording converges from scratch. Persisting per-device
+          weights would shave the first 1–3 s of residual but is
+          not a v1 priority.
+
         ## Exit codes
 
         Locked by project-design.md §9.5. The mapping below is sourced
@@ -516,7 +702,7 @@
         | 2    | partial output   | `writerFinalizationTimeout`                                                                                                        | finalization timed out (file may be partial) |
         | 64   | `EX_USAGE`       | `invalidConfigValue`, `dotEnvParseError`                                                                                           | usage error / invalid argument           |
         | 66   | `EX_NOINPUT`     | `outputParentMissing`, `outputAlreadyExists`, `pidFileWriteFailed`                                                                  | output / PID file path error             |
-        | 70   | `EX_SOFTWARE`    | `noInputDevicesAvailable`, `scStreamFailedToStart`, `scStreamSilentStopExceeded`, `avCaptureFailedToStart`, `writerFailedToStart`, `stopTimeout` | runtime failure                          |
+        | 70   | `EX_SOFTWARE`    | `noInputDevicesAvailable`, `scStreamFailedToStart`, `scStreamSilentStopExceeded`, `avCaptureFailedToStart`, `micAECUnavailable`, `writerFailedToStart`, `stopTimeout` | runtime failure                          |
         | 75   | `EX_TEMPFAIL`    | `screenRecordingPermissionNotDetermined`, `microphonePermissionNotDetermined`, `staleRecording`                                    | retryable                                |
         | 77   | `EX_NOPERM`      | `screenRecordingPermissionDenied`, `microphonePermissionDenied`, `microphonePermissionRestricted`                                  | permission denied                        |
         | 78   | `EX_CONFIG`      | `missingRequiredConfig`, `micDeviceNotFound`, `alreadyRecording`, `noActiveRecording`, `transcriptionApiKeyMissing` | configuration / workflow error           |

@@ -253,6 +253,19 @@ public struct UIErrorPresenter: Sendable {
                 recovery: .retry
             )
 
+        case let .micAECUnavailable(underlying):
+            // plan-013 — voice-processing AEC could not be enabled. The
+            // user can recover by turning the popover's
+            // "Mic echo cancellation" toggle off and re-trying, which
+            // routes the next session through the raw `AVMicrophoneSource`.
+            return UIErrorMessage(
+                title: String(localized: "Mic echo cancellation unavailable"),
+                detail: String(
+                    localized: "Apple's voice-processing AEC could not be enabled on the selected microphone: \(underlying.localizedDescription) — try turning Mic echo cancellation off and re-recording."
+                ),
+                recovery: .retry
+            )
+
         // MARK: Encoding ------------------------------------------------------
 
         case let .writerFailedToStart(underlying):

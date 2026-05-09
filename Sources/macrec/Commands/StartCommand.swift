@@ -74,6 +74,11 @@ public struct StartCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Overwrite an existing output file.")
     public var overwrite: Bool = false
 
+    // MARK: - Microphone AEC (plan-013 / plan-014)
+
+    @Option(name: .long, help: "Microphone echo cancellation (on | off | true | false). Default: off (opt-in as of plan-014). When on, routes the mic through a software NLMS adaptive filter that subtracts speaker-to-mic acoustic bleed using the captured system audio as the reference. The processor preserves the mic's native frequency response (no AGC, no NS, no band narrowing). Env: MACREC_MIC_AEC.")
+    public var micAec: String?
+
     // MARK: - Run-mode knobs (FR-25, FR-29)
 
     @Flag(name: .long, help: "Run the recording in the background (double-fork daemon). The shell prompt returns immediately; PID is written to --pid-file. Stop with 'macrec stop'. (FR-25)")
@@ -245,6 +250,10 @@ public struct StartCommand: AsyncParsableCommand {
         if let v = maxDuration  { o[ConfigResolver.Keys.maxDuration] = String(v) }
         if overwrite            { o[ConfigResolver.Keys.overwrite] = "true" }
         if detach               { o[ConfigResolver.Keys.detach] = "true" }
+        // plan-013 — `--mic-aec` is forwarded as the raw user-provided
+        // string; `ConfigResolver.parseBool` accepts the same set of
+        // spellings (`on`/`off`/`true`/`false`/`yes`/`no`/`1`/`0`).
+        if let v = micAec       { o[ConfigResolver.Keys.micAEC] = v }
         if let v = pidFile      { o[ConfigResolver.Keys.pidFile] = v }
         if let v = logFile      { o[ConfigResolver.Keys.logFile] = v }
         // -- Live transcription (plan-003 Phase C) --

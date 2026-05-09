@@ -50,6 +50,14 @@ struct ControlBar: View {
     @AppStorage("com.macrec.ui.layout") private var layoutRaw: String = TrackLayout.mixed.rawValue
     @AppStorage("com.macrec.ui.micUID") private var micUID: String = ""
 
+    // plan-013 — Microphone AEC toggle. Default `true`: the popover
+    // ships with voice-processing AEC enabled so a fresh install does
+    // not record system-audio bleed onto the mic channel. Read at
+    // `start()` and forwarded into `RecordingOptions(micAEC:)`. The
+    // user-facing control lives in `MicEchoCancellationToggle` (in the
+    // popover's General section).
+    @AppStorage(kMicAECStorageKey) private var micAEC: Bool = false
+
     // Transcription persisted state (plan-003 Phase G; read here so the
     // composed `RecordingOptions` carries the user's picker selection
     // into `RecordingSession.setUpTranscriptionPipelineIfNeeded`).
@@ -478,6 +486,7 @@ struct ControlBar: View {
             format: format,
             layout: layout,
             micDevice: micDevice,
+            micAEC: micAEC,
             transcriptionProviderId: effectiveProviderId,
             transcriptionSource: effectiveTranscriptionSource,
             transcriptionFormat: effectiveTranscriptionFormat,
