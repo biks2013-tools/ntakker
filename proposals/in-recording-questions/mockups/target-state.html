@@ -118,7 +118,7 @@
     justify-content: center; gap: 48px;
   }
   .variant-block {
-    display: flex; flex-direction: column; align-items: center; width: 380px;
+    display: flex; flex-direction: column; align-items: center; width: 480px;
   }
   .variant-tag {
     color: rgba(255,255,255,0.78);
@@ -142,9 +142,17 @@
     line-height: 1.4;
   }
 
-  /* Popover frame — verbatim baseline */
+  /* Popover frame — chrome verbatim from baseline (radius, shadow, padding).
+     Sizing: the baseline mockup ships a static 360-pt-wide popover and has
+     NO interactive resize affordance (no JS, no resize-handle SVG, no
+     ResizeObserver — confirmed by reading docs/design/mockups/popover-redesign.html).
+     The target-state surface needs to host more controls (Stop / Save… / New
+     Session in the same status-bar row), so we (a) bump the default width
+     and (b) opt in to the canonical no-JS user-resize affordance — native
+     CSS `resize: both` with min/max bounds — so the user can drag the
+     bottom-right corner to grow or shrink the popover in either dimension. */
   .popover {
-    width: 380px;
+    width: 480px;                /* wider default to fit the two-button action area cleanly */
     border-radius: 14px;
     position: relative;
     padding: 14px;
@@ -153,6 +161,17 @@
       0 1px 0 rgba(255,255,255,0.6) inset,
       0 22px 60px rgba(0,0,0,0.32),
       0 6px 16px rgba(0,0,0,0.18);
+  }
+  /* User-resize affordance on the primary (interactive) popover.
+     The min-width is calibrated to keep mic-bars + sys-bars + state-pill
+     + clock + [New Session][Save…] / [Stop] visible without overflow. */
+  .popover.resizable {
+    resize: both;
+    overflow: hidden;
+    min-width: 440px;
+    max-width: 760px;
+    min-height: 440px;
+    max-height: 820px;
   }
 
   /* Light variant — verbatim baseline tokens */
@@ -336,6 +355,111 @@
   }
   .record-btn .rec-glyph  { border-radius: 50%; }
   .record-btn .stop-glyph { border-radius: 2px; }
+
+  /* ── Collapsible Engine & Language section (Transcription mode) ──
+     Default state: collapsed → single summary row showing current
+     "Engine • Language • ▾". Clicking anywhere on the row expands the
+     full picker group beneath it with a 200ms ease animation. */
+  .collapsible-engine {
+    margin-bottom: 14px;
+  }
+  .collapsible-summary {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px;
+    padding: 8px 12px;
+    background: var(--group-bg);
+    box-shadow: 0 0 0 0.5px var(--group-stroke);
+    border-radius: 10px;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.14s ease;
+  }
+  .collapsible-summary:hover { background: var(--chip-bg); }
+  .collapsible-summary .summary-text {
+    font-size: 13px; color: var(--label);
+    display: flex; align-items: center; gap: 6px;
+    flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .collapsible-summary .summary-text .label-strong { font-weight: 600; color: var(--value); }
+  .collapsible-summary .summary-text .dot-sep { color: var(--tertiary); }
+  .collapsible-summary .caret {
+    color: var(--secondary); font-size: 14px;
+    transition: transform 0.2s ease;
+    flex-shrink: 0;
+  }
+  .collapsible-engine.open .collapsible-summary .caret { transform: rotate(180deg); }
+  .collapsible-engine.open .collapsible-summary { border-radius: 10px 10px 0 0; }
+  .collapsible-body {
+    max-height: 0; overflow: hidden;
+    transition: max-height 0.2s ease;
+  }
+  .collapsible-engine.open .collapsible-body {
+    max-height: 200px;
+  }
+  .collapsible-body .group {
+    border-top: 0;
+    border-radius: 0 0 10px 10px;
+    box-shadow: 0 0 0 0.5px var(--group-stroke);
+    border-top: 0.5px solid var(--separator);
+  }
+
+  /* ── Fade-clear (used when starting a new session) ── */
+  .fade-clear { transition: opacity 0.18s ease; }
+  .fade-clear.fading { opacity: 0; }
+
+  /* ── Two-button action area (post-stop) ── */
+  .action-pair {
+    display: inline-flex; gap: 6px;
+    flex-shrink: 0;
+  }
+  .new-session-btn {
+    /* secondary blue: blue stroke, transparent fill — distinguishable
+       from the filled blue Save… without introducing a new palette. */
+    appearance: none; -webkit-appearance: none; border: none;
+    color: var(--accent);
+    background: transparent;
+    box-shadow: 0 0 0 1px var(--accent);
+    font-family: inherit;
+    font-size: 13.5px; font-weight: 600; letter-spacing: 0.005em;
+    padding: 7px 14px; border-radius: 8px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .new-session-btn:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  .new-session-btn .ns-glyph {
+    width: 12px; height: 12px;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+
+  /* ── Confirmation prompt (used by New Session) ── */
+  .confirm-modal {
+    width: 380px;
+    padding: 18px;
+  }
+  .confirm-modal h2 { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+  .confirm-modal .modal-sub { font-size: 12px; color: var(--secondary); margin-bottom: 14px; line-height: 1.4; }
+  .confirm-modal .actions {
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .confirm-modal .actions .opt {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px;
+    padding: 9px 12px;
+    background: var(--group-bg);
+    border-radius: 8px;
+    box-shadow: 0 0 0 0.5px var(--group-stroke);
+    font-size: 13px; cursor: pointer; user-select: none;
+    transition: background 0.14s ease;
+  }
+  .confirm-modal .actions .opt:hover { background: var(--chip-bg); }
+  .confirm-modal .actions .opt .descr {
+    font-size: 11.5px; color: var(--secondary);
+    margin-top: 2px;
+  }
+  .confirm-modal .actions .opt-cancel {
+    align-self: flex-end;
+    margin-top: 4px;
+  }
 
   /* Transcript pane (Transcription mode) */
   .transcript-pane {
@@ -718,8 +842,9 @@
 <div class="controlbar">
   <button class="pill-btn" onclick="setMode('transcription')">Show Transcription mode</button>
   <button class="pill-btn" onclick="setMode('asking')">Show Asking mode</button>
-  <button class="pill-btn" onclick="forceStop()">Force Stop (show Save…)</button>
+  <button class="pill-btn" onclick="forceStop()">Force Stop (show [New Session][Save…])</button>
   <button class="pill-btn" onclick="forceRecord()">Reset to Recording</button>
+  <button class="pill-btn" onclick="clearSession()">Trigger clearSession()</button>
 </div>
 
 <!-- ============== Popover (light variant — primary) ============== -->
@@ -729,7 +854,7 @@
     <div class="variant-name">macrec-ui — Transcription mode (active)</div>
     <div class="variant-desc">Top: segmented switch [Transcription | Asking]. Bottom: mic + system-audio indicators in a status bar. While recording, the right-most action is a red Stop button.</div>
 
-    <div class="popover light" id="popover-main">
+    <div class="popover light resizable" id="popover-main">
       <!-- HEADER -->
       <div class="header">
         <input class="header-input" id="filename-input" value="recording-2026-05-12-14-30" />
@@ -751,47 +876,62 @@
 
         <!-- Transcription mode -->
         <div class="mode-pane" id="pane-transcription">
-          <div class="section">
-            <div class="section-title"><span>Engine &amp; language</span></div>
-            <div class="group">
-              <div class="row">
-                <span class="label">Engine</span>
-                <div class="control">
-                  <select class="popup" id="engine-select" onchange="onEngineChange()">
-                    <option value="soniox" selected>Soniox — cloud, multilingual</option>
-                    <option value="apple-speech">Apple Speech — on-device</option>
-                    <option value="apple-cloud">Apple Speech — Cloud</option>
-                    <option value="whisperkit">WhisperKit — on-device</option>
-                    <option value="parakeet">Parakeet — on-device, multilingual</option>
-                    <option value="gemini">Google Gemini — cloud</option>
-                    <option value="elevenlabs">ElevenLabs — cloud</option>
-                    <option value="azure-batch">Azure OpenAI — batch</option>
-                    <option value="azure-realtime">Azure OpenAI — realtime</option>
-                  </select>
+
+          <!-- Collapsible Engine & Language — default collapsed -->
+          <div class="collapsible-engine" id="engine-collapse">
+            <div class="collapsible-summary" id="engine-summary" onclick="toggleEngineCollapse()">
+              <span class="summary-text">
+                <span class="label-strong" id="summary-engine">Soniox</span>
+                <span class="dot-sep">•</span>
+                <span id="summary-lang">Auto-detect</span>
+                <span class="dot-sep">•</span>
+                <span style="color: var(--secondary)" id="summary-source">Mixed</span>
+              </span>
+              <span class="caret" aria-hidden="true">
+                <svg width="11" height="7" viewBox="0 0 11 7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1,1 5.5,5.5 10,1"></polyline></svg>
+              </span>
+            </div>
+            <div class="collapsible-body" id="engine-body">
+              <div class="group">
+                <div class="row">
+                  <span class="label">Engine</span>
+                  <div class="control">
+                    <select class="popup" id="engine-select" onchange="onEngineChange()">
+                      <option value="Soniox" selected>Soniox — cloud, multilingual</option>
+                      <option value="Apple Speech">Apple Speech — on-device</option>
+                      <option value="Apple Cloud">Apple Speech — Cloud</option>
+                      <option value="WhisperKit">WhisperKit — on-device</option>
+                      <option value="Parakeet">Parakeet — on-device, multilingual</option>
+                      <option value="Gemini">Google Gemini — cloud</option>
+                      <option value="ElevenLabs">ElevenLabs — cloud</option>
+                      <option value="Azure batch">Azure OpenAI — batch</option>
+                      <option value="Azure realtime">Azure OpenAI — realtime</option>
+                    </select>
+                  </div>
                 </div>
-              </div>
-              <div class="row">
-                <span class="label">Language</span>
-                <div class="control">
-                  <select class="popup" id="lang-select">
-                    <option>Greek (Greece) — el-GR</option>
-                    <option>English (US) — en-US</option>
-                    <option selected>Auto-detect</option>
-                    <option>French (FR) — fr-FR</option>
-                    <option>Spanish (ES) — es-ES</option>
-                    <option>German (DE) — de-DE</option>
-                  </select>
+                <div class="row">
+                  <span class="label">Language</span>
+                  <div class="control">
+                    <select class="popup" id="lang-select" onchange="onLangChange()">
+                      <option value="Greek">Greek (Greece) — el-GR</option>
+                      <option value="English (US)">English (US) — en-US</option>
+                      <option value="Auto-detect" selected>Auto-detect</option>
+                      <option value="French">French (FR) — fr-FR</option>
+                      <option value="Spanish">Spanish (ES) — es-ES</option>
+                      <option value="German">German (DE) — de-DE</option>
+                    </select>
+                  </div>
                 </div>
-              </div>
-              <div class="row">
-                <span class="label">Source</span>
-                <div class="control">
-                  <select class="popup">
-                    <option selected>Mixed</option>
-                    <option>System audio only</option>
-                    <option>Microphone only</option>
-                    <option>Split (system + mic)</option>
-                  </select>
+                <div class="row">
+                  <span class="label">Source</span>
+                  <div class="control">
+                    <select class="popup" id="source-select" onchange="onSourceChange()">
+                      <option value="Mixed" selected>Mixed</option>
+                      <option value="System only">System audio only</option>
+                      <option value="Mic only">Microphone only</option>
+                      <option value="Split">Split (system + mic)</option>
+                    </select>
+                  </div>
                 </div>
               </div>
             </div>
@@ -799,7 +939,7 @@
 
           <div class="section">
             <div class="section-title"><span>Live transcript</span><span class="meta-right" id="transcript-count">0 segments</span></div>
-            <div class="transcript-pane" id="transcript-pane">
+            <div class="transcript-pane fade-clear" id="transcript-pane">
               <div class="seg-line">
                 <span class="ts">00:00:04</span>
                 <span class="who mic">Mic</span>
@@ -809,24 +949,24 @@
           </div>
         </div>
 
-        <!-- Asking mode -->
+        <!-- Asking mode — chat-input layout: history scrolls above, input pinned at bottom -->
         <div class="mode-pane" id="pane-asking" style="display:none">
-          <div class="ask-input-row">
+          <div class="section-title" style="padding-left: 4px; padding-right: 4px;">
+            <span>Q&amp;A history</span><span class="meta-right" id="qa-count">0 pairs</span>
+          </div>
+          <div class="qa-history fade-clear" id="qa-history">
+            <div class="qa-empty" id="qa-empty">
+              No questions yet. Type one below to ask the agent about what's been said so far.<br>
+              <span style="opacity:0.7;">Default provider: openai (gpt-4o) — change in Settings</span>
+            </div>
+          </div>
+          <!-- input pinned to BOTTOM, chat-style -->
+          <div class="ask-input-row" style="margin-top:10px; margin-bottom:0;">
             <span class="mic-stub" title="Voice input — coming soon">
               <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M7 1a2 2 0 0 0-2 2v4a2 2 0 0 0 4 0V3a2 2 0 0 0-2-2zM3 7a4 4 0 0 0 8 0h1a5 5 0 0 1-4.5 4.97V13H10v1H4v-1h2.5v-1.03A5 5 0 0 1 2 7h1z"/></svg>
             </span>
             <input class="ask-input" id="ask-input" placeholder="Ask a question about this recording…" />
             <button class="go-btn" onclick="submitQuestion()">Ask <span style="opacity:0.8; font-size:12px; font-weight:500;">↩</span></button>
-          </div>
-
-          <div class="section-title" style="padding-left: 4px; padding-right: 4px;">
-            <span>Q&amp;A history</span><span class="meta-right" id="qa-count">0 pairs</span>
-          </div>
-          <div class="qa-history" id="qa-history">
-            <div class="qa-empty" id="qa-empty">
-              No questions yet. Type one above to ask the agent about what's been said so far.<br>
-              <span style="opacity:0.7;">Default provider: openai (gpt-4o) — change in Settings</span>
-            </div>
           </div>
         </div>
 
@@ -858,10 +998,17 @@
 
         <span class="spacer"></span>
 
-        <button class="record-btn actionbtn" id="action-btn" onclick="onActionClick()">
-          <span class="stop-glyph"></span>
-          <span id="action-btn-label">Stop</span>
-        </button>
+        <!-- Action area swaps:
+               · While recording → single red Stop button
+               · After Stop      → [ New Session ] [ Save… ] pair (both reachable
+                                   after a save, so the user can save again or
+                                   start fresh) -->
+        <div class="action-area" id="action-area">
+          <button class="record-btn actionbtn" id="stop-btn" onclick="onStopClick()">
+            <span class="stop-glyph"></span>
+            <span>Stop</span>
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -984,6 +1131,31 @@
   </div>
 </div>
 
+<!-- ============== New-Session confirm modal ============== -->
+<div class="modal-scrim" id="new-session-modal">
+  <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="ns-title">
+    <h2 id="ns-title">Start a new session?</h2>
+    <div class="modal-sub" id="ns-sub">The current recording has not been saved yet. What should we do with it?</div>
+    <div class="actions">
+      <div class="opt" onclick="nsChoose('save-and-new')">
+        <div>
+          <div><strong>Save and start new</strong></div>
+          <div class="descr">Open the Save dialog first, then clear and start fresh.</div>
+        </div>
+        <span style="color: var(--accent); font-size: 18px;">›</span>
+      </div>
+      <div class="opt" onclick="nsChoose('discard-and-new')">
+        <div>
+          <div><strong>Discard and start new</strong></div>
+          <div class="descr">Clear the transcript &amp; Q&amp;A history without saving.</div>
+        </div>
+        <span style="color: var(--accent); font-size: 18px;">›</span>
+      </div>
+      <button class="btn opt-cancel" onclick="closeNewSessionModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <!-- ============== Toast ============== -->
 <div class="toast-wrap">
   <div class="toast" id="toast" onclick="hideToast()">
@@ -1042,29 +1214,36 @@
     }
   }
 
-  // ─────────── Stop / Save flow ───────────
-  function onActionClick() {
+  // ─────────── Action area state machine ───────────
+  //
+  //   recording → onStopClick() → doStop()
+  //               action area swaps to a [ New Session ] [ Save… ] pair.
+  //
+  //   stopped  → Save…       → openSaveModal() → confirmSave() → toast
+  //                            (action area STAYS as the pair so the user can
+  //                            save again under a different name, or move on).
+  //   stopped  → New Session → openNewSessionModal()
+  //                            options: save-and-new / discard-and-new / cancel.
+  //                            "save-and-new" runs Save… first, then clearSession();
+  //                            "discard-and-new" runs clearSession() directly.
+  //                            clearSession() → fade transcript+QA → reset state →
+  //                                            back to Recording + Transcription + collapsed engine.
+
+  function onStopClick() {
     if (RECORDING) doStop();
-    else openSaveModal();
   }
+
   function doStop() {
     RECORDING = false;
-    // Mute the bars / change rec-state
     document.getElementById('rec-state-text').textContent = 'Stopped';
     document.getElementById('statusbar').classList.add('stopped');
     document.getElementById('state-pill-text').textContent = 'Stopped · ready to save';
     document.getElementById('state-pill').style.background = 'var(--chip-bg)';
     document.getElementById('state-pill').style.color = 'var(--secondary)';
     document.getElementById('state-pill').querySelector('.dot').style.background = 'var(--secondary)';
-    // Swap action button: red Stop → blue Save…
-    const btn = document.getElementById('action-btn');
-    btn.classList.remove('record-btn');
-    btn.classList.add('go-btn');
-    btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 13 13" fill="currentColor" style="opacity:0.95;"><path d="M1 3.2A1.2 1.2 0 0 1 2.2 2h2.4l1 1.2h5.2A1.2 1.2 0 0 1 12 4.4v5.4A1.2 1.2 0 0 1 10.8 11H2.2A1.2 1.2 0 0 1 1 9.8z"/></svg><span id="action-btn-label">Save…</span>';
+    renderActionArea();
   }
-  function forceStop() {
-    if (RECORDING) doStop();
-  }
+  function forceStop()   { if (RECORDING) doStop(); }
   function forceRecord() {
     RECORDING = true;
     document.getElementById('rec-state-text').textContent = 'Recording';
@@ -1072,12 +1251,35 @@
     document.getElementById('state-pill-text').textContent = 'Recording · live';
     document.getElementById('state-pill').removeAttribute('style');
     document.getElementById('state-pill').querySelector('.dot').removeAttribute('style');
-    const btn = document.getElementById('action-btn');
-    btn.classList.remove('go-btn');
-    btn.classList.add('record-btn');
-    btn.innerHTML = '<span class="stop-glyph"></span><span id="action-btn-label">Stop</span>';
+    renderActionArea();
   }
 
+  // The action area's render is a function of RECORDING.
+  function renderActionArea() {
+    const a = document.getElementById('action-area');
+    if (!a) return;
+    if (RECORDING) {
+      a.innerHTML =
+        '<button class="record-btn actionbtn" id="stop-btn" onclick="onStopClick()">'
+        + '<span class="stop-glyph"></span><span>Stop</span></button>';
+    } else {
+      a.innerHTML =
+        '<div class="action-pair">'
+        + '  <button class="new-session-btn" onclick="openNewSessionModal()">'
+        + '    <span class="ns-glyph">'
+        + '      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">'
+        + '        <path d="M6 1.5v9M1.5 6h9"/></svg>'
+        + '    </span>New Session'
+        + '  </button>'
+        + '  <button class="go-btn" onclick="openSaveModal()">'
+        + '    <svg width="13" height="13" viewBox="0 0 13 13" fill="currentColor" style="opacity:0.95;"><path d="M1 3.2A1.2 1.2 0 0 1 2.2 2h2.4l1 1.2h5.2A1.2 1.2 0 0 1 12 4.4v5.4A1.2 1.2 0 0 1 10.8 11H2.2A1.2 1.2 0 0 1 1 9.8z"/></svg>'
+        + '    <span>Save…</span>'
+        + '  </button>'
+        + '</div>';
+    }
+  }
+
+  // ─────────── Save modal ───────────
   function openSaveModal() {
     document.getElementById('save-modal').classList.add('show');
     const fn = document.getElementById('folder-name');
@@ -1089,12 +1291,75 @@
   }
   function closeSaveModal() {
     document.getElementById('save-modal').classList.remove('show');
+    // If we were in the save-and-new path, abort it on cancel.
+    SAVE_THEN_CLEAR = false;
   }
   function confirmSave() {
     const name = (document.getElementById('folder-name').value || '').trim() || computeDefaultFolderName();
     document.getElementById('toast-text').textContent = `✓ Saved to ~/Recordings/${name}/`;
-    closeSaveModal();
+    document.getElementById('save-modal').classList.remove('show');
     showToast();
+    // Action area stays as [New Session][Save…] — user may save again.
+    if (SAVE_THEN_CLEAR) {
+      SAVE_THEN_CLEAR = false;
+      setTimeout(clearSession, 350); // let the toast appear first
+    }
+  }
+
+  // ─────────── New-Session confirm modal ───────────
+  let SAVE_THEN_CLEAR = false;
+  function openNewSessionModal() {
+    document.getElementById('new-session-modal').classList.add('show');
+  }
+  function closeNewSessionModal() {
+    document.getElementById('new-session-modal').classList.remove('show');
+  }
+  function nsChoose(choice) {
+    closeNewSessionModal();
+    if (choice === 'save-and-new') {
+      SAVE_THEN_CLEAR = true;
+      openSaveModal();
+    } else if (choice === 'discard-and-new') {
+      clearSession();
+    }
+  }
+
+  // ─────────── Clear session (used by New-Session paths) ───────────
+  function clearSession() {
+    const tp = document.getElementById('transcript-pane');
+    const qh = document.getElementById('qa-history');
+    [tp, qh].forEach(el => el && el.classList.add('fading'));
+    setTimeout(() => {
+      // Reset in-memory model
+      TRANSCRIPT = [];
+      QA = [];
+      speechIdx = 0;
+      SECS = 0;
+      // Re-render empty
+      renderTranscript();
+      renderQA();
+      // Reset filename & header
+      document.getElementById('filename-input').value = computeDefaultFolderName();
+      // Reset engine collapsible to default-collapsed
+      const ce = document.getElementById('engine-collapse');
+      ce.classList.remove('open');
+      // Reset mode to Transcription
+      setMode('transcription');
+      // Reset state to Recording
+      forceRecord();
+      // Reset clocks
+      document.getElementById('statusbar-clock').textContent = '00:00';
+      document.getElementById('anchor-clock').textContent = '00:00';
+      // Fade back in
+      requestAnimationFrame(() => {
+        [tp, qh].forEach(el => el && el.classList.remove('fading'));
+      });
+    }, 200);
+  }
+
+  function updateFolderPathPreview() {
+    const fn = (document.getElementById('folder-name').value || '').trim() || computeDefaultFolderName();
+    document.getElementById('folder-path-preview').textContent = `~/Recordings/${fn}/`;
   }
   function updateFolderPathPreview() {
     const fn = (document.getElementById('folder-name').value || '').trim() || computeDefaultFolderName();
@@ -1261,21 +1526,44 @@
     return 'Based on the last few minutes: the pilot is locked to a 6-week window starting June 2; SAML federation unblocks SSO concerns until Q3.';
   }
 
+  // ─────────── Engine & Language collapsible ───────────
+  // Default state: collapsed (open=false). Toggling animates max-height.
+  function toggleEngineCollapse() {
+    const el = document.getElementById('engine-collapse');
+    el.classList.toggle('open');
+  }
+  function onEngineChange() {
+    const v = document.getElementById('engine-select').value;
+    document.getElementById('summary-engine').textContent = v;
+  }
+  function onLangChange() {
+    const v = document.getElementById('lang-select').value;
+    document.getElementById('summary-lang').textContent = v;
+  }
+  function onSourceChange() {
+    const v = document.getElementById('source-select').value;
+    document.getElementById('summary-source').textContent = v;
+  }
+
   // ─────────── Init ───────────
   document.addEventListener('DOMContentLoaded', () => {
     renderTranscript();
     renderQA();
     pumpTranscript();
+    renderActionArea();
     document.getElementById('ask-input').addEventListener('keydown', e => {
       if (e.key === 'Enter') { e.preventDefault(); submitQuestion(); }
     });
     document.getElementById('folder-name').addEventListener('input', updateFolderPathPreview);
-    // Esc to close save modal; Cmd+S inside modal triggers Save
+    // Esc / Enter for both modals (save + new-session)
     document.addEventListener('keydown', e => {
-      const modal = document.getElementById('save-modal');
-      if (modal.classList.contains('show')) {
+      const saveModal = document.getElementById('save-modal');
+      const nsModal   = document.getElementById('new-session-modal');
+      if (saveModal.classList.contains('show')) {
         if (e.key === 'Escape') { e.preventDefault(); closeSaveModal(); }
         if (e.key === 'Enter')  { e.preventDefault(); confirmSave(); }
+      } else if (nsModal.classList.contains('show')) {
+        if (e.key === 'Escape') { e.preventDefault(); closeNewSessionModal(); }
       }
     });
   });

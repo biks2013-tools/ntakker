@@ -196,14 +196,15 @@ The following requirements replace FR-IRQ-34..39 (which were authored for Patter
 #### Layout commitment 2 — Top segmented control: Transcription | Asking
 
 - **FR-IRQ-43** *(showcase)* — Immediately below the header (filename row), the popover MUST render a two-segment switch with the labels **Transcription** and **Asking**. The control MUST be built from the baseline's `.btn` chrome — two `<button>`s inside a `.chip-bg`-tinted container at 3 pt inset, with the selected segment promoted to `var(--control-bg)` background + accent text + the standard `.btn` shadow stack. **Default selection on session start: Transcription.**
-- **FR-IRQ-44** *(showcase)* — Selecting **Transcription** MUST render, in the body region: (a) an "Engine & language" `.section` with three rows — Engine (`.popup` listing Soniox, Apple Speech, Apple Cloud, WhisperKit, Parakeet, Gemini, ElevenLabs, Azure OpenAI batch, Azure OpenAI realtime, matching the providers found at `Sources/MacrecCore/Transcription/Providers/` on master), Language (`.popup` with locale list and `Auto-detect`), Source (`.popup` Mixed / System / Mic / Split); (b) a "Live transcript" `.section` containing a `transcript-pane` (mono-readable, scrollable, ~200 pt tall) that streams new segments with timestamp + speaker label as they arrive.
-- **FR-IRQ-45** *(showcase)* — Selecting **Asking** MUST render, in the same body region: (a) a top-of-body **input row** styled as the baseline's `.key-input` widened, with the v2-stub mic icon and a blue `.go-btn` "Ask" submit button (mirror of `.record-btn`, see FR-IRQ-23); (b) a **Q&A history** scrollable region beneath the input, populated by entries of `{question, ts_recording, answer, streaming}`. Each entry MUST display the question with its recording-relative timestamp annotated as `XX:YY in recording`, then the streaming answer beneath it. Empty-state copy: *"No questions yet. Type one above to ask the agent about what's been said so far."*
+- **FR-IRQ-44** *(showcase)* — Selecting **Transcription** MUST render, in the body region: (a) a **collapsible** Engine & Language disclosure — *default-collapsed* (FR-IRQ-44a) — whose collapsed-state row is a single summary line of the current selections (`Engine • Language • Source • ▾`) and whose expanded state reveals the same three `.popup` rows as before (Engine listing the nine providers at `Sources/MacrecCore/Transcription/Providers/` on master — Soniox / Apple Speech / Apple Cloud / WhisperKit / Parakeet / Gemini / ElevenLabs / Azure batch / Azure realtime; Language with locale list + `Auto-detect`; Source — Mixed / System / Mic / Split); (b) a "Live transcript" `.section` containing a `transcript-pane` (mono-readable, scrollable) that streams new segments with timestamp + speaker label as they arrive.
+- **FR-IRQ-44a** *(showcase)* — The Engine & Language disclosure MUST default to **collapsed** on session start so the live transcript pane has the maximum vertical real estate by default. Clicking *anywhere* on the collapsed summary row (or its caret) MUST toggle the disclosure with a 200 ms ease animation (max-height tween). The caret MUST rotate 180° between states. State is held in memory only — no persistence is required for v1 (the user can re-collapse on demand).
+- **FR-IRQ-45** *(showcase)* — Selecting **Asking** MUST render, in the same body region, a **chat-style layout**: (a) a **Q&A history** scrollable region at the **top** of the pane (newest at bottom), populated by entries of `{question, ts_recording, answer, streaming}` — each entry showing the question with its recording-relative timestamp annotated as `XX:YY in recording`, then the streaming answer beneath; (b) a **persistent input row pinned to the BOTTOM** of the pane (NOT the top), styled as the baseline's `.key-input` widened, with the v2-stub mic icon and a blue `.go-btn` "Ask" submit button (mirror of `.record-btn`, see FR-IRQ-23). On new Q&A entry, the history MUST auto-scroll to the bottom so the latest pair is visible above the input. Empty-state copy: *"No questions yet. Type one below to ask the agent about what's been said so far."*
 - **FR-IRQ-46** *(showcase)* — Switching modes MUST be instant from the user's perspective (≤ 50 ms wall-clock from segment click to body swap). Backstage cadence is unchanged: while the user is in Asking mode, the transcript-pump continues to accumulate transcript segments into the in-memory transcript model; while the user is in Transcription mode, the Q&A history model continues to receive answers that may still be streaming from prior questions. Switching back surfaces the accumulated state — no items are lost.
 - **FR-IRQ-47** *(showcase)* — The segmented control MUST also be reachable from the keyboard via `⌘1` (Transcription) and `⌘2` (Asking) while the popover has key focus. The currently-selected segment is reflected on the `aria-selected` attribute for accessibility.
 
 #### Layout commitment 3 — Stop / Save… footer action + folder dialog
 
-- **FR-IRQ-48** *(showcase)* — While the session is in any active state (`recording / paused / pausing / resuming / splitting`), the status-bar's right-most action MUST be a **Stop** button styled as `.record-btn` (red gradient) with a square stop glyph (rounded 2 pt). When the session transitions to `.stopped`, the same button position MUST transition into a **Save…** button styled as the blue `.go-btn` (mirror geometry of `.record-btn`, accent gradient) with a folder glyph. The button's DOM position MUST NOT change — only its label, glyph, and gradient — so muscle memory is preserved.
+- **FR-IRQ-48** *(showcase)* — While the session is in any active state (`recording / paused / pausing / resuming / splitting`), the status-bar's right-most action area MUST be a single **Stop** button styled as `.record-btn` (red gradient) with a square stop glyph (rounded 2 pt). When the session transitions to `.stopped`, the action area MUST swap to a **two-button pair**: a secondary **New Session** button (transparent fill, 1-pt `--accent` stroke, accent text + leading `+` glyph) followed by the primary **Save…** button styled as the blue `.go-btn` with a folder glyph. The pair remains visible across saves — a successful Save MUST NOT collapse the pair back to a single button; the user can save again under a different name, or proceed to New Session. (See FR-IRQ-55..58 for the New-Session flow and the clear-on-new-session behaviour.)
 - **FR-IRQ-49** *(showcase)* — Clicking **Save…** MUST open a centered modal dialog (NOT a system save panel — see FR-IRQ-50 for the rationale). The dialog MUST contain:
   - A title row reading **"Save this recording"**.
   - A one-line sub-headline explaining that everything (audio + transcript + Q&A) will be saved together under `~/Recordings/<folder-name>/`.
@@ -219,6 +220,91 @@ The following requirements replace FR-IRQ-34..39 (which were authored for Patter
 - **FR-IRQ-52** *(artifact)* — All file writes MUST be atomic (write to `.tmp` siblings, then rename). On any write failure, the partial folder MUST be left in place with a `.SAVE-INCOMPLETE` marker file so the user can recover manually; the toast MUST show a warn-styled message instead of the success message. No silent rollback.
 - **FR-IRQ-53** *(showcase)* — A successful save MUST surface as the `.status-chip` toast described in FR-IRQ-30, reading `✓ Saved to ~/Recordings/<folder-name>/`. Clicking the toast opens the folder in Finder.
 - **FR-IRQ-54** *(integration)* — The Save dialog's "OK" path MUST delegate to the `TranscriptExporter` module introduced in FR-IRQ-33, but with a new `--folder` mode that bundles all three artifacts under one directory instead of writing a single file: `macrec export --session <id> --folder ~/Recordings/<name>/` is the CLI mirror that produces the same byte-identical output (NFR-IRQ-Export-Determinism still applies).
+
+#### Post-stop state machine: Save vs New Session
+
+When the user presses Stop, the action area transitions from a single red Stop button to a two-button pair: `[ New Session ] [ Save… ]`. Both targets remain reachable indefinitely (until the user picks one). The state machine is:
+
+```
+   ┌───────────────────┐
+   │   recording       │
+   └────────┬──────────┘
+            │ Stop
+            ▼
+   ┌───────────────────┐        Save…         ┌─────────────────┐
+   │   stopped         │ ───────────────────▶ │  Save dialog    │
+   │   action area:    │                      │                 │
+   │   [New Session]   │ ◀────────────────────│  confirm → toast│
+   │   [   Save…   ]   │                      │  (stays stopped │
+   └────────┬──────────┘                      │   with pair)    │
+            │ New Session                     └─────────────────┘
+            ▼
+   ┌──────────────────────────────────────────┐
+   │   "Start a new session?" confirm modal:  │
+   │     (a) Save and start new   ─────────────┐
+   │     (b) Discard and start new ───┐        │
+   │     (c) Cancel                   │        │
+   └──────────────────────────────────┘        │
+                                      │        │
+                                      │        ▼
+                                      │   Save dialog → toast →
+                                      │   clearSession()
+                                      ▼
+                              clearSession()
+                              (FR-IRQ-56)
+                                      │
+                                      ▼
+                              back to "recording" state,
+                              clean transcript + Q&A,
+                              default-collapsed engine row,
+                              Transcription mode,
+                              clock 00:00
+```
+
+- **FR-IRQ-55** *(showcase)* — When the user clicks **New Session** while stopped, a confirmation modal MUST appear with three options (rendered as `.opt` rows + a trailing Cancel `.btn`):
+  - **Save and start new** — runs the Save flow first (FR-IRQ-49 Save dialog), then on toast triggers `clearSession()` (FR-IRQ-56).
+  - **Discard and start new** — invokes `clearSession()` immediately, without saving.
+  - **Cancel** — closes the confirmation modal; action area remains `[ New Session ] [ Save… ]`.
+  
+  The confirmation modal MUST NOT be skippable by configuration in v1; we want the user to think twice before discarding work. Esc closes it. Clicking outside the modal is treated as Cancel.
+
+- **FR-IRQ-56** *(showcase)* — `clearSession()` is the single function that resets the popover to its pre-record state. It MUST do, in order:
+  1. Apply a `fading` class to the transcript pane and the Q&A history (`opacity: 0`, 180–200 ms ease).
+  2. Empty the in-memory `TRANSCRIPT[]` and `QA[]` models.
+  3. Reset the elapsed clock to `00:00`.
+  4. Reset the filename field to the next default `recording-YYYY-MM-DD-HH-MM` derived from the current wall-clock.
+  5. Re-collapse the Engine & Language disclosure to its default-collapsed state (FR-IRQ-44a).
+  6. Reset the segmented control to **Transcription** mode.
+  7. Reset the action area to a single red **Stop** button (re-entering the recording state).
+  8. Remove the `fading` class so the now-empty panes fade back in.
+
+- **FR-IRQ-57** *(showcase)* — A successful Save (toast emitted) MUST NOT clear the session unless the user explicitly chose **Save and start new** at the New-Session modal (FR-IRQ-55). The default behaviour after a stand-alone Save is to **stay** in the stopped state with the `[ New Session ] [ Save… ]` pair visible, so the user can save again under a different folder name if they wish. (Granola's "save copy" idiom — multiple exports of the same session.)
+
+- **FR-IRQ-58** *(showcase)* — While the New-Session confirmation modal is open, the keyboard MUST honor: `Esc` → Cancel; clicking outside → Cancel. The three options are mouse / tap targets; the user must make an explicit choice. No keyboard accelerator (`⏎ = Save and start new`) is wired in v1 because the three options are not ordered by danger and we want a deliberate click.
+
+#### Clear-on-new-session behavior
+
+This is the in-flight UX clarification of FR-IRQ-56. From the user's perspective:
+
+- **Visible signal that the action is deliberate**: a brief fade-out (≈ 180 ms) of both the transcript pane and the Q&A history; then they are observed empty for a frame; then a fade-back-in (≈ 180 ms). Total reset takes ~360 ms wall-clock.
+- **What gets cleared**: the live transcript content, the Q&A history content, the elapsed clock, the filename field's default — all reset.
+- **What gets reset to default**: the Engine & Language disclosure (re-collapses), the mode segmented control (returns to Transcription), the action area (returns to single Stop button), the rec-state pill (returns to "Recording · live").
+- **What is preserved**: the user's preferred Engine, Language, Source picks under the Engine & Language disclosure — the *selections* persist; only the *collapsed/expanded UI state* resets. The user does not have to re-pick Soniox / Auto-detect / Mixed every time they start a new session.
+- **What stays untouched on Save (without New Session)**: nothing in the popover body. A plain Save (toast → stopped state) leaves the transcript and Q&A history exactly as they were so the user can save again, or compare, or copy text out.
+
+#### Popover sizing and user-resize
+
+The baseline mockup at `docs/design/mockups/popover-redesign.html` ships a static 360-pt-wide popover with **no interactive resize affordance** (no JavaScript, no resize-handle SVG, no `ResizeObserver` — verified by reading the file). The target-state surface needs to host more controls in one row (`[ New Session ][ Save… ]` plus the mic + system indicators + state pill + clock + spacer), so it adjusts the popover sizing as follows:
+
+- **FR-IRQ-59** *(showcase)* — The popover's **default width** MUST be `480 pt` (up from the baseline's `360 pt`), sized so the recording-state status bar can show all of: mic indicator + divider + system indicator + divider + recording-state pill + elapsed clock + flexible spacer + `[ New Session ][ Save… ]` button pair, without any element being cut off or wrapping.
+- **FR-IRQ-60** *(showcase)* — The popover MUST expose a **user-resize affordance in both dimensions**. v1 uses the canonical no-JS pattern: native CSS `resize: both` on the popover with `overflow: hidden`, which surfaces the OS-native resize handle in the bottom-right corner of the element. (This is the simplest possible implementation that is consistent with the baseline's no-JS posture; if a later revision of the baseline adds a custom resize handle widget — currently it does not — the target MUST inherit that widget verbatim.)
+- **FR-IRQ-61** *(showcase)* — The popover MUST enforce sensible resize bounds:
+  - `min-width: 440 pt` — calibrated to keep the status-bar contents (indicators + pill + clock + two-button pair) visible without overflow.
+  - `max-width: 760 pt` — at this width the popover starts to feel "panel"-sized rather than "popover"-sized; widening further is gated.
+  - `min-height: 440 pt` — keeps the header, segmented control, body, and status bar all readable.
+  - `max-height: 820 pt` — fits comfortably on a 13" MacBook Pro screen without overflowing the menu-bar anchor.
+
+  The bounds MUST be enforced via the CSS `min-/max-width/height` properties on the popover (no JS clamping required).
 
 #### Folder & file naming convention
 
@@ -255,6 +341,16 @@ These criteria gate "done" for the three commitments. Each maps to a specific FR
 - **AC-IRQ-Pat-C-3** — While recording, **the right-most footer action is a red Stop button**. Clicking Stop transitions the same button to a blue Save… button in the same DOM position. Clicking Save… opens a centered modal with a folder-name field defaulted to `recording-YYYY-MM-DD-HH-MM`, a `→ ~/Recordings/<folder>/` path preview that updates live, a "Will be saved" preview list (`transcript.md`, `qa.md`, `recording-001.m4a`), Cancel, and Save. Confirming closes the modal and surfaces a `✓ Saved to ~/Recordings/<folder>/` toast. The on-disk folder exists after confirm and contains the three artifacts above. (Maps to FR-IRQ-48 through FR-IRQ-53.)
 - **AC-IRQ-Pat-C-4** — Visual-continuity check: open `mockups/current-state.html` and `mockups/target-state.html` side-by-side. The popover frame, palette, typography, button geometry, hairlines, group radii, and shadow stack MUST match exactly between the two. The only intentional differences are: (1) the top segmented control, (2) the bottom status bar layout, (3) the Stop/Save action button + dialog. Any other visual delta is a regression. (Maps to NFR-IRQ-Visual-Continuity.)
 - **AC-IRQ-Pat-C-5** — Power-user path: `macrec export --session <id> --folder ~/Recordings/<name>/` writes byte-identical artifacts to what the UI's Save dialog would produce for the same session, with no UI launched. (Maps to FR-IRQ-54.)
+
+The next five criteria cover the refinements that landed after user review (changes 1–5 in PR #5).
+
+- **AC-IRQ-Pat-C-6** — *Post-stop two-button action area.* While recording, the status-bar's right-most slot shows a single red **Stop** button. Pressing Stop replaces the slot with a **two-button pair**: `[ New Session ]` (transparent fill, accent stroke) immediately followed by `[ Save… ]` (filled accent-blue gradient, mirror of `.record-btn` geometry). Performing a Save → toast cycle DOES NOT collapse the pair back to a single button — the pair remains visible so the user can save again, or proceed to New Session. (Maps to FR-IRQ-48, FR-IRQ-57.)
+- **AC-IRQ-Pat-C-7** — *New-Session state machine.* Clicking **New Session** while stopped opens a confirmation modal with exactly three explicit options: **Save and start new**, **Discard and start new**, **Cancel**. Esc and click-outside both equal Cancel; no keyboard accelerator picks one of the destructive options automatically. The "Save and start new" path runs the Save dialog first and only clears after the success toast; "Discard and start new" clears immediately. (Maps to FR-IRQ-55, FR-IRQ-58.)
+- **AC-IRQ-Pat-C-8** — *Clear-on-new-session behavior.* When `clearSession()` runs (via either New-Session path), the transcript pane and Q&A history visibly fade out over ~180 ms, are observed empty for a frame, then fade back in empty. After the clear, the popover state is identical to a fresh launch: clock `00:00`, filename field reset to the next `recording-YYYY-MM-DD-HH-MM` default, Engine & Language disclosure default-collapsed, mode = Transcription, action area = single red Stop button, rec-state pill = "Recording · live". The user's Engine / Language / Source *selections* (not the collapse state) are preserved across the reset. (Maps to FR-IRQ-56.)
+- **AC-IRQ-Pat-C-9** — *Question input at the bottom of Asking mode.* In Asking mode, the input row is pinned to the **bottom** of the body (chat-app convention), with the Q&A history scrolling **above** it. New Q&A entries land at the bottom of the history *above* the input bar; the history auto-scrolls to keep the latest entry visible. The empty-state copy reads *"No questions yet. Type one below to ask the agent about what's been said so far."* (Maps to FR-IRQ-45.)
+- **AC-IRQ-Pat-C-10** — *Engine & Language collapsible + Resizable popover.*
+  - **Collapsible:** In Transcription mode, the Engine & Language section renders by default as a **single summary row** (`Soniox • Auto-detect • Mixed • ▾`). The full three-row picker is hidden until the user clicks anywhere on the summary row or its caret. The expand/collapse is animated (200 ms ease) and the caret rotates 180°. When collapsed, the live transcript pane occupies the freed vertical space. Resets to default-collapsed on `clearSession()`. (Maps to FR-IRQ-44, FR-IRQ-44a.)
+  - **Resizable:** The popover has `resize: both` (visible OS-native drag handle in the bottom-right corner) with `min-width: 440 pt`, `max-width: 760 pt`, `min-height: 440 pt`, `max-height: 820 pt`. At the `min-width`, the status-bar's `[ New Session ][ Save… ]` button pair, the mic + system indicators, the rec-state pill, and the elapsed clock all remain visible without overflow or wrapping. (Maps to FR-IRQ-59, FR-IRQ-60, FR-IRQ-61.)
 
 ## Problem statement
 
