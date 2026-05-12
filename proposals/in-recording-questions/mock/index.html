@@ -611,6 +611,80 @@
     background: #30D158;
   }
 
+  /* ── Combined Timeline (Pattern D) — speech + Q&A interleaved ── */
+  .timeline-group {
+    max-height: 360px;
+    overflow-y: auto;
+  }
+  .row.timeline-row {
+    padding: 8px 12px;
+    min-height: 0;
+    align-items: stretch;
+  }
+  .row.timeline-row.speech .qa-text { color: var(--value); }
+  .row.timeline-row.qa {
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+  .dark .row.timeline-row.qa {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+  }
+  .row.timeline-row.qa.streaming { /* subtle pulse left-stripe */
+    animation: qaPulse 1.6s ease-in-out infinite;
+  }
+  @keyframes qaPulse {
+    0%,100% { box-shadow: inset 2px 0 0 var(--accent); }
+    50%     { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 55%, transparent); }
+  }
+  .row.timeline-row.qa.hidden-by-filter { display: none; }
+
+  /* "↓ N new" pill anchor */
+  .new-pill-anchor {
+    position: relative;
+    height: 0;
+    pointer-events: none;
+  }
+  .new-pill {
+    position: absolute;
+    right: 8px;
+    top: -34px;
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    color: var(--accent);
+    cursor: pointer;
+    pointer-events: auto;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.18);
+    font-weight: 500;
+    padding: 4px 10px 4px 8px;
+  }
+  .new-pill .dot { background: var(--accent); }
+
+  /* Nav-A tabs styling */
+  .nav-tab {
+    border-radius: 7px !important;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+  .nav-tab:not(.on) { color: var(--secondary) !important; }
+  .nav-tab.on { color: white !important; background: var(--accent) !important; }
+
+  /* Nav-C slide layer */
+  .slide-layer {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    background: inherit;
+    background-color: var(--group-bg);
+    backdrop-filter: blur(60px) saturate(180%);
+    -webkit-backdrop-filter: blur(60px) saturate(180%);
+    box-shadow: 0 -8px 24px rgba(0,0,0,0.25);
+    padding: 14px;
+    transform: translateY(100%);
+    transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+    border-top-left-radius: 14px;
+    border-top-right-radius: 14px;
+  }
+  .slide-layer.open { transform: translateY(0); }
+  #nav-c-popover #nav-c-transcript { transition: opacity 0.22s ease; }
+  #nav-c-popover.slide-open #nav-c-transcript { opacity: 0.35; }
+
   /* ── Showcase scaffolding ── */
   .footnote {
     margin: 32px auto 0;
@@ -676,14 +750,344 @@
 </div>
 
 <!-- ============== Demo control bar ============== -->
+<!--
+  Primary stage = the chosen "Combined Timeline" navigation pattern
+  (Pattern D in requirements.md §"View navigation between transcript and Q&A").
+  The other patterns (Tabs / Persistent Split / Toggle-Slide) and the legacy
+  floating Ask overlay + Save Transcript dialog remain reachable behind a
+  "View modes" debug switch — review-only, not part of the recommended UX.
+-->
 <div class="controlbar">
-  <button class="pill-btn primary" onclick="setStage('ask')">1 · Ask overlay (during recording)</button>
-  <button class="pill-btn" onclick="setStage('save')">2 · Save Transcript dialog (after stop)</button>
-  <button class="pill-btn" onclick="showToast()">Show saved toast</button>
+  <button class="pill-btn primary" onclick="setStage('combined')">★ Combined Timeline (chosen)</button>
+  <button class="pill-btn" onclick="setStage('save')">Save Transcript dialog</button>
+  <button class="pill-btn" onclick="setStage('ask')">Floating Ask overlay</button>
+  <span style="display:inline-flex; align-items:center; gap:6px; color: rgba(255,255,255,0.7); font-size: 11.5px; margin-left: 6px;">
+    <em style="font-style: normal; opacity: 0.7;">View modes (review-only):</em>
+    <button class="pill-btn" onclick="setStage('nav-a')" style="padding:5px 10px; font-size:11px;">A · Tabs</button>
+    <button class="pill-btn" onclick="setStage('nav-b')" style="padding:5px 10px; font-size:11px;">B · Split</button>
+    <button class="pill-btn" onclick="setStage('nav-c')" style="padding:5px 10px; font-size:11px;">C · Slide</button>
+  </span>
 </div>
 
-<!-- ============== STAGE A — Ask overlay ============== -->
-<div class="stage" id="stage-ask">
+<!-- ============== PRIMARY STAGE — Combined Timeline (Pattern D, recommended) ============== -->
+<div class="stage" id="stage-combined">
+
+  <!-- ===== LIGHT ===== -->
+  <div class="variant-block">
+    <div class="variant-tag">Pattern D · Chosen · Light</div>
+    <div class="variant-name">Combined Timeline — popover during recording</div>
+    <div class="variant-desc">Speech segments and Q&A pairs interleave chronologically in one scrollable list. Input bar is always present. <em>[Hide Q&A]</em> in the section title filters out Q&A rows. New speech/Q&A rows stream in over time.</div>
+
+    <div class="popover ask light" id="combined-light">
+      <!-- HEADER (verbatim baseline) -->
+      <div class="header">
+        <input class="header-input" value="recording-2026-05-12-14-30" />
+        <div class="header-meta">
+          <span class="perm-pill"><span class="dot"></span>Recording</span>
+          <span class="sep">·</span>
+          <span class="rec-dot"></span>
+          <span style="font-variant-numeric: tabular-nums;" id="combined-clock">14:30</span>
+          <span class="sep">·</span>
+          <span>~/Recordings</span>
+        </div>
+      </div>
+
+      <!-- COMBINED TIMELINE -->
+      <div class="section">
+        <div class="section-title">
+          <span>This recording</span>
+          <span class="meta-right">
+            <span id="combined-counts">54 lines · 3 Q&A</span>
+            ·
+            <button class="btn" id="hide-qa-btn" onclick="toggleHideQA()" style="padding:3px 9px; font-size:11px;">Hide Q&A</button>
+          </span>
+        </div>
+        <div class="group timeline-group" id="combined-timeline">
+          <!-- rows injected by JS; initial seed below for noscript visibility -->
+          <div class="row timeline-row speech">
+            <div class="control" style="flex-direction:column; align-items:flex-start; width:100%;">
+              <div class="qa-meta"><span class="who">Mic</span> · 00:00:04</div>
+              <div class="qa-text">Hi Sarah, thanks for taking the time today.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- "↓ N new" pill — appears when user scrolls up and new rows land -->
+      <div class="new-pill-anchor" id="new-pill-anchor">
+        <button class="perm-pill new-pill" id="new-pill" style="display:none" onclick="snapToBottom()">
+          <span class="dot"></span><span id="new-pill-text">↓ 0 new</span>
+        </button>
+      </div>
+
+      <!-- PERSISTENT INPUT -->
+      <div class="section">
+        <div class="group">
+          <div class="ask-input-row">
+            <span class="mic-stub" title="Voice input — coming soon">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M7 1a2 2 0 0 0-2 2v4a2 2 0 0 0 4 0V3a2 2 0 0 0-2-2zM3 7a4 4 0 0 0 8 0h1a5 5 0 0 1-4.5 4.97V13H10v1H4v-1h2.5v-1.03A5 5 0 0 1 2 7h1z"/></svg>
+            </span>
+            <input class="ask-input" id="combined-input" placeholder="Ask a question about this recording…" />
+            <button class="go-btn" onclick="askInCombined()">Send <span class="kbd">↩</span></button>
+          </div>
+        </div>
+      </div>
+
+      <!-- FOOTER -->
+      <div class="footer">
+        <div class="levels">
+          <span><span class="label-mono">mic</span>
+            <span class="level-bar"><span class="seg on"></span><span class="seg on"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span></span>
+          </span>
+          <span><span class="label-mono">sys</span>
+            <span class="level-bar sys"><span class="seg on"></span><span class="seg on"></span><span class="seg on"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span></span>
+          </span>
+        </div>
+        <span class="spacer"></span>
+        <button class="btn" title="Re-expand General + Live Transcription sections">Settings…</button>
+        <button class="record-btn" title="Stop recording">
+          <span class="rec-glyph" style="border-radius:2px;"></span>
+          Stop
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== DARK ===== -->
+  <div class="variant-block">
+    <div class="variant-tag">Pattern D · Chosen · Dark</div>
+    <div class="variant-name">Combined Timeline — dark</div>
+    <div class="variant-desc">Same surface, after dark. Q&A rows tint at <code style="color:white">--accent</code> @ 8 % alpha against the dark glass; speech rows are the baseline's transparent group background.</div>
+
+    <div class="popover ask dark" id="combined-dark">
+      <div class="header">
+        <input class="header-input" value="recording-2026-05-12-14-30" />
+        <div class="header-meta">
+          <span class="perm-pill"><span class="dot"></span>Recording</span>
+          <span class="sep">·</span>
+          <span class="rec-dot"></span>
+          <span style="font-variant-numeric: tabular-nums;">14:32</span>
+          <span class="sep">·</span>
+          <span>openai (gpt-4o)</span>
+        </div>
+      </div>
+      <div class="section">
+        <div class="section-title">
+          <span>This recording</span>
+          <span class="meta-right">54 lines · 3 Q&A · <em style="font-style:normal; color:var(--accent)">Hide Q&A</em></span>
+        </div>
+        <div class="group timeline-group">
+          <div class="row timeline-row speech">
+            <div class="control" style="flex-direction:column; align-items:flex-start; width:100%;">
+              <div class="qa-meta"><span class="who">Mic</span> · 00:00:04</div>
+              <div class="qa-text">Hi Sarah, thanks for taking the time today.</div>
+            </div>
+          </div>
+          <div class="row timeline-row speech">
+            <div class="control" style="flex-direction:column; align-items:flex-start; width:100%;">
+              <div class="qa-meta"><span class="who">System</span> · 00:00:08</div>
+              <div class="qa-text">Of course! Happy to walk through the security review.</div>
+            </div>
+          </div>
+          <div class="row timeline-row qa">
+            <div class="control" style="flex-direction:column; align-items:flex-start; width:100%;">
+              <div class="qa-meta"><span class="who" style="color:var(--accent)">🅀 You</span> · 03:14</div>
+              <div class="qa-text">What was the customer's title again?</div>
+              <div class="qa-meta" style="margin-top:6px;"><span class="who" style="color:var(--accent)">🅐 Assistant</span> · 03:15</div>
+              <div class="qa-text">Sarah Chen introduced herself at 02:41 as "VP of Platform Engineering" at Northwind.</div>
+            </div>
+          </div>
+          <div class="row timeline-row speech">
+            <div class="control" style="flex-direction:column; align-items:flex-start; width:100%;">
+              <div class="qa-meta"><span class="who">Mic</span> · 05:14</div>
+              <div class="qa-text">Right, so on the SSO question, we'd love to understand the timeline.</div>
+            </div>
+          </div>
+          <div class="row timeline-row qa">
+            <div class="control" style="flex-direction:column; align-items:flex-start; width:100%;">
+              <div class="qa-meta">
+                <span class="who" style="color:var(--accent)">🅀 You</span> · 05:32
+                <span style="color: var(--secondary);"> streaming…</span>
+                <span class="stream-glyph"></span>
+              </div>
+              <div class="qa-text">Action items so far?</div>
+              <div class="qa-meta" style="margin-top:6px;"><span class="who" style="color:var(--accent)">🅐 Assistant</span> · 05:33</div>
+              <div class="qa-text">1) You: send DPA to legal. 2) Sarah: confirm SSO Q3 timeline in writing. 3) Both: align on burst pricing tier<span class="caret"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="section">
+        <div class="group">
+          <div class="ask-input-row">
+            <span class="mic-stub">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M7 1a2 2 0 0 0-2 2v4a2 2 0 0 0 4 0V3a2 2 0 0 0-2-2zM3 7a4 4 0 0 0 8 0h1a5 5 0 0 1-4.5 4.97V13H10v1H4v-1h2.5v-1.03A5 5 0 0 1 2 7h1z"/></svg>
+            </span>
+            <input class="ask-input" placeholder="Ask a question about this recording…" />
+            <button class="go-btn">Send <span class="kbd">↩</span></button>
+          </div>
+        </div>
+      </div>
+      <div class="footer">
+        <div class="levels">
+          <span><span class="label-mono">mic</span>
+            <span class="level-bar"><span class="seg on"></span><span class="seg on"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span></span>
+          </span>
+          <span><span class="label-mono">sys</span>
+            <span class="level-bar sys"><span class="seg on"></span><span class="seg on"></span><span class="seg on"></span><span class="seg on"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span></span>
+          </span>
+        </div>
+        <span class="spacer"></span>
+        <button class="btn">Settings…</button>
+        <button class="record-btn"><span class="rec-glyph" style="border-radius:2px;"></span>Stop</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ============== Nav-A · Tabs (review-only comparison) ============== -->
+<div class="stage" id="stage-nav-a" style="display:none">
+  <div class="variant-block">
+    <div class="variant-tag">Pattern A · Review-only</div>
+    <div class="variant-name">Tabs — segmented control</div>
+    <div class="variant-desc">Standard NSSegmentedControl in the popover header. Switching tabs hides the other view. Familiar but loses cross-view continuity in a live meeting.</div>
+    <div class="popover ask light">
+      <div class="header">
+        <input class="header-input" value="recording-2026-05-12-14-30" />
+        <div class="header-meta">
+          <span class="rec-dot"></span><span style="font-variant-numeric: tabular-nums;">14:30</span>
+          <span class="sep">·</span><span>~/Recordings</span>
+        </div>
+      </div>
+      <!-- Tab strip -->
+      <div class="section">
+        <div class="group" style="display:flex; padding:3px;">
+          <button class="btn nav-tab on" id="tab-transcript" style="flex:1; box-shadow:none; background:var(--accent); color:white;" onclick="navASwitch('transcript')">Transcript</button>
+          <button class="btn nav-tab" id="tab-ask" style="flex:1; box-shadow:none; background:transparent;" onclick="navASwitch('ask')">Ask</button>
+        </div>
+      </div>
+      <!-- Body — transcript or ask -->
+      <div class="section" id="nav-a-body">
+        <div class="section-title"><span id="nav-a-title">Transcript</span><span class="meta-right" id="nav-a-meta">54 lines</span></div>
+        <div class="group" id="nav-a-content">
+          <div class="row"><div class="control" style="flex-direction:column; align-items:flex-start; width:100%;"><div class="qa-meta"><span class="who">Mic</span> · 00:00:04</div><div class="qa-text">Hi Sarah, thanks for taking the time today.</div></div></div>
+          <div class="row"><div class="control" style="flex-direction:column; align-items:flex-start; width:100%;"><div class="qa-meta"><span class="who">System</span> · 00:00:08</div><div class="qa-text">Of course! Happy to walk through the security review.</div></div></div>
+          <div class="row"><div class="control" style="flex-direction:column; align-items:flex-start; width:100%;"><div class="qa-meta"><span class="who">Mic</span> · 00:05:14</div><div class="qa-text">Right, so on the SSO question, we'd love to understand the timeline.</div></div></div>
+        </div>
+      </div>
+      <div class="footer">
+        <div class="levels"><span><span class="label-mono">mic</span><span class="level-bar"><span class="seg on"></span><span class="seg on"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span></span></span><span><span class="label-mono">sys</span><span class="level-bar sys"><span class="seg on"></span><span class="seg on"></span><span class="seg on"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span></span></span></div>
+        <span class="spacer"></span>
+        <button class="record-btn"><span class="rec-glyph" style="border-radius:2px;"></span>Stop</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============== Nav-B · Persistent split (review-only) ============== -->
+<div class="stage" id="stage-nav-b" style="display:none">
+  <div class="variant-block">
+    <div class="variant-tag">Pattern B · Review-only</div>
+    <div class="variant-name">Persistent split</div>
+    <div class="variant-desc">Transcript top, Q&A bottom, always both visible. Costs vertical space; each pane gets ~3–4 visible rows in a 480 pt popover.</div>
+    <div class="popover ask light">
+      <div class="header">
+        <input class="header-input" value="recording-2026-05-12-14-30" />
+        <div class="header-meta"><span class="rec-dot"></span><span style="font-variant-numeric: tabular-nums;">14:30</span></div>
+      </div>
+      <div class="section">
+        <div class="section-title"><span>Transcript</span><span class="meta-right">54 lines</span></div>
+        <div class="group" style="max-height: 140px; overflow-y: auto;">
+          <div class="row"><div class="control" style="flex-direction:column; align-items:flex-start; width:100%;"><div class="qa-meta"><span class="who">Mic</span> · 00:00:04</div><div class="qa-text">Hi Sarah, thanks for taking the time today.</div></div></div>
+          <div class="row"><div class="control" style="flex-direction:column; align-items:flex-start; width:100%;"><div class="qa-meta"><span class="who">System</span> · 00:00:08</div><div class="qa-text">Of course! Happy to walk through the security review.</div></div></div>
+          <div class="row"><div class="control" style="flex-direction:column; align-items:flex-start; width:100%;"><div class="qa-meta"><span class="who">Mic</span> · 00:05:14</div><div class="qa-text">Right, so on the SSO question…</div></div></div>
+        </div>
+      </div>
+      <div style="display:flex; align-items:center; gap:6px; margin: 10px 4px 0; opacity:0.45; font-size:11px;">
+        <div style="flex:1; height:0.5px; background:var(--separator);"></div>
+        <span>⇕ drag</span>
+        <div style="flex:1; height:0.5px; background:var(--separator);"></div>
+      </div>
+      <div class="section" style="margin-top:8px;">
+        <div class="section-title"><span>Q&A</span><span class="meta-right">3 pairs</span></div>
+        <div class="group" style="max-height: 140px; overflow-y: auto;">
+          <div class="row"><div class="control" style="flex-direction:column; align-items:flex-start; width:100%;"><div class="qa-meta"><span class="who" style="color:var(--accent)">🅀 You</span> · 03:14</div><div class="qa-text">What was the customer's title again?</div></div></div>
+          <div class="row"><div class="control" style="flex-direction:column; align-items:flex-start; width:100%;"><div class="qa-meta"><span class="who" style="color:var(--accent)">🅐 Assistant</span> · 03:15</div><div class="qa-text">Sarah Chen introduced herself at 02:41 as VP of Platform Engineering at Northwind.</div></div></div>
+        </div>
+      </div>
+      <div class="section">
+        <div class="group">
+          <div class="ask-input-row">
+            <span class="mic-stub"><svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M7 1a2 2 0 0 0-2 2v4a2 2 0 0 0 4 0V3a2 2 0 0 0-2-2zM3 7a4 4 0 0 0 8 0h1a5 5 0 0 1-4.5 4.97V13H10v1H4v-1h2.5v-1.03A5 5 0 0 1 2 7h1z"/></svg></span>
+            <input class="ask-input" placeholder="Ask a question…" />
+            <button class="go-btn">Send <span class="kbd">↩</span></button>
+          </div>
+        </div>
+      </div>
+      <div class="footer">
+        <div class="levels"><span><span class="label-mono">mic</span><span class="level-bar"><span class="seg on"></span><span class="seg on"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span></span></span></div>
+        <span class="spacer"></span>
+        <button class="record-btn"><span class="rec-glyph" style="border-radius:2px;"></span>Stop</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============== Nav-C · Toggle / slide (review-only) ============== -->
+<div class="stage" id="stage-nav-c" style="display:none">
+  <div class="variant-block">
+    <div class="variant-tag">Pattern C · Review-only</div>
+    <div class="variant-name">Toggle / slide</div>
+    <div class="variant-desc">Transcript is default; pressing the toggle slides a Q&A layer up over the transcript, which dims behind. Esc to dismiss.</div>
+    <div class="controlbar" style="margin: 0 0 12px 0;">
+      <button class="pill-btn" onclick="navCSlide(false)">Transcript</button>
+      <button class="pill-btn primary" onclick="navCSlide(true)">Slide in Q&A</button>
+    </div>
+    <div class="popover ask light" style="position:relative; overflow:hidden;" id="nav-c-popover">
+      <div class="header">
+        <input class="header-input" value="recording-2026-05-12-14-30" />
+        <div class="header-meta"><span class="rec-dot"></span><span style="font-variant-numeric: tabular-nums;">14:30</span></div>
+      </div>
+      <div class="section" id="nav-c-transcript">
+        <div class="section-title"><span>Transcript</span><span class="meta-right">54 lines</span></div>
+        <div class="group">
+          <div class="row"><div class="control" style="flex-direction:column; align-items:flex-start; width:100%;"><div class="qa-meta"><span class="who">Mic</span> · 00:00:04</div><div class="qa-text">Hi Sarah, thanks for taking the time today.</div></div></div>
+          <div class="row"><div class="control" style="flex-direction:column; align-items:flex-start; width:100%;"><div class="qa-meta"><span class="who">System</span> · 00:00:08</div><div class="qa-text">Of course! Happy to walk through the security review.</div></div></div>
+          <div class="row"><div class="control" style="flex-direction:column; align-items:flex-start; width:100%;"><div class="qa-meta"><span class="who">Mic</span> · 00:05:14</div><div class="qa-text">Right, so on the SSO question, we'd love to understand the timeline.</div></div></div>
+        </div>
+      </div>
+      <div class="footer">
+        <div class="levels"><span><span class="label-mono">mic</span><span class="level-bar"><span class="seg on"></span><span class="seg on"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span></span></span></div>
+        <span class="spacer"></span>
+        <button class="record-btn"><span class="rec-glyph" style="border-radius:2px;"></span>Stop</button>
+      </div>
+
+      <!-- Slide-up Q&A pane -->
+      <div class="slide-layer" id="nav-c-slide">
+        <div class="section">
+          <div class="section-title"><span>Ask</span><span class="meta-right"><button class="btn" onclick="navCSlide(false)" style="padding:3px 9px; font-size:11px;">Esc to close</button></span></div>
+          <div class="group">
+            <div class="row"><div class="control" style="flex-direction:column; align-items:flex-start; width:100%;"><div class="qa-meta"><span class="who" style="color:var(--accent)">🅀 You</span> · 03:14</div><div class="qa-text">What was the customer's title again?</div></div></div>
+            <div class="row"><div class="control" style="flex-direction:column; align-items:flex-start; width:100%;"><div class="qa-meta"><span class="who" style="color:var(--accent)">🅐 Assistant</span> · 03:15</div><div class="qa-text">Sarah Chen introduced herself at 02:41 as VP of Platform Engineering at Northwind.</div></div></div>
+          </div>
+        </div>
+        <div class="section">
+          <div class="group">
+            <div class="ask-input-row">
+              <span class="mic-stub"><svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M7 1a2 2 0 0 0-2 2v4a2 2 0 0 0 4 0V3a2 2 0 0 0-2-2zM3 7a4 4 0 0 0 8 0h1a5 5 0 0 1-4.5 4.97V13H10v1H4v-1h2.5v-1.03A5 5 0 0 1 2 7h1z"/></svg></span>
+              <input class="ask-input" placeholder="Ask a question…" />
+              <button class="go-btn">Send <span class="kbd">↩</span></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============== STAGE — Floating Ask overlay (LEGACY — kept for review comparison) ============== -->
+<div class="stage" id="stage-ask" style="display:none">
 
   <!-- ===== VARIANT A: LIGHT ===== -->
   <div class="variant-block">
@@ -1088,10 +1492,18 @@
 
 <script>
   // ─────────── Stage switching ───────────
+  // Primary stage = 'combined' (Pattern D, chosen).
+  // 'save' and 'ask' are kept reachable for reviewer comparison.
+  // 'nav-a' / 'nav-b' / 'nav-c' are review-only mockups of the rejected patterns.
+  const STAGES = ['combined','save','ask','nav-a','nav-b','nav-c'];
   function setStage(name) {
-    document.getElementById('stage-ask').style.display  = (name === 'ask')  ? 'flex' : 'none';
-    document.getElementById('stage-save').style.display = (name === 'save') ? 'flex' : 'none';
-    document.getElementById('ask-pill').style.display   = (name === 'save') ? 'inline-flex' : 'none';
+    STAGES.forEach(s => {
+      const el = document.getElementById('stage-' + s);
+      if (el) el.style.display = (s === name) ? 'flex' : 'none';
+    });
+    // Ask pill visible only when not currently in ask stage AND not in combined (since combined is the in-recording surface)
+    const pill = document.getElementById('ask-pill');
+    if (pill) pill.style.display = (name === 'save') ? 'inline-flex' : 'none';
   }
 
   // ─────────── Switch toggle ───────────
@@ -1342,6 +1754,251 @@
       const ss = String(secs%60).padStart(2,'0');
       el.textContent = `${mm}:${ss}`;
     }, 1000);
+  }
+
+  // ─────────── Combined Timeline (Pattern D) ───────────
+  // Seed sequence of items that simulate a live meeting:
+  //   - speech rows arrive every ~2.5s (from a queue)
+  //   - the user can interject Q&A via the input bar (askInCombined)
+  //   - auto-scroll engages when the user is parked at the bottom
+  //   - when scrolled up, a "↓ N new" pill counts items missed
+  //   - "Hide Q&A" filters out Q&A rows client-side
+  const SPEECH_QUEUE = [
+    { who:'System', text:'Of course! Happy to walk through the security review.' },
+    { who:'Mic',    text:'Great — let me share my screen first. Can you see the dashboard?' },
+    { who:'System', text:'Yes, it\'s up. The latency chart on the left looks healthy.' },
+    { who:'Mic',    text:'Right, so on the SSO question, we\'d love to understand the timeline.' },
+    { who:'System', text:'Realistically Q3 — but SAML federation is available today if that helps unblock.' },
+    { who:'Mic',    text:'SAML works for the pilot. Let\'s align on burst pricing next.' },
+    { who:'System', text:'Burst is metered per 100k events. We can carve out a pilot SKU.' },
+    { who:'Mic',    text:'Perfect. I\'ll loop in legal on the DPA today.' },
+    { who:'System', text:'Sounds good. I have a hard stop at the top of the hour.' },
+    { who:'Mic',    text:'Same — let\'s confirm the next sync for Thursday.' }
+  ];
+
+  const SEED_QA = [
+    { ts:'03:14', q:"What was the customer's title again?",
+                  a:'Sarah Chen introduced herself at 02:41 as "VP of Platform Engineering" at Northwind.' },
+    { ts:'05:32', q:'Action items so far?',
+                  a:'1) You: send DPA to legal. 2) Sarah: confirm SSO Q3 timeline in writing. 3) Both: align on burst pricing tier.' }
+  ];
+
+  let combinedRows = [
+    { type:'speech', ts:'00:00:04', who:'Mic',    text:'Hi Sarah, thanks for taking the time today.' }
+    // The seed speech "00:00:08" is added first tick; Q&A pairs are appended on submit / by the demo.
+  ];
+  let speechIdx = 0;
+  let hideQA = false;
+  let secsClock = 14*60 + 30;
+  let unseenCount = 0;
+
+  function fmtClock(secs) {
+    const mm = String(Math.floor(secs/60)).padStart(2,'0');
+    const ss = String(secs%60).padStart(2,'0');
+    return `${mm}:${ss}`;
+  }
+  function fmtTs(secs) {
+    const hh = String(Math.floor(secs/3600)).padStart(2,'0');
+    const mm = String(Math.floor((secs%3600)/60)).padStart(2,'0');
+    const ss = String(secs%60).padStart(2,'0');
+    return `${hh}:${mm}:${ss}`;
+  }
+
+  function renderCombined() {
+    const tg = document.getElementById('combined-timeline');
+    if (!tg) return;
+    const atBottom = isAtBottom(tg);
+    tg.innerHTML = '';
+    let speechN = 0, qaN = 0;
+    for (const r of combinedRows) {
+      const row = document.createElement('div');
+      row.className = 'row timeline-row ' + (r.type === 'qa' ? 'qa' : 'speech');
+      if (r.type === 'qa' && hideQA) row.classList.add('hidden-by-filter');
+      if (r.streaming) row.classList.add('streaming');
+
+      const inner = document.createElement('div');
+      inner.className = 'control';
+      inner.style.cssText = 'flex-direction:column; align-items:flex-start; width:100%;';
+
+      if (r.type === 'speech') {
+        speechN++;
+        inner.innerHTML = `
+          <div class="qa-meta"><span class="who">${r.who}</span> · ${r.ts}</div>
+          <div class="qa-text"></div>`;
+        inner.querySelector('.qa-text').textContent = r.text;
+      } else {
+        qaN++;
+        inner.innerHTML = `
+          <div class="qa-meta"><span class="who" style="color:var(--accent)">🅀 You</span> · ${r.ts}</div>
+          <div class="qa-text"></div>
+          <div class="qa-meta" style="margin-top:6px;">
+            <span class="who" style="color:var(--accent)">🅐 Assistant</span> · ${r.aTs || r.ts}
+            ${r.streaming ? '<span class="stream-glyph"></span><span style="color: var(--secondary);"> streaming…</span>' : ''}
+          </div>
+          <div class="qa-text answer"></div>`;
+        inner.querySelectorAll('.qa-text')[0].textContent = r.q;
+        const ansEl = inner.querySelector('.qa-text.answer');
+        ansEl.textContent = r.a || '';
+        if (r.streaming) {
+          const c = document.createElement('span'); c.className = 'caret'; ansEl.appendChild(c);
+        }
+      }
+      row.appendChild(inner);
+      tg.appendChild(row);
+    }
+    document.getElementById('combined-counts').textContent =
+      `${speechN} lines · ${qaN} Q&A`;
+    if (atBottom) snapToBottom();
+  }
+
+  function isAtBottom(el) {
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 6;
+  }
+  function snapToBottom() {
+    const tg = document.getElementById('combined-timeline');
+    if (!tg) return;
+    tg.scrollTop = tg.scrollHeight;
+    unseenCount = 0;
+    document.getElementById('new-pill').style.display = 'none';
+  }
+  function flagUnseen() {
+    const tg = document.getElementById('combined-timeline');
+    if (!tg) return;
+    if (isAtBottom(tg)) { unseenCount = 0; return; }
+    unseenCount++;
+    const p = document.getElementById('new-pill');
+    const t = document.getElementById('new-pill-text');
+    t.textContent = `↓ ${unseenCount} new`;
+    p.style.display = 'inline-flex';
+  }
+
+  // Speech pump — adds a transcript row every few seconds
+  function startSpeechPump() {
+    setInterval(() => {
+      if (speechIdx >= SPEECH_QUEUE.length) return;
+      secsClock += 8 + Math.floor(Math.random()*5);
+      const s = SPEECH_QUEUE[speechIdx++];
+      combinedRows.push({ type:'speech', ts: fmtTs(secsClock - 14*60 - 30 + 4), who: s.who, text: s.text });
+      const tg = document.getElementById('combined-timeline');
+      const atBottom = tg ? isAtBottom(tg) : true;
+      renderCombined();
+      if (!atBottom) flagUnseen();
+    }, 4500);
+
+    // Clock display updates every second
+    setInterval(() => {
+      const el = document.getElementById('combined-clock');
+      if (!el) return;
+      secsClock++;
+      el.textContent = fmtClock(secsClock);
+    }, 1000);
+  }
+
+  // After a brief delay, simulate the two seed Q&A pairs landing
+  function seedQA() {
+    setTimeout(() => {
+      combinedRows.push({ type:'speech', ts:'00:00:08', who:'System', text:'Of course! Happy to walk through the security review.' });
+      combinedRows.push({ type:'qa', ts:SEED_QA[0].ts, q:SEED_QA[0].q, a:SEED_QA[0].a, aTs:'03:15' });
+      renderCombined();
+    }, 800);
+    setTimeout(() => {
+      combinedRows.push({ type:'qa', ts:SEED_QA[1].ts, q:SEED_QA[1].q, a:SEED_QA[1].a, aTs:'05:33' });
+      renderCombined();
+    }, 1800);
+  }
+
+  function askInCombined() {
+    const input = document.getElementById('combined-input');
+    if (!input) return;
+    const q = input.value.trim();
+    if (!q) return;
+    input.value = '';
+    const ts = fmtTs(secsClock - 14*60 - 30 + 4);
+    const row = { type:'qa', ts, q, a:'', aTs: ts, streaming: true };
+    combinedRows.push(row);
+    renderCombined();
+    snapToBottom();
+
+    const fakeAnswer = "Based on the last few minutes: SAML federation unblocks the pilot today; SSO Q3 timeline pending written confirmation; burst pricing pilot SKU agreed in principle; DPA owed by you to legal.";
+    let i = 0;
+    const tick = setInterval(() => {
+      i += 3;
+      row.a = fakeAnswer.slice(0, i);
+      renderCombined();
+      if (i >= fakeAnswer.length) {
+        clearInterval(tick);
+        row.a = fakeAnswer;
+        row.streaming = false;
+        renderCombined();
+      }
+    }, 40);
+  }
+
+  function toggleHideQA() {
+    hideQA = !hideQA;
+    const btn = document.getElementById('hide-qa-btn');
+    btn.textContent = hideQA ? 'Show Q&A' : 'Hide Q&A';
+    renderCombined();
+  }
+
+  // Scroll listener — when user scrolls up, "↓ N new" pill appears
+  document.addEventListener('DOMContentLoaded', () => {
+    const tg = document.getElementById('combined-timeline');
+    if (tg) {
+      tg.addEventListener('scroll', () => {
+        if (isAtBottom(tg)) {
+          unseenCount = 0;
+          document.getElementById('new-pill').style.display = 'none';
+        }
+      });
+    }
+    const ci = document.getElementById('combined-input');
+    if (ci) ci.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); askInCombined(); }
+    });
+    renderCombined();
+    seedQA();
+    startSpeechPump();
+  });
+
+  // ─────────── Nav-A tab switching (review-only) ───────────
+  function navASwitch(which) {
+    const tT = document.getElementById('tab-transcript');
+    const tA = document.getElementById('tab-ask');
+    if (which === 'transcript') {
+      tT.classList.add('on'); tT.style.background='var(--accent)'; tT.style.color='white';
+      tA.classList.remove('on'); tA.style.background='transparent'; tA.style.color='var(--secondary)';
+      document.getElementById('nav-a-title').textContent = 'Transcript';
+      document.getElementById('nav-a-meta').textContent = '54 lines';
+      document.getElementById('nav-a-content').innerHTML = `
+        <div class="row"><div class="control" style="flex-direction:column; align-items:flex-start; width:100%;"><div class="qa-meta"><span class="who">Mic</span> · 00:00:04</div><div class="qa-text">Hi Sarah, thanks for taking the time today.</div></div></div>
+        <div class="row"><div class="control" style="flex-direction:column; align-items:flex-start; width:100%;"><div class="qa-meta"><span class="who">System</span> · 00:00:08</div><div class="qa-text">Of course! Happy to walk through the security review.</div></div></div>
+        <div class="row"><div class="control" style="flex-direction:column; align-items:flex-start; width:100%;"><div class="qa-meta"><span class="who">Mic</span> · 00:05:14</div><div class="qa-text">Right, so on the SSO question, we'd love to understand the timeline.</div></div></div>
+      `;
+    } else {
+      tA.classList.add('on'); tA.style.background='var(--accent)'; tA.style.color='white';
+      tT.classList.remove('on'); tT.style.background='transparent'; tT.style.color='var(--secondary)';
+      document.getElementById('nav-a-title').textContent = 'Ask';
+      document.getElementById('nav-a-meta').textContent = '3 Q&A pairs';
+      document.getElementById('nav-a-content').innerHTML = `
+        <div class="row"><div class="control" style="flex-direction:column; align-items:flex-start; width:100%;"><div class="qa-meta"><span class="who" style="color:var(--accent)">🅀 You</span> · 03:14</div><div class="qa-text">What was the customer's title again?</div></div></div>
+        <div class="row"><div class="control" style="flex-direction:column; align-items:flex-start; width:100%;"><div class="qa-meta"><span class="who" style="color:var(--accent)">🅐 Assistant</span> · 03:15</div><div class="qa-text">Sarah Chen introduced herself at 02:41 as VP of Platform Engineering at Northwind.</div></div></div>
+        <div class="row"><div class="control" style="width:100%;">
+          <span class="mic-stub" style="margin-right:6px;"><svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M7 1a2 2 0 0 0-2 2v4a2 2 0 0 0 4 0V3a2 2 0 0 0-2-2zM3 7a4 4 0 0 0 8 0h1a5 5 0 0 1-4.5 4.97V13H10v1H4v-1h2.5v-1.03A5 5 0 0 1 2 7h1z"/></svg></span>
+          <input class="ask-input" placeholder="Ask a question…" style="flex:1;" />
+          <button class="go-btn">Send <span class="kbd">↩</span></button>
+        </div></div>
+      `;
+    }
+  }
+
+  // ─────────── Nav-C slide layer (review-only) ───────────
+  function navCSlide(open) {
+    const layer = document.getElementById('nav-c-slide');
+    const pop   = document.getElementById('nav-c-popover');
+    if (!layer || !pop) return;
+    if (open) { layer.classList.add('open'); pop.classList.add('slide-open'); }
+    else      { layer.classList.remove('open'); pop.classList.remove('slide-open'); }
   }
 </script>
 

@@ -55,9 +55,256 @@ The canonical states map 1:1 to the UX states described in `requirements.md`:
 | 6 | **Save Transcript dialog** | Click `Save Transcript…` after Stop (FR-IRQ-24) | Until Save / Cancel |
 | 7 | **Saved confirmation toast** | After successful file write (FR-IRQ-30) | 4 s auto-dismiss / click |
 
+Two additional sets of wireframes follow the canonical states:
+- **Nav-A / Nav-B / Nav-C / Nav-D** — the four candidate navigation patterns for transcript ↔ Q&A in the popover, side-by-side for comparison (see `requirements.md` §"View navigation between transcript and Q&A").
+- **Nav-Recommended** — the chosen Pattern D (Combined Timeline) rendered at production detail.
+
 ---
 
-## State 0 — Not recording (feature dormant)
+## Navigation patterns — transcript ↔ Q&A inside the popover
+
+The popover already shows a live transcript. Q&A adds a question/answer stream that shares the same recording time axis. The four candidate patterns below were compared in `requirements.md`; this section visualises each in the popover frame so the trade-offs are concrete.
+
+### Nav-A — Tabs (segmented control)
+
+```
+┌──────────────────────────────────────────────────┐  ← .popover (baseline frame chrome)
+│  recording-2026-05-12-14-30      ● 14:30  REC    │  ← .header (unchanged from baseline)
+├──────────────────────────────────────────────────┤
+│   ┌───────────┬───────────┐                       │  ← NSSegmentedControl
+│   │TRANSCRIPT │   ASK     │                       │     (built from two .btn pieces, the
+│   └───────────┴───────────┘                       │      selected one carries --accent fill)
+├──────────────────────────────────────────────────┤
+│  (When TRANSCRIPT is selected:)                   │
+│  ┌────────────────────────────────────────────┐  │  ← .group
+│  │ Mic · 00:00:04 — Hi Sarah, thanks for…     │  │  ← .row speech
+│  │ System · 00:00:08 — Of course! Happy to…   │  │
+│  │ Mic · 00:00:18 — So on the SSO question…   │  │
+│  │ … (no Q&A visible)                          │  │
+│  └────────────────────────────────────────────┘  │
+│                                                  │
+│  ▎mic ▰▰▰▱▱ ▎sys ▰▰▰▰▱           [● Stop ]      │
+└──────────────────────────────────────────────────┘
+```
+
+**Baseline primitives reused.** `.popover` frame; `.header` filename + meta; `.group` body container; `.row` speech rows with `.separator` hairlines; `.footer` with level meters and `.record-btn`. *New primitive introduced:* segmented control (two `.btn` pieces, accent fill on selected).
+
+**Trade-off.** When the user is in the "ASK" tab, the transcript continues to fill its own scroll buffer but is invisible — they cannot see what the speaker just said while reading or composing.
+
+### Nav-B — Persistent split (transcript top, Ask bottom)
+
+```
+┌──────────────────────────────────────────────────┐
+│  recording-2026-05-12-14-30      ● 14:30  REC    │
+├──────────────────────────────────────────────────┤
+│  TRANSCRIPT                            (54 lines)│  ← .section-title
+│  ┌────────────────────────────────────────────┐  │  ← .group, ~50 % of body
+│  │ Mic · 00:00:04 — Hi Sarah, thanks for…     │  │
+│  │ System · 00:00:08 — Of course! Happy to…   │  │
+│  │ Mic · 00:05:14 — Right, so on the SSO…     │  │
+│  └────────────────────────────────────────────┘  │
+│  ─────────────────────────────[ ⇕ drag handle ]── │  ← new primitive: resize bar
+│  Q&A                                  (3 pairs)  │
+│  ┌────────────────────────────────────────────┐  │  ← .group, ~50 % of body
+│  │ You · 03:14 — What was the customer's…?    │  │
+│  │ Assistant · 03:15 — Sarah Chen introduced… │  │
+│  │ ┌────────────────────────────────────────┐│  │  ← persistent input
+│  │ │ 🎙 Ask…                       [↩ Send]││  │
+│  │ └────────────────────────────────────────┘│  │
+│  └────────────────────────────────────────────┘  │
+│  ▎mic ▰▰▰▱▱ ▎sys ▰▰▰▰▱           [● Stop ]      │
+└──────────────────────────────────────────────────┘
+```
+
+**Baseline primitives reused.** Two `.section`+`.group` blocks back-to-back (already used by the baseline for "General" + "Live Transcription"); `.row` for both kinds of entries; `.footer` unchanged. *New primitive introduced:* the drag handle (a thin hairline with a 3-dot grab indicator).
+
+**Trade-off.** Each pane is ~150–180 pt tall in a 480-pt popover; that's 3–4 visible rows per pane before scroll. The bottom pane competes with the persistent input bar for vertical space.
+
+### Nav-C — Toggle / slide (transcript default, Q&A slides in)
+
+```
+   transcript default                                                  ⌥⇧Space → Q&A layer slides in
+┌──────────────────────────────────────────────┐                ┌──────────────────────────────────────────────┐
+│  recording-…      ● 14:30      Ask… ⌥⇧Sp     │                │  recording-…      ● 14:30       [Esc to close]│
+├──────────────────────────────────────────────┤                ├──────────────────────────────────────────────┤
+│  TRANSCRIPT                                  │                │  TRANSCRIPT (dimmed @ 35 % opacity)          │
+│  ┌────────────────────────────────────────┐  │  ⌥⇧Sp →        │  ┌────────────────────────────────────────┐  │
+│  │ Mic · 00:00:04 — Hi Sarah…             │  │  ──────→       │  │ Mic · 00:00:04 — Hi Sarah… (dimmed)    │  │
+│  │ System · 00:00:08 — Of course…         │  │                │  └────────────────────────────────────────┘  │
+│  │ …                                       │  │                │  ╔══════════════════════════════════════╗  │  ← Q&A pane slides up
+│  └────────────────────────────────────────┘  │                │  ║ Q&A                                  ║  │     from the bottom edge
+│                                              │                │  ║ You · 03:14 — What was the customer's…║  │     (CALayer translateY
+│                                              │                │  ║ Assistant · 03:15 — Sarah Chen intro…  ║  │      animation, 220 ms)
+│                                              │                │  ║ ┌──────────────────────────────────┐ ║  │
+│                                              │                │  ║ │ 🎙 Ask…              [↩ Send]    │ ║  │
+│                                              │                │  ║ └──────────────────────────────────┘ ║  │
+│                                              │                │  ╚══════════════════════════════════════╝  │
+│  ▎mic ▰▰▰▱▱ ▎sys ▰▰▰▰▱       [● Stop ]      │                │  ▎mic ▰▰▰▱▱ ▎sys ▰▰▰▰▱       [● Stop ]      │
+└──────────────────────────────────────────────┘                └──────────────────────────────────────────────┘
+```
+
+**Baseline primitives reused.** `.popover` chrome; `.section`+`.group`+`.row` for both transcript and Q&A; `.footer` unchanged. *New primitive introduced:* the slide-up panel — same `.group` chrome but rendered as a second material layer above the transcript, with the transcript composited at reduced opacity.
+
+**Trade-off.** Clear modal mental model; familiar from Spotlight / Raycast. But the Q&A pane occludes the transcript exactly when the user needs it most (mid-question they might want to re-read the speaker's last sentence). Esc closes; another `⌥⇧Space` re-opens — usable but adds keystrokes.
+
+### Nav-D — Combined timeline (chosen)
+
+```
+┌──────────────────────────────────────────────────┐
+│  recording-2026-05-12-14-30      ● 14:30  REC    │
+├──────────────────────────────────────────────────┤
+│  THIS RECORDING        54 lines · 3 Q&A   [Hide Q&A]  ← .section-title + .meta-right slot
+│  ┌────────────────────────────────────────────┐  │  ← single .group, one scroll region
+│  │ Mic · 00:00:04 — Hi Sarah, thanks for…     │  │  ← .row speech
+│  │ System · 00:00:08 — Of course! Happy to…   │  │
+│  │ ┌────────────────────────────────────────┐ │  │  ← Q&A pair, accent-tinted background
+│  │ │ 🅀 You · 03:14 — What was the customer's? │ │  │     (--accent @ 6% alpha)
+│  │ │ 🅐 Assistant · 03:15 — Sarah Chen intro…  │ │  │
+│  │ └────────────────────────────────────────┘ │  │
+│  │ Mic · 05:14 — Right, so on the SSO…        │  │  ← back to speech
+│  │ System · 05:18 — Realistically Q3, but…    │  │
+│  │ ┌────────────────────────────────────────┐ │  │  ← second Q&A pair
+│  │ │ 🅀 You · 05:32 — Action items so far?    │ │  │
+│  │ │ 🅐 Assistant · 05:33 — 1) DPA → legal…   │ │  │
+│  │ └────────────────────────────────────────┘ │  │
+│  └────────────────────────────────────────────┘  │
+│  ┌────────────────────────────────────────────┐  │  ← persistent input bar
+│  │ 🎙 Ask…                          [↩ Send] │  │
+│  └────────────────────────────────────────────┘  │
+│  ▎mic ▰▰▰▱▱ ▎sys ▰▰▰▰▱           [● Stop ]      │
+└──────────────────────────────────────────────────┘
+```
+
+**Baseline primitives reused.** `.popover` chrome; `.header`; `.section-title` with `.meta-right` carrying the `[Hide Q&A]` toggle (same slot the baseline uses for the "Soniox / switch" engine pair); single `.group` containing all rows; `.row` for speech with `.separator` hairlines between siblings; `.group` (nested, accent-tinted) for each Q&A pair; second `.group` for the persistent input bar containing one `.ask-input-row` and a blue-gradient `.go-btn` (the same blue-`.record-btn` variant introduced in FR-IRQ-23 for non-Record primaries); `.footer` with level meters and `.record-btn` recolored as Stop. **No new primitive introduced** — the Q&A row tint is `--accent` at 6 % alpha applied to `.group`'s `--group-bg`; the 🅀 / 🅐 glyphs are inline Unicode in `--accent`.
+
+**Trade-off.** Long answers can push speech segments off-screen — mitigated by per-Q&A collapse (FR-IRQ-9) and by the `[Hide Q&A]` filter (FR-IRQ-36).
+
+---
+
+## Nav-Recommended — Combined Timeline at production detail
+
+This wireframe expands Pattern D to show every interactive state the popover surface can reach during a live recording. See the implementation in `mock/index.html`.
+
+### Nav-R1 — Steady-state (auto-scroll engaged at bottom)
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│  recording-2026-05-12-14-30                ● 14:30  ~/Recordings  │  ← .header
+├────────────────────────────────────────────────────────────────────┤
+│  THIS RECORDING       54 lines · 3 Q&A · openai (gpt-4o)  [Hide Q&A]│  ← .section-title + meta-right
+│                                                                    │
+│  ┌──────────────────────────────────────────────────────────────┐  │  ← .group (scrollable)
+│  │ Mic · 00:00:04                                                │  │
+│  │   Hi Sarah, thanks for taking the time today.                │  │
+│  ├──────────────────────────────────────────────────────────────┤  │  ← hairline (.separator)
+│  │ System · 00:00:08                                             │  │
+│  │   Of course! Happy to walk through the security review.      │  │
+│  ├──────────────────────────────────────────────────────────────┤  │
+│  │ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  │  │  ← Q&A pair, accent tint
+│  │ ░ 🅀 You · 03:14                                           ░ │  │     (--accent @ 6% / 8%)
+│  │ ░   What was the customer's title again?                  ░ │  │
+│  │ ░ 🅐 Assistant · 03:15                       [▾ 4 lines]   ░ │  │
+│  │ ░   Sarah Chen introduced herself at 02:41 as "VP of      ░ │  │
+│  │ ░   Platform Engineering" at Northwind. She also          ░ │  │
+│  │ ░   mentioned she reports to the CTO and has a dotted-    ░ │  │
+│  │ ░   line into the security org for SOC-2 reviews.         ░ │  │
+│  │ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  │  │
+│  ├──────────────────────────────────────────────────────────────┤  │
+│  │ Mic · 05:14                                                   │  │
+│  │   Right, so on the SSO question, we'd love to understand…    │  │
+│  ├──────────────────────────────────────────────────────────────┤  │
+│  │ System · 05:18                                                │  │
+│  │   Realistically Q3 — but SAML federation is available now.   │  │
+│  ├──────────────────────────────────────────────────────────────┤  │
+│  │ ░ 🅀 You · 05:32 — Action items so far?                   ░ │  │
+│  │ ░ 🅐 Assistant · 05:33 — 1) DPA → legal; 2) SSO Q3 in…    ░ │  │  ← collapsed Q&A row
+│  │                                                              │  │     [▾ expand]
+│  │ ← scroll-pinned-bottom indicator (subtle)                    │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                                                                    │
+│  ┌──────────────────────────────────────────────────────────────┐  │  ← persistent input
+│  │ 🎙 Ask…                                          [↩ Send]   │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                                                                    │
+│  ▎mic ▰▰▰▱▱   ▎sys ▰▰▰▰▱       Settings…         [● Stop ]       │  ← .footer
+└────────────────────────────────────────────────────────────────────┘
+```
+
+### Nav-R2 — Auto-scroll disengaged (user scrolled up; new items below)
+
+```
+│  ┌──────────────────────────────────────────────────────────────┐
+│  │ Mic · 04:02 — …customer title was VP Platform Engineering   │  ← user is reading older context
+│  │ System · 04:05 — Right, and her direct reports include…     │
+│  │ …                                                            │
+│  │                                          ┌──────────────┐    │  ← "↓ N new" .perm-pill in
+│  │                                          │  ↓ 3 new      │    │     accent fill; clicking
+│  │                                          └──────────────┘    │     re-engages auto-scroll
+│  └──────────────────────────────────────────────────────────────┘
+```
+
+The "↓ N new" pill reuses the `.perm-pill` shape from the baseline but in the accent palette rather than success: `background: rgba(0,122,255,0.18)`; `color: --accent`; `dot: --accent`. Clicking snaps to the bottom row and turns auto-scroll back on.
+
+### Nav-R3 — Hide Q&A filter engaged
+
+```
+│  THIS RECORDING       54 lines · 3 Q&A · openai (gpt-4o)  [Show Q&A]│ ← toggle text inverts
+│  ┌──────────────────────────────────────────────────────────────┐
+│  │ Mic · 00:00:04 — Hi Sarah, thanks for taking the time today.│
+│  │ System · 00:00:08 — Of course! Happy to walk through the…   │
+│  │ Mic · 05:14 — Right, so on the SSO question, we'd love…     │  ← Q&A rows hidden;
+│  │ System · 05:18 — Realistically Q3 — but SAML federation…    │     speech rows remain
+│  │ …                                                            │     in their original
+│  └──────────────────────────────────────────────────────────────┘     chronological order
+```
+
+When the user re-enables Q&A, the rows return to their chronological slots (they were hidden, not removed from the model).
+
+### Nav-R4 — Asking while reading (streaming inline)
+
+```
+│  ┌──────────────────────────────────────────────────────────────┐
+│  │ System · 05:18 — Realistically Q3 — but SAML federation…    │
+│  ├──────────────────────────────────────────────────────────────┤
+│  │ ░ 🅀 You · 05:32 — Action items so far?                   ░ │  ← new Q&A row, just landed
+│  │ ░ 🅐 Assistant · 05:33  ◐ streaming…                       ░ │
+│  │ ░   1) You: send DPA to legal. 2) Sarah: confirm SSO Q3…  ░ │
+│  │ ░   timeline in writing. 3) Both: align on burst pric▌    ░ │  ← live caret
+│  │ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  │
+│  ├──────────────────────────────────────────────────────────────┤
+│  │ Mic · 05:41 — Great — I'll grab those into the followup.    │  ← speech continues
+│  └──────────────────────────────────────────────────────────────┘
+```
+
+While the answer is streaming, **new speech rows still land below it** — they are not blocked by the in-flight Q&A. This is the visible proof of FR-IRQ-22 (audio + transcription remain non-blocking).
+
+### Nav-R5 — Floating Ask overlay (FR-IRQ-3) opened concurrently
+
+```
+   (popover stays open, anchored to menu bar)              (floating overlay anchored top-right
+                                                            of display, same .popover chrome,
+                                                            shows the same Combined Timeline
+                                                            filtered to Q&A-only)
+┌──────────────────────────────────────────┐                    ┌────────────────────────────────────┐
+│  recording-…   ● 14:32   [Hide Q&A]      │                    │  Ask the recording      📌  Q&A   │
+├──────────────────────────────────────────┤                    ├────────────────────────────────────┤
+│  Mic · 00:00:04 — Hi Sarah…              │                    │  🅀 You · 03:14 — title?           │
+│  ░ 🅀 You · 03:14 — title?             ░ │   ← same model →   │  🅐 Assistant · 03:15 — Sarah Chen │
+│  ░ 🅐 Assistant · 03:15 — Sarah Chen…  ░ │      (FR-IRQ-38)   │  ░ 🅀 You · 05:32 — Action items?  │
+│  Mic · 05:14 — Right, so on SSO…         │                    │  ░ 🅐 Assistant · 05:33 — 1) DPA…  │
+│  ░ 🅀 You · 05:32 — Action items?      ░ │                    │                                    │
+│  ░ 🅐 Assistant · 05:33 — 1) DPA…      ░ │                    │  ┌──────────────────────────────┐ │
+│  ┌──────────────────────────────────────┐ │                    │  │ 🎙 Ask…             [↩ Send]│ │
+│  │ 🎙 Ask…              [↩ Send]        │ │                    │  └──────────────────────────────┘ │
+│  └──────────────────────────────────────┘ │                    └────────────────────────────────────┘
+└──────────────────────────────────────────┘
+```
+
+Both surfaces are alive simultaneously. A question typed into either lands in the same `QASessionHistory`; both surfaces reflect it within 100 ms (FR-IRQ-38). The popover shows the Combined Timeline (speech + Q&A); the floating overlay shows the same model filtered to Q&A-only (it's the "fast-lane" view — the user's already heard the speech).
+
+---
+
+
 
 ```
                             ┌──────────────────────────────────────────┐

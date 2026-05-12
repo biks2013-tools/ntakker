@@ -38,6 +38,130 @@ The primitives we are reusing, verbatim, from `popover-redesign.html`:
 
 **Visual rule of thumb:** if a control or surface you are about to draw does not have a direct ancestor in `popover-redesign.html`, stop — and ask whether the existing primitive can be re-purposed before introducing a new one.
 
+## View navigation between transcript and Q&A
+
+A reviewer of the first revision asked, reasonably, "how does the user move between the live transcript view and the Q&A view, and what happens when both matter at once?" — because the earlier wording implied a separate "Ask overlay" detached from the popover's transcript panel, with no story for transitioning. This section settles that question.
+
+The popover already shows a **live transcript**. The Q&A surface adds a **question/answer stream** to the same session. There are four plausible patterns for how those two streams co-exist in a single small surface that is anchored to the menu bar and viewed at-a-glance during a meeting. Each is compared honestly below; the one we adopt is Pattern D.
+
+### Pattern A — Tabs (segmented control)
+
+```
+┌──────────────────────────────────────────────┐
+│ [ Transcript │   Ask  ]            ● 14:30  │ ← NSSegmentedControl in .header
+├──────────────────────────────────────────────┤
+│ (selected tab's content fills the body)      │
+└──────────────────────────────────────────────┘
+```
+
+A segmented `NSSegmentedControl` lives in the popover header; the body swaps between "Transcript" and "Ask" content. Standard macOS HIG primitive, used widely in System Settings.
+
+- **When it fits.** When the two views are *truly* independent — different data, different cadence, used in different sittings. A Photos `Library | Albums` switch is the canonical example.
+- **When it doesn't.** When the views share temporal context. In a live meeting, hiding the transcript while reading an answer (or vice versa) discards the very context that gives both views meaning. The user's eyes have to remember "the last thing the speaker said was X" while reading the agent's reply — and they will mis-remember.
+- **Real-world precedent.** Otter ([Otter desktop side panel](https://help.otter.ai/hc/en-us/articles/15113851067415-Using-Otter-Chat-during-a-live-meeting)) historically used a `Transcript | Outline | Chat` tab strip. Microsoft Teams in-call sidebar uses tabs for `People | Chat | Reactions | Notes | …` ([Teams panel docs](https://support.microsoft.com/en-us/office/use-the-side-panel-in-microsoft-teams-meetings-7c5dc5bb-2c5e-4e83-8c2d-c8c4f5d97f1d)).
+- **Pros.** Familiar; cheap to implement; each view gets full popover width and height.
+- **Cons.** One-screen-at-a-time discards continuity; switching has a click/keystroke cost on every transition; the user must *predict* whether they want transcript or Q&A before each look at the popover.
+
+### Pattern B — Persistent split (transcript top, Ask bottom)
+
+```
+┌──────────────────────────────────────────────┐
+│ TRANSCRIPT                                    │
+│ ┌────────────────────────────────────────┐   │
+│ │ …rolling transcript paragraphs…        │   │
+│ └────────────────────────────────────────┘   │
+├──────────────────────────────────────────────┤  ← drag handle / fixed split
+│ Q&A                                          │
+│ ┌────────────────────────────────────────┐   │
+│ │ …rolling Q&A pairs…                    │   │
+│ │ > input field…                         │   │
+│ └────────────────────────────────────────┘   │
+└──────────────────────────────────────────────┘
+```
+
+Both views are always visible, vertically stacked, with a drag handle to re-proportion them.
+
+- **When it fits.** When the popover is *tall* — sidebar-sized — and the user is on a 27-inch display with screen real estate to spare. Granola's desktop app uses a variant (notes top, chat bottom, full-window).
+- **When it doesn't.** When the popover is constrained to ~480 pt of vertical space (our case). Splitting that between a rolling transcript and a rolling Q&A history gives each pane ~200 pt — about three paragraphs of transcript and one Q&A pair before scroll is needed. Both feel cramped.
+- **Real-world precedent.** Granola's main window ([Granola layout](https://help.granola.ai/article/chatting-with-your-meetings-ask-granola)) is split-ish: notes occupy the body, Ask Granola docks at the bottom. ChatGPT's "split with chat on right" plus desktop sidebar tools.
+- **Pros.** Zero hidden state; user never has to "switch"; both streams are visible simultaneously.
+- **Cons.** In a small menu-bar popover, the split makes both panes too short to be useful; the drag handle adds a new primitive not in the baseline; in practice users either ignore Q&A (because it's tiny) or shove the transcript pane closed (defeating the point).
+
+### Pattern C — Toggle / slide (transcript default, Q&A slides in)
+
+```
+                                    transcript view                            with Ask layer slid in
+┌──────────────────────────────────────────────┐                ┌──────────────────────────────────────────────┐
+│ TRANSCRIPT                ● 14:30  Ask… ⌥⇧Sp │      ⌥⇧Sp →    │ TRANSCRIPT (dimmed)             [ Esc to close]│
+│ …rolling paragraphs…                          │  ─────────→    │ ………… (dimmed)                                  │
+│ …                                             │                │  ────────────────────────────────────────────  │
+└──────────────────────────────────────────────┘                │ Q&A history (latest at bottom)                │
+                                                                  │ > input field                                │
+                                                                  └──────────────────────────────────────────────┘
+```
+
+Transcript is the default. Pressing `⌥⇧Space` (or focusing an Ask affordance) slides a Q&A layer over the transcript, which dims behind it. `Esc` slides it back.
+
+- **When it fits.** When Q&A is an occasional / modal interaction — like Spotlight: the bulk of macOS use isn't searching, but when you need to search, search takes over the screen briefly.
+- **When it doesn't.** When Q&A is intended to interleave with reading transcript. Our user *will* alternate between "what was just said" and "ask the agent" many times per meeting; modal slide-in/slide-out becomes friction.
+- **Real-world precedent.** Microsoft Teams in-call chat panel slides in from the right and pushes the meeting video left (so it's actually a split, not a modal — see [Teams chat in meetings](https://support.microsoft.com/en-us/office/show-chat-in-a-microsoft-teams-meeting-cdb74d22-1f7a-4f02-8761-b40b9d18b89b)). Apple Spotlight is the cleanest modal-slide example. Raycast does the same.
+- **Pros.** Each surface gets full popover when active; familiar from Spotlight/Raycast; clear "mode" mental model.
+- **Cons.** Mode-switch friction; the user can't read transcript and previous Q&A simultaneously; "did I already ask that?" requires opening Q&A, losing transcript focus.
+
+### Pattern D — Combined timeline (chosen)
+
+```
+┌──────────────────────────────────────────────┐
+│ THIS RECORDING       54 lines · 3 Q&A   [⓪Q&A]│ ← Hide-Q&A toggle (filters chronological view)
+├──────────────────────────────────────────────┤
+│ Mic · 00:00:04 — Hi Sarah, thanks for taking │
+│ System · 00:00:08 — Of course! Happy to walk │
+│ ─────────────────────────────────────────────│
+│ 🅀 You · 03:14 — What was the customer's…    │ ← Q&A row, accent-tinted background
+│ 🅐 Assistant · 03:15 — Sarah Chen introduced │
+│ ─────────────────────────────────────────────│
+│ Mic · 05:14 — Right, so on the SSO question, │
+│ System · 05:18 — Realistically Q3, but SAML… │
+│ 🅀 You · 05:32 — Action items so far?        │
+│ 🅐 Assistant · 05:33 — 1) DPA → legal …      │
+│ ─────────────────────────────────────────────│
+│ ┌──────────────────────────────────────────┐ │ ← persistent input bar
+│ │ 🎙 Ask…                       [↩ Send]   │ │
+│ └──────────────────────────────────────────┘ │
+│ ▎mic ▰▰▰▱▱ ▎sys ▰▰▰▰▱           [● Stop ]   │ ← footer (level meters + Stop)
+└──────────────────────────────────────────────┘
+```
+
+There is **no view to switch into**. The popover body is one scrollable chronological timeline whose items are of two kinds — *speech segments* (transcript) and *Q&A pairs* — interleaved by their recording-relative timestamp. The input bar is always present at the bottom. A single `[Hide Q&A]` toggle in the section title filters Q&A items out for users who want a pure-transcript reading view.
+
+- **When it fits.** When the two streams share a single time axis (they do — both are pinned to recording-relative timestamps), when interleave preserves meaning (it does — "I asked X right after they said Y" *is* the structure), and when the surface is small (it is — combining streams uses one set of rows instead of two scroll regions).
+- **When it doesn't.** When Q&A volume vastly exceeds transcript volume (it won't — typical meeting: 100 + speech segments, 3 – 10 Q&A pairs). When the user wants to scan only Q&A across recordings (out of v1 scope per Open Question #3).
+- **Real-world precedent.** Granola interleaves "Ask Granola" answers into its notes timeline ([Ask Granola layout](https://help.granola.ai/article/chatting-with-your-meetings-ask-granola)). Slack and WhatsApp interleave human messages and system/bot messages in one thread. Read.ai shows chat answers next to their corresponding transcript moment ([Read meeting view](https://support.read.ai/hc/en-us/articles/39009378777875-Using-Search-Copilot-to-search-your-meetings-and-connected-apps)). Apple Messages SMS-vs-iMessage interleaving is the same pattern.
+- **Pros.** Zero mode-switch; matches the user's mental model ("here's what was said, here's what I asked, here's what was said next"); preserves glance-ability (the *latest* item is always at the bottom); the persistent input bar is always one keystroke from a question; the export (FR-IRQ-29) is structurally identical to what the user sees — `Save Transcript` simply serialises the on-screen timeline.
+- **Cons.** Long answers can push speech segments out of view (mitigated by per-Q&A collapse FR-IRQ-9 and by the `[Hide Q&A]` filter). Q&A items are visually heavier than speech rows by design — heavier rows can dominate the scroll perception; mitigated by colour-restraint (accent tint at ~6 % alpha, not a saturated badge).
+
+### Recommendation
+
+**Adopt Pattern D — Combined Timeline — as the popover's in-recording surface.** The recording-tool constraints — small menu-bar-anchored popover, glance-ability during a live meeting, low-friction repeat questioning, single shared time axis — all point to D. Patterns A and C add mode-switch friction that is wrong for *frequent* Q&A; Pattern B is wrong for *small* popovers. Pattern D collapses both views into one and lets the user filter rather than switch.
+
+**The floating Ask overlay (FR-IRQ-3) is preserved as a complementary surface, not a competing one.** Specifically:
+
+- The **popover** (menu-bar-anchored, auto-dismisses on focus loss) shows the Combined Timeline whenever it is open. It is the *reading-and-asking* surface.
+- The **floating Ask overlay** (separate `NSWindow`, free of the menu-bar anchor, always-on-top per FR-IRQ-3) is summoned via `⌥⇧Space` from anywhere — even when the popover is closed and the user's focus is on Zoom. It is the *hands-on-keyboard fast-lane* for when the user does not want to click the menu-bar item. The overlay's content is the same Combined Timeline (so the user sees their question land in the same chronological stream they would see in the popover); the difference is anchoring, not content.
+
+Both surfaces write into the same in-memory `QASessionHistory`. The popover's Combined Timeline and the floating overlay's Combined Timeline are two views onto the same model — neither one is a "primary" or "secondary" version of the truth.
+
+This decision implies a small set of follow-on requirements:
+
+- **FR-IRQ-34** *(showcase)* — The popover, while a recording is in any active state (`recording / paused / pausing / resuming / splitting`), MUST render a **Combined Timeline** as its body — speech segments and Q&A pairs interleaved chronologically by recording-relative timestamp. The General / Live Transcription configuration sections (per the baseline popover) collapse to a single `Settings…` button in the footer while a recording is active; they re-expand when no recording is in progress.
+- **FR-IRQ-35** *(showcase)* — Q&A rows in the Combined Timeline MUST be visually distinguished from speech rows by **(a)** a 🅀 / 🅐 glyph pair in `--accent` color at the start of the row meta, **(b)** a background tint of `--accent` at ~6 % alpha (light) / ~8 % alpha (dark), **(c)** the same `.row` height and `.separator` hairline as speech rows — i.e. no new primitive. No badge, no border, no icon system; only colour and glyph.
+- **FR-IRQ-36** *(showcase)* — A `[Hide Q&A]` toggle MUST appear in the section title row of the Combined Timeline, rendered as the `.section-title .meta-right` slot the baseline already uses for the Live Transcription "Soniox / switch" affordance. Toggling it filters Q&A items out client-side; transcript continues to scroll; toggling it back restores the full chronological stream. The toggle state is per-session (not persisted across recordings).
+- **FR-IRQ-37** *(showcase)* — The persistent input bar at the bottom of the Combined Timeline MUST always be visible while the popover is open during a recording. Pressing `↩` while the input has focus submits the question; the question lands as a 🅀 row at the bottom of the timeline; the streaming answer follows as a 🅐 row immediately beneath. Focus does not need to be moved — the user can keep typing the next question after the answer settles.
+- **FR-IRQ-38** *(showcase)* — The popover Combined Timeline and the floating Ask overlay MUST share the same `QASessionHistory` model in `MacrecCore`. A question typed in one surface MUST appear instantly in the other (≤ 100 ms). Scrolling state is *not* shared (each surface tracks its own scroll offset).
+- **FR-IRQ-39** *(showcase)* — When auto-scroll is engaged (the user is parked at the bottom of the timeline), new speech segments and new Q&A rows MUST extend the bottom edge and the view MUST stay pinned to the new bottom. When the user scrolls upward by more than one `.row` height, auto-scroll MUST disengage and the latest items MUST surface a small "↓ N new" pill in the lower-right corner (re-using the `.perm-pill` shape from the baseline). Tapping the pill snaps to the bottom and re-engages auto-scroll.
+
+These five requirements supersede / refine — but do not contradict — the earlier FR-IRQ-10 / FR-IRQ-11 statements: the per-exchange display rules and the session-scoped history still hold; what changes is *where* the history lives (in the same scrollable region as the transcript, not a separate panel).
+
 ## Problem statement
 
 While `macrec` is capturing a live conversation (a customer call, a 1:1, a podcast, a lecture), the user often needs to pull *context from the sidelines* without interrupting the audio capture or pulling focus away from the person they are looking at. Today the popover is optimised for **recording configuration** (folder, format, layout, provider) and **live transcript display** — there is no surface for the user to type a quick question like *"what was the customer's title again?"* or *"summarise the last 5 minutes"* and get an answer streamed back. The recording integrity rule (CLAUDE.md / project-purpose §"Critical requirements") forbids that any side-feature compromise the audio file, so this surface must be strictly additive and audio-non-blocking.
@@ -61,7 +185,7 @@ Each requirement is numbered for traceability into eventual `items/REQ-NNN-*.md`
 
 - **FR-IRQ-1** *(showcase)* — When a recording is in the `recording`, `paused`, `pausing`, `resuming`, `splitting` state (per `SessionState.swift` on `master`), the user MUST be able to summon a question input overlay via a global keyboard shortcut. Default shortcut: **`⌥⇧Space`** (Option+Shift+Space). Configurable in `GeneralSettingsView` (§FR-IRQ-16).
 - **FR-IRQ-2** *(showcase)* — The overlay MUST also be reachable by clicking a persistent **"Ask"** pill rendered inside `LiveTranscriptPanel` (or its dual-mode equivalent `DualLiveTranscriptView`). The pill is hidden when the session is not recording. The pill MUST render with the same `.perm-pill`/`.status-chip` shape from the popover baseline — same height, same radius, same blur material.
-- **FR-IRQ-3** *(showcase)* — The overlay MUST present as a **floating, frameless, always-on-top NSWindow** anchored to the right edge of the active display, NOT inside the existing popover. Rationale: the popover auto-dismisses when the menu-bar focus is lost (see `PopoverController.swift`); a Q&A surface must survive the user looking back at their conversation window. The frame chrome (radius, shadow, blur) MUST be the `.popover` styling from `docs/design/mockups/popover-redesign.html`.
+- **FR-IRQ-3** *(showcase)* — In addition to the popover-resident Combined Timeline (see §"View navigation between transcript and Q&A" and FR-IRQ-34), Q&A MUST be reachable via a **floating, frameless, always-on-top NSWindow** anchored to the right edge of the active display, summoned by the global shortcut. Rationale: the popover auto-dismisses when the menu-bar focus is lost (see `PopoverController.swift`); the floating overlay survives the user looking back at their conversation window. The two surfaces are *complementary views onto the same `QASessionHistory` model* (FR-IRQ-38), not alternatives — neither replaces the other. The floating overlay's frame chrome (radius, shadow, blur) MUST be the `.popover` styling from `docs/design/mockups/popover-redesign.html`.
 - **FR-IRQ-4** *(showcase)* — The overlay MUST contain (1) a single-line, multi-line-expandable text input styled as a `.key-input` widened to fill the row, (2) a Submit affordance (Return key + click target — a blue-gradient mirror of `.record-btn`), (3) a Dismiss affordance (Esc + `.btn` close), (4) a Push Pin toggle that keeps the overlay sticky when the user clicks away (default OFF — clicking away minimises to a docked pill).
 - **FR-IRQ-5** *(showcase)* — Input MUST be acceptable via **typing** (v1) and via **push-to-talk voice** (v2, deferred). v1 ships typing-only; the input field reserves a leading mic icon greyed-out with tooltip *"Voice input — coming soon"* so the v2 entry point is discoverable.
 
@@ -75,7 +199,7 @@ Each requirement is numbered for traceability into eventual `items/REQ-NNN-*.md`
 ### Display & timeline
 
 - **FR-IRQ-10** *(showcase)* — Each Q&A exchange MUST display **the asked question** (verbatim, with timestamp `mm:ss` since recording start), **the in-progress indicator while answering**, **the answer** (collapsible if >6 lines), and **a marker on the recording timeline** showing where in the audio the question was asked. Question + answer pair MUST sit inside a `.group` row pair with a hairline divider — same visual rhythm as the popover's General / Live Transcription sections.
-- **FR-IRQ-11** *(showcase)* — The overlay MUST keep a scrollable history of all Q&A exchanges from the current session, newest at the bottom. History is per-session (cleared on Stop) by default; persisting is §FR-IRQ-14 and §FR-IRQ-23.
+- **FR-IRQ-11** *(showcase)* — Both Q&A surfaces (the popover's Combined Timeline per FR-IRQ-34 and the floating Ask overlay per FR-IRQ-3) MUST display the same scrollable history of all Q&A exchanges from the current session, newest at the bottom, interleaved chronologically with speech segments in the popover surface (FR-IRQ-35) and shown as a filtered Q&A-only stream in the floating overlay. History is per-session (cleared on Stop) by default; persisting is §FR-IRQ-14 and §FR-IRQ-23.
 - **FR-IRQ-12** *(showcase)* — The recording-timeline markers MUST visually distinguish three time-classes: **question-time** (a vertical tick), **answer-time** (a span ending at the answer's last-token timestamp), and **continued-recording-time** (the default audio waveform / elapsed line). The Live Transcript Panel's existing elapsed clock (`ElapsedTimeView.swift`) is augmented, not replaced. Tick color = `--accent`; answer span = `--accent` at 35 % alpha; continued-recording line = `--separator`.
 - **FR-IRQ-13** *(showcase)* — Clicking a timeline marker MUST scroll the Q&A history overlay to the corresponding exchange and the transcript panel to the corresponding transcript segment (best-effort: the segment whose end-timestamp is closest to but ≤ the marker's recording time).
 
