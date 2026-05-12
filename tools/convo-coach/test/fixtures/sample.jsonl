@@ -1,4 +1,0 @@
-{"ts":1714658000000,"text":"Hello, can you tell me about your project?","channel":"A","lang":"en"}
-{"ts":1714658005000,"text":"Sure, it is a CLI for live conversation coaching.","channel":"B","lang":"en"}
-{"ts":1714658012000,"text":"How do you handle the LLM streaming?","channel":"A","lang":"en"}
-{"ts":1714658018000,"text":"We use the Vercel AI SDK with the textStream API.","channel":"B","lang":"en"}
