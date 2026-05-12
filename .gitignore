@@ -1,25 +1,128 @@
-.build/
-.swiftpm/
-Packages/
-dist/
-*.xcodeproj
-*.xcworkspace
-DerivedData/
-.DS_Store
-*.swp
-xcuserdata/
-IDEWorkspaceChecks.plist
-/Tests/MacrecCoreTests/Output/
-
-# Local e2e test artifacts (transcript + audio captured by
-# `test_scripts/e2e-transcription-*.sh`). Regenerated on every run;
-# never useful to track.
-/macrec-e2e.jsonl
-/macrec-e2e.m4a
-/macrec-e2e.*.jsonl
-/macrec-e2e.*.m4a
-
-# Git worktrees created by the using-git-worktrees skill
-.worktrees/
-
+# ─── Node.js / TypeScript / Next.js ───────────────────────────────────────────
 node_modules/
+.pnp
+.pnp.*
+.yarn/install-state.gz
+
+# Build output
+dist/
+build/
+out/
+.next/
+.turbo/
+.vercel/
+.netlify/
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+# Bundler caches
+.cache/
+.parcel-cache/
+.rollup.cache/
+.swc/
+.esbuild/
+.vite/
+
+# ─── Package manager logs & lock-debris ───────────────────────────────────────
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.npm
+.eslintcache
+.stylelintcache
+
+# ─── Testing & coverage ───────────────────────────────────────────────────────
+coverage/
+*.lcov
+.nyc_output/
+playwright-report/
+test-results/
+junit.xml
+
+# ─── Environment & secrets (NEVER COMMIT) ─────────────────────────────────────
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+
+# Cloud credentials
+.azure/
+.aws/
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials.json
+
+# ─── Payload CMS / databases / media ──────────────────────────────────────────
+# Payload local media uploads (production should use Azure Blob)
+media/
+public/media/
+uploads/
+# Local SQLite / Meilisearch / Postgres dumps used during dev
+*.sqlite
+*.sqlite-journal
+*.db
+data.ms/
+meili_data/
+*.sql.gz
+*.dump
+
+# ─── Logs ─────────────────────────────────────────────────────────────────────
+logs/
+*.log
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# ─── IDE / editor ─────────────────────────────────────────────────────────────
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/tasks.json
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+.history/
+
+# ─── OS junk ──────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ─── Claude Code project-local artifacts ──────────────────────────────────────
+# Keep .claude/memory/ committed (per-project Claude memory, intentional in-repo layout)
+# Keep .claude/agents/, .claude/commands/, .claude/skills/ if present
+# Ignore only the local-only settings and transient state
+.claude/settings.local.json
+.claude/cache/
+.claude/tmp/
+.claude/plans/*.draft.md
+.claude/.session/
+.claude-cache/
+
+# ─── Worktrees & temp scaffolding ─────────────────────────────────────────────
+.worktrees/
+.claude-worktrees/
+tmp/
+temp/
+scratch/
+
+# ─── Local dev tooling state ──────────────────────────────────────────────────
+.docker/
+docker-compose.override.yml
+.devcontainer/devcontainer.local.json

@@ -1,3 +1,122 @@
+<requirements-branch>
+## ⚠️ You are on the `requirements` branch
+
+This worktree (`recording-tool-requirements/`) is checked out on the **`requirements` branch** — a long-lived parallel branch dedicated to **continuous requirements development** for the `macrec` macOS audio-recording tool and its sibling tools. It is NOT the implementation branch. Any code, architecture, or infrastructure work belongs on `master` — not here.
+
+### Why this branch exists
+Business requirements development is treated as a **first-class, continuous workstream** that runs in parallel to implementation. This branch is the sandbox where requirements are iterated, refined, explored, and challenged — without polluting `master` with half-formed thinking. When a version of the requirements is ready to be adopted, the user explicitly requests a merge to `master`.
+
+### Folder layout (specific to this branch)
+
+```
+recording-tool-requirements/
+├── inputs/      ← raw input material: emails, transcripts, investigations,
+│                  brainstorm dumps, stakeholder feedback. Append-only.
+├── current/     ← the single consolidated requirements document.
+│                  One file: requirements.md (+ requirements.html mirror).
+│                  Rewritten on each consolidation, not appended.
+│                  Also hosts product-definition.md — the high-level
+│                  "what the product is" reference.
+└── items/       ← one file per atomic requirement: REQ-NNN-<topic>-<slug>.md
+                   Numbered sequentially, classified by topic, never deleted
+                   once a number is assigned.
+```
+
+Each folder has its own `README.md` describing its detailed rules — **read those before working in the folder.**
+
+### Workflow
+1. **New input arrives** (email, meeting, research result, field observation) → captured as a file in `inputs/`.
+2. **Distinct requirements are identified** from inputs → each becomes a new `REQ-NNN-<topic>-<slug>.md` in `items/` at status `draft`.
+3. **Items mature** through status transitions: `draft → proposed → accepted` (or `deferred`/`rejected`/`superseded`).
+4. **Periodically** the accepted items are consolidated into `current/requirements.md` (and its HTML mirror).
+5. **Adoption to `master`** happens only when the user explicitly requests it — usually via a merge commit that records the adopted version.
+
+### Naming convention for individual requirements
+`REQ-NNN-<topic>-<short-slug>.md` — see `items/README.md` for the topic taxonomy and full conventions. The number is **sequential, never reused**.
+
+### What does NOT belong on this branch
+- Source code (`Sources/`, `Tests/`), build artifacts (`.build/`, `dist/`), package manifests (`Package.swift`, `package.json`, etc.).
+- Architecture decisions records (ADRs) and design documents — those live on `master` under `docs/design/`.
+- Implementation plans (`plan-xxx-*.md`) — also on `master` under `docs/design/`.
+- The functional requirements registry (`docs/design/project-functions.md`) — that is the *adopted* mirror on `master`; the *evolving* requirements live here.
+- The `Issues - Pending Items.md` — on `master`.
+- Tool documentation (`docs/tools/*.md`) — on `master`.
+
+If a session is about to write code or implementation-flavored docs, it is on the wrong branch. Switch to the `master` worktree at `/Users/giorgosmarinos/aiwork/coding-platform/recording-tool/`.
+
+### Sync with `master`
+- The `<project-purpose>` and `<structure-and-conventions>` blocks below are kept in sync with `master` so the project's identity travels with both branches.
+- This `<requirements-branch>` block is **specific to this branch** and should not be merged into `master` — drop it during a requirements-to-master merge, or treat it as a known conflict to resolve in favor of `master`.
+
+</requirements-branch>
+
+<project-purpose>
+## Project Purpose — Ambition & Intention
+
+> This section captures the founding intent of the **recording-tool** project so that any future session can stay aligned with the original vision. Do not modify it without explicit confirmation from the user.
+
+### What this project is
+**recording-tool** is a macOS-native ecosystem centred on `macrec` — a dual-source audio recorder that captures **system audio** (anything playing through the Mac: Music, Spotify, browsers, Zoom, Teams, conference platforms) **and the microphone** **simultaneously**, with optional **live speech-to-text transcription** and **post-recording conversational coaching**. It ships as a small family of cooperating local-first tools, not a single monolith.
+
+### Why it exists
+macOS does not provide a first-class way to record what's coming **out of** the speakers together with what's going **into** the microphone. The legacy workarounds (BlackHole / Loopback / Soundflower virtual devices) require kernel extensions, system reconfiguration, and produce fragile recording chains. Since macOS 13, `ScreenCaptureKit` exposes a sanctioned system-audio path; `recording-tool` exists to package that capability — together with the microphone path, transcription, and downstream coaching — into a tool a single user can run on their own machine without installing kernel drivers or sending audio to a server they don't trust.
+
+### Audience
+A **single-user, local-first** product, aimed at:
+- **Knowledge workers** in meetings (Zoom / Teams / Google Meet) who want a high-fidelity recording of both sides of the conversation, with a transcript on their disk and live coaching prompts during the call.
+- **Researchers and learners** capturing podcasts, interviews, lectures, or training material that mixes recorded media with their own commentary.
+- **Power-users** who want CLI-driven, scriptable recording (`macrec start --detach`, `macrec stop`) integrated into their own automations.
+- **Developers and analysts** consuming the JSONL transcript sidecars as structured input for downstream tooling (search, summarisation, agent pipelines).
+
+### Primary goals — in priority order
+1. **Faithful dual-source capture** — bit-perfect record of both system and microphone, time-aligned within ±20 ms, never lossy on the audio file even when downstream layers (network, STT, coach) misbehave.
+2. **Choice of where the audio goes** — `mixed` (one summed stereo file), `split` (two files), or `stereo-split` (one stereo file with mic on one channel and system on the other). All formats addressable: `m4a` (AAC), `wav` (PCM), `caf` (PCM).
+3. **Frictionless transcription** — pick an STT provider per session (Apple on-device, Apple Cloud, Google Gemini, Soniox, Azure OpenAI batch + realtime, ElevenLabs, WhisperKit, Parakeet on-device multilingual) and get a sidecar transcript in `jsonl`, `txt`, `srt`, or `vtt` next to the audio.
+4. **Conversation coaching as a downstream consumer** — `convo-coach` reads a transcript sidecar and streams live LLM-driven coaching advice while the conversation continues.
+5. **First-class privacy posture** — on-device default for transcription where available; explicit per-provider privacy disclosure when audio is about to leave the machine; per-provider opt-in storage so users never accidentally share more than they intend.
+
+Secondary goals: dual-mode transcription (on-device + cloud running in parallel against the same audio for accuracy comparison), per-source split transcription (each side of the conversation transcribed with its own provider/locale), software microphone acoustic echo cancellation (so the system-audio bleed-back doesn't pollute the mic transcript).
+
+### Critical requirements (non-negotiable)
+- **macOS-native — Swift / SwiftPM**. `ScreenCaptureKit` + `AVFoundation` are the sanctioned APIs. Project Memory Exception 001 records the explicit deviation from the "everything is TypeScript" project convention for this reason.
+- **Universal binary** (`arm64` + `x86_64`); builds on Apple Command-Line Tools (no full Xcode required).
+- **No virtual audio devices** required — never ask the user to install BlackHole, Loopback, or any kext.
+- **No silent fallback for configuration** — if a required env var or flag is missing, raise a typed error and exit with a documented exit code; never substitute a "reasonable default" for a credential.
+- **Recording integrity is sacrosanct** — any failure in transcription, coaching, UI, or downstream tooling MUST be non-fatal to the audio file. The audio file is the ground truth.
+- **TCC permissions** are explicit and surfaced: Screen Recording (for `ScreenCaptureKit`), Microphone (for `AVCaptureSession`), Speech Recognition (for the Apple STT paths). The CLI and the UI both refuse to start when grants are missing and link to the System Settings panel that resolves it.
+- **Companion tools are TypeScript** by default (`dual-transcript-merger`, `convo-coach`) — they live under `tools/<name>/`, comply with `tool-conventions`, and use the standard four-tier env-var resolution chain.
+
+### What it is explicitly NOT
+- Not a server. There is no listening port, no API surface, no shared backend. Every recording stays on the user's disk unless they opt-in to a cloud STT provider, in which case only the audio chunks needed for transcription leave the machine.
+- Not a podcast / DAW production app. No mixing console, no effects rack, no multi-track timeline editing. The output is the raw recorded audio (optionally mixed, optionally split).
+- Not a phone-system / SIP integration. Recording captures whatever the Mac's audio subsystem is already playing — the source of that audio (browser, video-call app, music player) is outside the tool's scope.
+- Not a transcription service. Transcription is plug-in: providers come and go, the tool is the orchestrator and the persistence layer, not the recogniser.
+- Not a multi-user app. There is no notion of accounts, sharing, or team workspaces. Every config file is single-user (`~/.tool-agents/<name>/`).
+
+### Current technical direction
+- **Two Swift executables sharing one core library** (`MacrecCore`): the `macrec` CLI for headless / scripted use, and the `macrec-ui` menu-bar app for interactive use. Both link `MacrecCore` directly (in-process; the UI is NOT a shell wrapper around the CLI).
+- **Two TypeScript companion CLIs**: `dual-transcript-merger` (merges Channel A + Channel B JSONL into a single interleaved transcript with cross-language hallucination filtering) and `convo-coach` (streams LLM coaching advice from a transcript via the Vercel AI SDK against eight provider backends).
+- **Configuration**: four-tier env-var resolution chain — shell env → `~/.tool-agents/<tool-name>/.env` → local `./.env` → CLI flags (lowest to highest priority). LLM provider env vars use vendor-canonical names (`OPENAI_API_KEY`, `AZURE_OPENAI_*`, `GOOGLE_API_KEY`, etc.).
+- **Deployment target**: macOS 26 (Tahoe). Project Memory Exception 002 records the bump from macOS 14 (driven by `SpeechAnalyzer` adoption in plan-005).
+
+### Source documents to consult first (on `master`)
+- `docs/design/project-design.md` — the authoritative technical design (architecture diagrams, module interfaces, threading model, configuration precedence, logging, sequence diagrams, ADRs).
+- `docs/design/project-functions.md` — the adopted functional-requirements registry (FR-1..FR-58, FR-AS-*, FR-AZ-*, FR-EL-*, FR-XS-*, NFR-1..NFR-21, AC-*).
+- `docs/tools/macrec.md`, `docs/tools/macrec-ui.md`, `docs/tools/dual-transcript-merger.md`, `docs/tools/convo-coach.md` — per-tool documentation.
+- `docs/design/plan-001-recording-tool.md` … `plan-014-aec-stability.md` — historical implementation plans, in order.
+
+### Alignment check for any future session
+Before making any architecture, dependency, or scope decision, verify it against:
+1. Does it preserve **dual-source capture** as a first-class capability (system + mic, time-aligned, never one without the other in dual mode)?
+2. Does it preserve **recording integrity** as non-blocking to every other concern (STT failure ⇒ audio still fine)?
+3. Does it preserve the **single-user, local-first, no-server** posture, with cloud calls strictly opt-in and disclosed?
+4. Does it respect the **TCC + permissions model** (Screen Recording, Microphone, Speech Recognition prompts; deep links to System Settings on denial)?
+5. Does it respect the **TypeScript-for-tools / Swift-for-macrec** split (Project Memory Exception 001)?
+
+If a proposed change conflicts with any of the above, surface it explicitly to the user before proceeding.
+
+</project-purpose>
+
 <structure-and-conventions>
 ## Structure & Conventions
 
@@ -55,166 +174,25 @@
 
 - Every time you are asked to solve an issue, you must resolve it AND thoroughly document both the issue and the solution.
 
+<dependency-vetting>
+- Before adding ANY new runtime dependency to a project (`package.json`, `pyproject.toml`, `go.mod`, etc.), you MUST verify the version you are about to pin is free of known security advisories. Apply this rule especially to:
+  - **Browser/embedded-engine packages:** `electron`, `puppeteer`, `playwright`, `chromium`, `webview2` — they ship with full browser engines and accumulate CVEs fast.
+  - **Test/build toolchains:** `vitest`, `vite`, `esbuild`, `webpack`, `rollup`, `parcel` — frequent dev-server-RCE advisories with transitive impact.
+  - **Network/proxy libraries:** `node-http-proxy`, `http-proxy-3`, `proxy-chain`, `axios`, `node-fetch`, `request`, `got`, `undici`.
+  - **Cryptography / auth libraries:** `jsonwebtoken`, `jose`, `bcrypt`, `node-forge`, `crypto-js`.
+
+- Vetting procedure (run BEFORE writing the dependency into the manifest):
+  1. Identify the latest stable major version available on the registry (e.g. `npm view <pkg> versions --json | tail -10` or `pnpm info <pkg> versions --json`).
+  2. Check the package's security advisory page (GitHub Advisory Database, npmjs.com vulnerability tab, or `npm audit --package <pkg>@<version> --json`) for the candidate version.
+  3. If the candidate version has unfixed advisories at HIGH severity or above, bump to the next non-vulnerable major (or, if no such version exists, surface the trade-off to the user via AskUserQuestion before proceeding).
+  4. Pin to a caret range against the verified clean version (e.g. `"electron": "^39.8.5"`, not `"electron": "^38"`).
+  5. Record the vetted-on date in a one-line comment in `Issues - Pending Items.md` under a "Dependency vetting log" section so future audits can date the decision.
+
+- For ESPECIALLY fast-moving packages (`electron`, `vite`, `vitest`, `esbuild`), ALWAYS pull the latest stable major even when a reference implementation uses an older one. The reference's version is informational, not authoritative — verify it is still on a supported branch before adopting it verbatim.
+
+- After installing, ALWAYS run the project's audit command (`pnpm audit`, `npm audit`, `pip-audit`, `cargo audit`, `go list -m -u -json all | nancy sleuth`, etc.) and confirm the advisory count is zero before marking the scaffolding step complete. Treat any HIGH-or-above advisory as a blocker; surface it before continuing.
+
+- When a transitive dependency carries an advisory that the direct dependency has not yet fixed (e.g. `vitest@1` pulling `vite@5` with a CVE), use the package manager's override mechanism (`pnpm.overrides`, `npm overrides`, `yarn resolutions`, `cargo [patch]`) to force the fixed transitive version, AND document the override in `Issues - Pending Items.md` with its expiry condition (i.e. "remove this override once direct-dep X reaches version Y").
+</dependency-vetting>
+
 </structure-and-conventions>
-
-## Project Memory / Approved Exceptions
-
-This section records explicit, user-approved exceptions to the Structure & Conventions above. Every entry must include the rule it overrides, the reason for the exception, the date approved, and the scope.
-
-### Exception 001 — Implementation language: Swift instead of TypeScript
-
-- **Rule overridden**: "When I ask you to create tools in the context of a project everything must be in Typescript."
-- **Approved**: 2026-04-26
-- **Scope**: This project (`recording-tool`) and the macOS audio recording tool implemented within it. The TypeScript rule continues to apply to any future tools added to this project unless they are similarly approved as exceptions.
-- **Reason**: The tool must capture macOS system audio (audio playing through Music, Spotify, browsers, Zoom, Teams, etc.) plus the built-in microphone. The first-class APIs for this on macOS 13+ are `ScreenCaptureKit` (system audio) and `AVFoundation` (microphone). Both are Swift/Objective-C frameworks with no first-class Node/TypeScript bindings. Implementing the tool natively in Swift avoids brittle FFI shims and is the platform-recommended path.
-- **Implication**: All conventions that explicitly assume Node/TypeScript (e.g. `process.env` resolution, `~/.tool-agents/[tool-name]/.env` durable defaults, the env-variable precedence chain) still apply in spirit — they will be implemented using Swift equivalents (`ProcessInfo.processInfo.environment`, `FileManager`, etc.) so the user-facing configuration behavior is identical to a TypeScript tool.
-
-### Exception 002 — Deployment target bumped to macOS 26 for SpeechAnalyzer
-
-- **Rule overridden**: implicit project assumption from plan-001 that the deployment target stays at `macOS 14` for broad compatibility.
-- **Approved**: 2026-04-28
-- **Scope**: Project-wide (Package.swift `platforms: [.macOS(.v26)]`)
-- **Reason**: plan-005 adds on-device live transcription via `SpeechAnalyzer`, introduced in macOS 26 (Tahoe). The new API unlocks real-time partials (~80–250 ms first-partial latency), Swift-concurrency-native results streams, and dual-locale parallel recognition. Quality and latency materially exceed the macOS 14-compatible `SFSpeechRecognizer` on-device mode. The project's primary user runs macOS 26.4.1; the bump is acceptable for v1.5.
-- **Implication**: anyone running macOS 13–25 cannot build or run `macrec` after this change. If wider compatibility is needed later, the streaming provider could fall back to `SFSpeechRecognizer` via `#available(macOS 26, *)` gating.
-
-### Exception 003 — `convo-coach` default LLM provider
-
-- **Rule overridden**: "You must never create fallback solutions for configuration settings. In every case a configuration setting is not provided you must raise the appropriate exception."
-- **Approved**: 2026-05-02
-- **Scope**: The `convo-coach` TypeScript tool (`tools/convo-coach/`) only — strictly limited to its `COACH_PROVIDER` resolution.
-- **Reason**: Forcing the user to pass `--provider <name>` on every invocation (or to explicitly set `COACH_PROVIDER` in `~/.tool-agents/convo-coach/.env`) is unergonomic for a tool intended to be invoked many times during a single conversation. The user's primary LLM access in this project is through Azure OpenAI (the `AZURE_OPENAI_*` vars are already in the shell). Defaulting to `azure-openai` lets bare `convo-coach` invocations work out of the box on the user's machine while still raising clear errors if the Azure OpenAI credentials themselves are missing.
-- **Implication**: When neither `--provider` nor `COACH_PROVIDER` is set, `convo-coach` selects `azure-openai`. This is *only* the provider selection — every credential the chosen provider requires (`AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT`, `AZURE_OPENAI_API_VERSION`) must still be present in the resolution chain or the tool raises `ConfigError` with exit code 78 (MISSING_CONFIG). Default model IDs (e.g. `gpt-4o-mini` for openai) are NOT covered by this exception — they remain provider-recommended values applied when the user has explicitly chosen a provider but not a model, which the project treats as model-metadata, not a credential fallback.
-
-## Tools
-
-### macrec
-
-macOS dual-source audio recorder: captures system audio (via `ScreenCaptureKit`) and the microphone (via `AVFoundation`) simultaneously and writes to `m4a` / `wav` / `caf` in `mixed`, `split`, or `stereo-split` layouts. Supports foreground execution (Ctrl-C to stop) or detached background execution paired with a `stop` subcommand. Foreground recordings can optionally stream the captured audio to a real-time speech-to-text provider (Apple, Apple Cloud, Gemini, Soniox, Azure, Azure Realtime, ElevenLabs, WhisperKit, **Parakeet** — multilingual on-device via FluidAudio, plan-012) via `--transcribe`, producing a JSONL / TXT / SRT / VTT transcript sidecar alongside the audio file. Plan-010 adds dual-mode transcription (`--transcribe dual`) — Apple on-device Channel A + Apple Cloud Channel B run concurrently against identical audio, writing one merged channel-tagged sidecar. Plan-012 (2026-05-02 / 2026-05-03) adds three independent enhancements: a Parakeet TDT V3 multilingual on-device provider (`parakeet`); default-on Soniox speaker diarization with `[S1]` / `[S2]` labels in every sidecar (overridable via `MACREC_SONIOX_DIARIZE`); and true `--transcribe-source both` source-split (two parallel transcription drivers, two sidecars `*.system.transcript.<ext>` + `*.microphone.transcript.<ext>`, two-lane live UI). Plan-013 (2026-05-09, revised same day after the Apple voice-processing approach proved incompatible with `SCStream`) adds **microphone acoustic echo cancellation** via a custom software NLMS adaptive filter (`SoftwareAECProcessor`) wired between the existing capture sources and the aligner: it takes the captured system-audio buffers as the reference signal and subtracts the estimated speaker-to-mic echo from the raw mic before it reaches the encoder, preserving the mic's native frequency response (no AGC, no NS, no band narrowing). Plan-014 (2026-05-09, same day) ships the v5 stability rewrite — PTS-aligned reference windowing, reference-activity gating, double-talk detection, 50 ms windowed divergence reset, soft-knee output limiter — and **flips the AEC default to off (opt-in)**. Turn AEC on per session via `--mic-aec on` (CLI), `MACREC_MIC_AEC=on` (env), or the popover toggle. See [docs/design/plan-012-stt-enhancements.md](docs/design/plan-012-stt-enhancements.md) for the STT task list, [docs/design/plan-013-microphone-aec.md](docs/design/plan-013-microphone-aec.md) for the original AEC plan (including §0 on the failed first attempt and §11 on the v3/v4 divergence defect), [docs/design/plan-014-aec-stability.md](docs/design/plan-014-aec-stability.md) for the v5 stability rewrite + opt-in default, and [docs/design/refined-request-stt-enhancements.md](docs/design/refined-request-stt-enhancements.md) for the STT spec.
-
-Documentation: [docs/tools/macrec.md](docs/tools/macrec.md)
-
-#### Build & run the CLI
-
-`macrec` is a SwiftPM `executableTarget` (no `.app` wrapper — it's a plain CLI). Quick paths:
-
-```sh
-# 1. Quickest dev iteration — debug build, runs attached to terminal.
-swift run macrec --help
-swift run macrec list-devices
-swift run macrec start --output ~/Recordings/test.m4a
-
-# 2. Release build — produces .build/release/macrec.
-swift build -c release --product macrec
-.build/release/macrec --help
-
-# 3. Stop a detached recording (paired with `start --detach`).
-swift run macrec stop
-```
-
-To make `macrec` available system-wide as a normal CLI on `PATH`:
-
-```sh
-swift build -c release --product macrec
-sudo cp .build/release/macrec /usr/local/bin/macrec
-macrec --help
-```
-
-`/usr/local/bin` is on the default `zsh` `PATH`. If you prefer a non-`sudo` location, copy to `~/.local/bin` (or any directory on your `PATH`) instead.
-
-Notes:
-
-- TCC: the CLI inherits Microphone + Screen Recording grants attached to the parent terminal binary (Terminal.app, iTerm, etc.). On first run macOS will pop the two prompts; click Allow. Apple Cloud Speech Recognition (`--transcribe apple-cloud` / `dual`) does **not** work from the raw CLI — it only works from the bundled `macrec-ui.app` (see the `macrec-ui` section below).
-- Provider API keys (Gemini, Soniox, Azure, ElevenLabs) are read from environment variables, then `~/.tool-agents/macrec/.env`, then the local `.env`, then CLI flags. See `docs/tools/macrec.md` for the full resolution chain.
-
-### macrec-ui
-
-macOS menu-bar status item app for the `macrec` audio recorder. Provides a popover toolbar to start, pause, resume, stop, and split recordings, with elapsed-time, format/layout/folder/mic selectors, permission status, and per-source level meters; drives `MacrecCore` in-process and ships under a separate bundle id (`com.local.macrec-ui`) so its TCC grants are independent of the CLI's. The popover also exposes opt-in live transcription (None / Gemini Live picker, source picker, sidecar-format picker, inline live-transcript panel, one-time privacy-disclosure dialog, and per-recording cost / latency display) plus a Single/Dual mode switch (plan-010) that surfaces a per-channel locale / format / metrics panel and a stacked dual-lane live-transcript display when Dual is active. Plan-013 (2026-05-09) adds a "Mic echo cancellation" toggle in the General section — when on, a custom software NLMS adaptive filter (`SoftwareAECProcessor`) subtracts estimated speaker-to-mic acoustic bleed from the raw mic signal using the captured system audio as reference; native mic frequency response is preserved. Plan-014 (2026-05-09) ships the v5 stability rewrite (PTS-aligned reference, ref-activity gate, double-talk detector, divergence reset, soft-knee limiter) and **flips the toggle's default to off** — AEC is now opt-in.
-
-Documentation: [docs/tools/macrec-ui.md](docs/tools/macrec-ui.md)
-
-#### Build & run as a typical macOS app
-
-The recommended way to run `macrec-ui` like a normal Mac app (Dock / Spotlight visibility, Apple Cloud Speech Recognition prompt, persistent TCC grants under bundle id `com.local.macrec-ui`) is to package it as an `.app` bundle and `open` it.
-
-```sh
-# 1. Build a release bundle at dist/macrec-ui.app (ad-hoc signed).
-bash scripts/package-macrec-ui-app.sh
-
-# 2. Launch it like any other Mac app.
-open dist/macrec-ui.app
-```
-
-The packaging script runs `swift build -c release --product macrec-ui`, assembles `dist/macrec-ui.app/Contents/{Info.plist, MacOS/macrec-ui, Resources/, _CodeSignature/}` from the canonical `Resources/MacrecUI-Info.plist`, and ad-hoc codesigns the bundle. Useful overrides:
-
-- `SWIFT_CONFIG=debug bash scripts/package-macrec-ui-app.sh` — faster debug build during iteration.
-- `CODESIGN_IDENTITY="Developer ID Application: …" bash scripts/package-macrec-ui-app.sh` — sign with a real identity instead of ad-hoc.
-- `pkill -f '\.build/.*macrec-ui' || true` — kill any stale raw-CLI instance before relaunching the bundled app (TCC sometimes refuses to re-prompt while the older PID is alive).
-
-For quick dev iteration (no Apple Cloud STT, no Dock entry):
-
-```sh
-swift run macrec-ui                                   # debug, attached to terminal
-swift build -c release && .build/release/macrec-ui    # release, raw binary
-```
-
-#### Deploying to /Applications
-
-Once `dist/macrec-ui.app` builds cleanly, install it system-wide so it survives `swift build` cleans and can be launched from Spotlight or set to "Open at Login":
-
-```sh
-# Stop any running instance first so the move doesn't overwrite a live binary.
-pkill -x macrec-ui || true
-
-# Replace any previous install and copy the freshly built bundle.
-rm -rf "/Applications/macrec-ui.app"
-cp -R dist/macrec-ui.app "/Applications/macrec-ui.app"
-
-# Optional: clear quarantine flags Finder may have set after the copy.
-xattr -dr com.apple.quarantine "/Applications/macrec-ui.app" || true
-
-# Launch from its installed location.
-open "/Applications/macrec-ui.app"
-```
-
-To start it automatically at login, open **System Settings → General → Login Items → Open at Login**, click `+`, and add `/Applications/macrec-ui.app`.
-
-Notes:
-
-- The bundle id (`com.local.macrec-ui`) is identical between `dist/…` and `/Applications/…`, so existing Microphone, Screen Recording, and Speech Recognition TCC grants carry over — no need to re-approve permissions after deploying.
-- After upgrading the bundle in `/Applications`, relaunch the menu-bar icon (quit via the popover's Quit action, then `open` again). macOS does not auto-restart it.
-
-### dual-transcript-merger
-
-TypeScript CLI that merges dual-channel JSONL sidecar transcripts produced by `macrec --transcribe dual` (Channel A = Apple on-device, Channel B = Apple Cloud) into a single chronologically-ordered file. Interleaves both channels by timestamp and applies a configurable cross-language hallucination filter (`conservative` / `aggressive` / `off`), outputting either metadata-preserving JSONL or human-readable TXT.
-
-Documentation: [docs/tools/dual-transcript-merger.md](docs/tools/dual-transcript-merger.md)
-
-#### Install as a direct command
-
-```sh
-cd tools/dual-transcript-merger
-npm install               # also runs the `prepare` script: tsc + chmod +x dist/cli.js
-npm link                  # installs `dual-transcript-merger` on PATH globally
-
-dual-transcript-merger /path/to/sidecar.jsonl --filter aggressive --format txt
-```
-
-`npm link` creates a symlink in your global `bin` directory (e.g. `/opt/homebrew/bin/dual-transcript-merger` on Apple Silicon Homebrew, `~/.npm-global/bin/...` for user-scoped npm setups). The `prepare` + `postbuild` scripts in `package.json` keep the binary executable across rebuilds — you don't need to `chmod +x` manually after `npm run build`. To uninstall, run `npm unlink -g dual-transcript-merger` from anywhere.
-
-### convo-coach
-
-TypeScript CLI that reads a `macrec` transcript sidecar (single-channel or dual-channel JSONL) and streams live conversational coaching advice from a configurable LLM provider to stdout, simultaneously writing every response to a dated `.advice-*.md` sidecar file next to the source transcript. Supports all eight standard providers (OpenAI, Anthropic, Google Gemini, Azure OpenAI, Azure AI Inference, Ollama, LiteLLM, MLX-LM) via the Vercel AI SDK, with conversation-window slicing (`--last`, `--since`), stdin streaming mode, and auto-detect of the most-recent recording. Defaults to `azure-openai` when `--provider` / `COACH_PROVIDER` are unset (per Project Memory Exception 003).
-
-Documentation: [docs/tools/convo-coach.md](docs/tools/convo-coach.md)
-
-#### Install as a direct command
-
-```sh
-cd tools/convo-coach
-npm install               # also runs the `prepare` script: tsc + chmod +x dist/cli.js
-npm link                  # installs `convo-coach` on PATH globally
-
-convo-coach --help
-```
-
-`npm link` creates a symlink in your global `bin` directory (e.g. `/opt/homebrew/bin/convo-coach` on Apple Silicon Homebrew, `~/.npm-global/bin/convo-coach` for user-scoped npm setups). The `prepare` + `postbuild` scripts in `package.json` keep the binary executable across rebuilds — you don't need to `chmod +x` manually after `npm run build`. To uninstall, run `npm unlink -g convo-coach` from anywhere.

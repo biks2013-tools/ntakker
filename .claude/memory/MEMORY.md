@@ -1,2 +1,3 @@
-- [Swift exception for recording-tool](project_swift_exception.md) — recording-tool is Swift not TypeScript; system-audio capture needs ScreenCaptureKit + AVFoundation
-- [Autonomous commits during plan execution](feedback_autonomous_commits.md) — when running a written multi-task plan, commit after each task without per-commit confirmation
+# Memory Index
+
+- [HTML mirror of marketplace investigation](feedback_html_mirror_marketplace_investigation.md) — keep .md and .html versions of `investigation-application-marketplace-approach` in sync on every update
