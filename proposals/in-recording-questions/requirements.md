@@ -6,11 +6,22 @@ revised: 2026-05-12
 target-branch: requirements
 companion-files:
   - wireframes.md
-  - mock/index.html
+  - mock/index.html                  # exploration archive — earlier Combined-Timeline interactive mock
+  - mockups/current-state.html       # reference: what the popover looks like today
+  - mockups/target-state.html        # chosen: Pattern C (Switch) + bottom indicators + Save…
 visual-baseline: ../../docs/design/mockups/popover-redesign.html
+chosen-pattern: C (Switch / segmented mode toggle)
 ---
 
 # In-Recording Questions — Ask the Sidelines While Recording
+
+> **Consolidated direction (decided 2026-05-12).** After reviewing the four navigation candidates (see §"View navigation between transcript and Q&A"), the user adopted **Pattern C — Switch** with three concrete layout commitments:
+>
+> 1. **Mic + system-audio signal indicators move to the bottom of the popover**, in a status-bar layout, with animated bouncing bars while audio flows.
+> 2. **A segmented control at the top of the popover toggles the body between two modes**: **Transcription** (engine + language picker + live transcript pane — default) and **Asking** (Q&A input + streaming answer history). The transcript continues to accumulate in the background while the user is in Asking mode; the Q&A history accumulates while the user is in Transcription mode.
+> 3. **The footer's primary action transitions Stop → Save…**: while recording, a red **Stop** button mirrors `.record-btn`; after Stop it becomes a blue **Save…** that opens a folder-name dialog (default `recording-YYYY-MM-DD-HH-MM`) and writes the audio + transcript + Q&A artifacts into `~/Recordings/<folder-name>/`.
+>
+> This supersedes the Combined-Timeline (Pattern D) recommendation that appeared in the previous revision. That section is preserved below for context, but the **chosen** UI direction is Pattern C. The exploration archive of the Combined-Timeline interactive mock remains at `mock/index.html` for reference; the canonical target is `mockups/target-state.html`.
 
 ## Visual baseline — extend the popover mockup, do not re-invent
 
@@ -39,6 +50,8 @@ The primitives we are reusing, verbatim, from `popover-redesign.html`:
 **Visual rule of thumb:** if a control or surface you are about to draw does not have a direct ancestor in `popover-redesign.html`, stop — and ask whether the existing primitive can be re-purposed before introducing a new one.
 
 ## View navigation between transcript and Q&A
+
+> **DECISION (2026-05-12): Pattern C — Switch (segmented mode toggle) — is the chosen direction.** The four-way comparison below is preserved as the rationale audit trail; the comparison table remains useful for understanding *why* the other three were not chosen. The architectural and acceptance details for the chosen pattern live in the new sub-section §"Pattern C — Switch — the chosen direction" further below.
 
 A reviewer of the first revision asked, reasonably, "how does the user move between the live transcript view and the Q&A view, and what happens when both matter at once?" — because the earlier wording implied a separate "Ask overlay" detached from the popover's transcript panel, with no story for transitioning. This section settles that question.
 
@@ -140,9 +153,11 @@ There is **no view to switch into**. The popover body is one scrollable chronolo
 - **Pros.** Zero mode-switch; matches the user's mental model ("here's what was said, here's what I asked, here's what was said next"); preserves glance-ability (the *latest* item is always at the bottom); the persistent input bar is always one keystroke from a question; the export (FR-IRQ-29) is structurally identical to what the user sees — `Save Transcript` simply serialises the on-screen timeline.
 - **Cons.** Long answers can push speech segments out of view (mitigated by per-Q&A collapse FR-IRQ-9 and by the `[Hide Q&A]` filter). Q&A items are visually heavier than speech rows by design — heavier rows can dominate the scroll perception; mitigated by colour-restraint (accent tint at ~6 % alpha, not a saturated badge).
 
-### Recommendation
+### Previous recommendation (now superseded — exploration archive)
 
-**Adopt Pattern D — Combined Timeline — as the popover's in-recording surface.** The recording-tool constraints — small menu-bar-anchored popover, glance-ability during a live meeting, low-friction repeat questioning, single shared time axis — all point to D. Patterns A and C add mode-switch friction that is wrong for *frequent* Q&A; Pattern B is wrong for *small* popovers. Pattern D collapses both views into one and lets the user filter rather than switch.
+> ⚠ The next four paragraphs and the FR-IRQ-34..39 requirements that follow them captured the **Pattern D (Combined Timeline)** recommendation from the previous revision. **The user reviewed this and instead adopted Pattern C (Switch).** The text is preserved verbatim below so the rationale is not lost, but it should be read as **exploration archive** — the chosen direction lives in the next sub-section "Pattern C — Switch — the chosen direction".
+
+**~~Adopt Pattern D — Combined Timeline — as the popover's in-recording surface.~~** The recording-tool constraints — small menu-bar-anchored popover, glance-ability during a live meeting, low-friction repeat questioning, single shared time axis — all point to D. Patterns A and C add mode-switch friction that is wrong for *frequent* Q&A; Pattern B is wrong for *small* popovers. Pattern D collapses both views into one and lets the user filter rather than switch.
 
 **The floating Ask overlay (FR-IRQ-3) is preserved as a complementary surface, not a competing one.** Specifically:
 
@@ -161,6 +176,85 @@ This decision implies a small set of follow-on requirements:
 - **FR-IRQ-39** *(showcase)* — When auto-scroll is engaged (the user is parked at the bottom of the timeline), new speech segments and new Q&A rows MUST extend the bottom edge and the view MUST stay pinned to the new bottom. When the user scrolls upward by more than one `.row` height, auto-scroll MUST disengage and the latest items MUST surface a small "↓ N new" pill in the lower-right corner (re-using the `.perm-pill` shape from the baseline). Tapping the pill snaps to the bottom and re-engages auto-scroll.
 
 These five requirements supersede / refine — but do not contradict — the earlier FR-IRQ-10 / FR-IRQ-11 statements: the per-exchange display rules and the session-scoped history still hold; what changes is *where* the history lives (in the same scrollable region as the transcript, not a separate panel).
+
+> *(End of Pattern D exploration archive — the requirements above are no longer the chosen direction.)*
+
+### Pattern C — Switch — the chosen direction
+
+The chosen popover layout, demonstrated in `mockups/target-state.html`, is built from three concrete layout commitments. The earlier per-exchange display rules (FR-IRQ-9, FR-IRQ-10) and the session-scoped history (FR-IRQ-11) still hold; the floating Ask overlay (FR-IRQ-3) still exists as a complementary fast-lane summoned by `⌥⇧Space`. What changes is the **default popover layout**: a single top-anchored segmented control selects which body content is shown, while the audio status moves to a bottom status bar so the recording state is always glance-able regardless of which mode the body is in.
+
+The mockup `mockups/current-state.html` is the reference for "what the popover looks like today" (a thin frame around `docs/design/mockups/popover-redesign.html`); `mockups/target-state.html` is the consolidated target. A reviewer should be able to open both side-by-side and see only the three intentional changes.
+
+The following requirements replace FR-IRQ-34..39 (which were authored for Pattern D and are no longer the chosen direction).
+
+#### Layout commitment 1 — Bottom status bar with live signal indicators
+
+- **FR-IRQ-40** *(showcase)* — The popover footer MUST host a status-bar `.group`-styled row containing, in left-to-right order: a **mic** indicator with animated bouncing bars + a `mic` mono label, a 0.5 pt vertical hairline, a **system-audio** indicator with bouncing bars + `sys` label, another hairline, the live recording state pill (red dot pulsing + `Recording` while live; grey + `Stopped` post-Stop), the elapsed `mm:ss` clock, a flexible spacer, and the right-most **action button** (Stop / Save…, per commitment 3). No other footer affordance is introduced; the General / Live Transcription configuration sections live inside the body Transcription mode (see commitment 2), not in the footer.
+- **FR-IRQ-41** *(platform)* — The mic indicator MUST be tinted with `#34C759` (`--mic-color`, light) / `#30D158` (dark); the system-audio indicator MUST be tinted with `--accent` so the two streams are distinguishable at a glance even without their labels. Bar geometry: 7 bars × 3 pt wide × variable height (3 pt → 14 pt), 2 pt gap, 1.5 pt corner radius. Bars are driven by RMS levels emitted by `LevelMeterView`'s existing data source — the popover does NOT poll for levels; it subscribes.
+- **FR-IRQ-42** *(platform)* — When the session is in `.stopped / .failed`, the bars MUST freeze at their lowest height (3 pt, no glow) and the recording-state pill MUST swap to a grey dot + the appropriate label (`Stopped`, `Stopped · error`). No flicker; transitions are 180 ms ease.
+
+#### Layout commitment 2 — Top segmented control: Transcription | Asking
+
+- **FR-IRQ-43** *(showcase)* — Immediately below the header (filename row), the popover MUST render a two-segment switch with the labels **Transcription** and **Asking**. The control MUST be built from the baseline's `.btn` chrome — two `<button>`s inside a `.chip-bg`-tinted container at 3 pt inset, with the selected segment promoted to `var(--control-bg)` background + accent text + the standard `.btn` shadow stack. **Default selection on session start: Transcription.**
+- **FR-IRQ-44** *(showcase)* — Selecting **Transcription** MUST render, in the body region: (a) an "Engine & language" `.section` with three rows — Engine (`.popup` listing Soniox, Apple Speech, Apple Cloud, WhisperKit, Parakeet, Gemini, ElevenLabs, Azure OpenAI batch, Azure OpenAI realtime, matching the providers found at `Sources/MacrecCore/Transcription/Providers/` on master), Language (`.popup` with locale list and `Auto-detect`), Source (`.popup` Mixed / System / Mic / Split); (b) a "Live transcript" `.section` containing a `transcript-pane` (mono-readable, scrollable, ~200 pt tall) that streams new segments with timestamp + speaker label as they arrive.
+- **FR-IRQ-45** *(showcase)* — Selecting **Asking** MUST render, in the same body region: (a) a top-of-body **input row** styled as the baseline's `.key-input` widened, with the v2-stub mic icon and a blue `.go-btn` "Ask" submit button (mirror of `.record-btn`, see FR-IRQ-23); (b) a **Q&A history** scrollable region beneath the input, populated by entries of `{question, ts_recording, answer, streaming}`. Each entry MUST display the question with its recording-relative timestamp annotated as `XX:YY in recording`, then the streaming answer beneath it. Empty-state copy: *"No questions yet. Type one above to ask the agent about what's been said so far."*
+- **FR-IRQ-46** *(showcase)* — Switching modes MUST be instant from the user's perspective (≤ 50 ms wall-clock from segment click to body swap). Backstage cadence is unchanged: while the user is in Asking mode, the transcript-pump continues to accumulate transcript segments into the in-memory transcript model; while the user is in Transcription mode, the Q&A history model continues to receive answers that may still be streaming from prior questions. Switching back surfaces the accumulated state — no items are lost.
+- **FR-IRQ-47** *(showcase)* — The segmented control MUST also be reachable from the keyboard via `⌘1` (Transcription) and `⌘2` (Asking) while the popover has key focus. The currently-selected segment is reflected on the `aria-selected` attribute for accessibility.
+
+#### Layout commitment 3 — Stop / Save… footer action + folder dialog
+
+- **FR-IRQ-48** *(showcase)* — While the session is in any active state (`recording / paused / pausing / resuming / splitting`), the status-bar's right-most action MUST be a **Stop** button styled as `.record-btn` (red gradient) with a square stop glyph (rounded 2 pt). When the session transitions to `.stopped`, the same button position MUST transition into a **Save…** button styled as the blue `.go-btn` (mirror geometry of `.record-btn`, accent gradient) with a folder glyph. The button's DOM position MUST NOT change — only its label, glyph, and gradient — so muscle memory is preserved.
+- **FR-IRQ-49** *(showcase)* — Clicking **Save…** MUST open a centered modal dialog (NOT a system save panel — see FR-IRQ-50 for the rationale). The dialog MUST contain:
+  - A title row reading **"Save this recording"**.
+  - A one-line sub-headline explaining that everything (audio + transcript + Q&A) will be saved together under `~/Recordings/<folder-name>/`.
+  - A **folder-name** text field (`.modal-input`, ui-monospace, focused on open with the text selected so the user can immediately overwrite). Default value MUST be computed as `recording-<YYYY-MM-DD>-<HH-MM>` using the recording's start time (NOT the save time).
+  - A read-only path preview line: `→ ~/Recordings/<folder-name>/` that updates live as the user edits the field.
+  - A **"Will be saved"** preview list (`.modal-filelist`) enumerating the artifacts: `transcript.md`, `qa.md`, `recording-001.m4a`, each with a one-line description.
+  - Footer actions: **Cancel** (`.btn`) and **Save** (`.go-btn`, blue). `Esc` cancels, `↩` submits.
+- **FR-IRQ-50** *(security)* — The Save dialog uses an in-app modal rather than `NSSavePanel` because the artifacts to write form a *folder*, not a single file. macOS `NSSavePanel` returns a single URL; presenting one would be misleading. The in-app modal makes it explicit that a folder is being created under `~/Recordings/`, and `~/Recordings/` is the user-controlled home subfolder chosen at recording time (per the popover baseline's "Save to" row — see `docs/design/mockups/popover-redesign.html`). If the user wants to write somewhere other than `~/Recordings/`, they change the recording-time folder before pressing Record; the Save dialog is for naming the *session sub-folder*, not for selecting the parent root.
+- **FR-IRQ-51** *(artifact)* — Confirming the dialog MUST create `~/Recordings/<folder-name>/` (mkdir -p; refuses if the folder already exists, prompting for a different name — same overwrite-warning row as FR-IRQ-32) and write three artifacts:
+   - `transcript.md` — the speech transcript in Markdown, FR-IRQ-29 layout, with timestamps, speaker labels, and the optional audio-path header.
+   - `qa.md` — the Q&A interjections in Markdown, one section per pair: a `## Q (HH:MM:SS in recording)` heading + the question body, then a `**A** (HH:MM:SS)` line + the answer body. Q&A pairs are sorted by `ts_recording`.
+   - `recording-001.m4a` — the primary audio file. When the user's recording layout is `Split` (per the baseline's Layout selector), the suffix increments: `recording-001-mic.m4a` + `recording-001-system.m4a`. When the layout is `Stereo split`, a single `recording-001-stereo.m4a` is written.
+- **FR-IRQ-52** *(artifact)* — All file writes MUST be atomic (write to `.tmp` siblings, then rename). On any write failure, the partial folder MUST be left in place with a `.SAVE-INCOMPLETE` marker file so the user can recover manually; the toast MUST show a warn-styled message instead of the success message. No silent rollback.
+- **FR-IRQ-53** *(showcase)* — A successful save MUST surface as the `.status-chip` toast described in FR-IRQ-30, reading `✓ Saved to ~/Recordings/<folder-name>/`. Clicking the toast opens the folder in Finder.
+- **FR-IRQ-54** *(integration)* — The Save dialog's "OK" path MUST delegate to the `TranscriptExporter` module introduced in FR-IRQ-33, but with a new `--folder` mode that bundles all three artifacts under one directory instead of writing a single file: `macrec export --session <id> --folder ~/Recordings/<name>/` is the CLI mirror that produces the same byte-identical output (NFR-IRQ-Export-Determinism still applies).
+
+#### Folder & file naming convention
+
+```
+~/Recordings/
+└─ <folder-name>/                          ← user-named in the Save dialog
+   ├─ transcript.md                        ← speech transcript (Markdown, timestamps)
+   ├─ qa.md                                ← Q&A interjections, chronologically
+   ├─ recording-001.m4a                    ← primary audio (Mixed layout)
+   │   ── or ──
+   ├─ recording-001-mic.m4a                ← (when Layout = Split)
+   ├─ recording-001-system.m4a             ← (when Layout = Split)
+   │   ── or ──
+   ├─ recording-001-stereo.m4a             ← (when Layout = Stereo split)
+   └─ .session.json                        ← internal: session metadata, FR-IRQ-15 cross-reference
+```
+
+`<folder-name>` constraints:
+
+- **Default**: `recording-<YYYY-MM-DD>-<HH-MM>` derived from the recording's *start* time. Example: `recording-2026-05-12-21-36`.
+- **Permitted characters**: `[A-Za-z0-9._-]`. Spaces, slashes, and shell metacharacters are stripped on confirm (with a one-line preview update so the user sees what will be written).
+- **Length**: 1–96 characters.
+- **Collision**: if the folder already exists, the dialog inlines an overwrite-warning row (same chrome as FR-IRQ-32) offering **Replace**, **Append timestamp** (suffix `-1`, `-2`, …), or **Cancel**. No silent overwrite, no silent rename.
+- **Cardinal rule**: one folder = one session. macrec never writes multiple sessions into the same folder.
+
+The audio numbering uses a 3-digit zero-padded suffix (`-001`, `-002`, …) so that, if a user re-runs macrec into the same folder via `macrec export --folder` (override only), the next audio export does not collide with the first. The suffix increments only for audio; `transcript.md` / `qa.md` are rewritten on each export (NFR-IRQ-Export-Determinism guarantees they will be byte-identical for the same session contents).
+
+#### Acceptance criteria (testable)
+
+These criteria gate "done" for the three commitments. Each maps to a specific FR-IRQ-* above and is observable from a user perspective without inspecting code.
+
+- **AC-IRQ-Pat-C-1** — Open the popover during a live recording. **The mic and system-audio indicators render in a status bar at the *bottom* of the popover, NOT in the body or the header.** The bars animate continuously (height varies frame-by-frame) while audio is flowing; they freeze at minimum height when Stop is pressed. (Maps to FR-IRQ-40 / FR-IRQ-41 / FR-IRQ-42.)
+- **AC-IRQ-Pat-C-2** — At the top of the popover body (immediately under the filename header), **a two-segment switch labelled "Transcription" and "Asking" is present**, with Transcription selected by default. Clicking Asking visibly swaps the body content within 50 ms to the Q&A surface (input + history). Clicking Transcription swaps it back to the engine/language pickers + live transcript pane. Both modes' models continue to accumulate while the other is on screen — switching back surfaces the new state, never empty. (Maps to FR-IRQ-43 / FR-IRQ-44 / FR-IRQ-45 / FR-IRQ-46 / FR-IRQ-47.)
+- **AC-IRQ-Pat-C-3** — While recording, **the right-most footer action is a red Stop button**. Clicking Stop transitions the same button to a blue Save… button in the same DOM position. Clicking Save… opens a centered modal with a folder-name field defaulted to `recording-YYYY-MM-DD-HH-MM`, a `→ ~/Recordings/<folder>/` path preview that updates live, a "Will be saved" preview list (`transcript.md`, `qa.md`, `recording-001.m4a`), Cancel, and Save. Confirming closes the modal and surfaces a `✓ Saved to ~/Recordings/<folder>/` toast. The on-disk folder exists after confirm and contains the three artifacts above. (Maps to FR-IRQ-48 through FR-IRQ-53.)
+- **AC-IRQ-Pat-C-4** — Visual-continuity check: open `mockups/current-state.html` and `mockups/target-state.html` side-by-side. The popover frame, palette, typography, button geometry, hairlines, group radii, and shadow stack MUST match exactly between the two. The only intentional differences are: (1) the top segmented control, (2) the bottom status bar layout, (3) the Stop/Save action button + dialog. Any other visual delta is a regression. (Maps to NFR-IRQ-Visual-Continuity.)
+- **AC-IRQ-Pat-C-5** — Power-user path: `macrec export --session <id> --folder ~/Recordings/<name>/` writes byte-identical artifacts to what the UI's Save dialog would produce for the same session, with no UI launched. (Maps to FR-IRQ-54.)
 
 ## Problem statement
 

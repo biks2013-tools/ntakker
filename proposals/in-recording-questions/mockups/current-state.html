@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>macrec-ui · Current state — reference mockup</title>
+<!--
+  CURRENT-STATE REFERENCE
+  ───────────────────────
+  This file deliberately loads the canonical popover redesign mockup
+  (docs/design/mockups/popover-redesign.html) inside an iframe so the
+  reference cannot drift when the baseline is updated. The single
+  visual addition is a small "Current state — reference mockup" banner
+  fixed to the top of the viewport.
+
+  Open this file in one tab and target-state.html in another to compare
+  the three intentional changes (bottom status bar, top mode switch,
+  Stop/Save button + folder-name dialog).
+-->
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+    background: #0d1117;
+  }
+  .banner {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 10;
+    height: 38px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 0 16px;
+    background: linear-gradient(180deg, rgba(20,22,28,0.96), rgba(20,22,28,0.86));
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    color: #f4f4f7;
+    font-size: 12.5px;
+    letter-spacing: 0.01em;
+    box-shadow: 0 0.5px 0 rgba(255,255,255,0.08) inset,
+                0 4px 14px rgba(0,0,0,0.4);
+  }
+  .banner .badge {
+    background: rgba(255,159,10,0.18);
+    color: #FFB84D;
+    border: 0.5px solid rgba(255,159,10,0.45);
+    padding: 2px 9px;
+    border-radius: 100px;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .banner strong { font-weight: 600; }
+  .banner .ref {
+    margin-left: 6px;
+    color: rgba(244,244,247,0.62);
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    font-size: 11.5px;
+  }
+  .frame {
+    position: absolute;
+    top: 38px; left: 0; right: 0; bottom: 0;
+    border: none;
+    width: 100%;
+    height: calc(100% - 38px);
+  }
+</style>
+</head>
+<body>
+
+<div class="banner">
+  <span class="badge">Current state</span>
+  <strong>macrec-ui menu-bar popover — reference mockup</strong>
+  <span class="ref">docs/design/mockups/popover-redesign.html</span>
+</div>
+
+<iframe
+  class="frame"
+  src="../../../docs/design/mockups/popover-redesign.html"
+  title="Current state — popover redesign baseline"></iframe>
+
+</body>
+</html>

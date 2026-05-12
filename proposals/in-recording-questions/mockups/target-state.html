@@ -1,0 +1,1285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>macrec-ui · Target state — Switch pattern (Transcription | Asking) + bottom indicators + Save dialog</title>
+<!--
+  TARGET STATE
+  ────────────
+  This mockup is the consolidated direction agreed with the user:
+
+    1. Mic + system-audio signal indicators moved to a status bar at the
+       BOTTOM of the popover (animated bouncing bars).
+    2. Segmented control at the top of the popover that toggles between
+       two MODES:
+         - "Transcription" (default) — engine + language picker + live
+           transcript pane that streams fake text every ~4 s.
+         - "Asking"                    — Q&A input on top of the body,
+           streaming answer history below.
+    3. While recording, the footer shows a red Stop button. After Stop,
+       the button becomes blue "Save…". Clicking Save… opens a modal
+       with an editable folder-name field (default
+       `recording-YYYY-MM-DD-HH-MM`), a preview list of artifacts that
+       will be written (transcript.md, qa.md, recording-001.m4a), plus
+       Cancel + OK. Confirming triggers a `✓ Saved to ~/Recordings/<name>/`
+       toast.
+
+  Visually inherits every primitive from
+  `docs/design/mockups/popover-redesign.html` — palette, blur material,
+  group/row geometry, .popup / .switch / .key-input / .btn / .record-btn,
+  shadow stack, glass material. The only NEW primitives introduced are:
+    · `.segmented`            — a two-segment switch (.btn pair, accent on selected)
+    · `.indicator-bars`       — bouncing-bar animation for live audio
+    · `.go-btn`               — blue-gradient mirror of `.record-btn`
+                                (Save… uses this).
+  Both new primitives are derived from baseline tokens — no new palette.
+-->
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow-x: hidden;
+  }
+
+  /* Desktop background — verbatim from baseline */
+  body {
+    min-height: 100vh;
+    background:
+      radial-gradient(ellipse 60% 50% at 18% 22%, rgba(150, 200, 255, 0.85), transparent 60%),
+      radial-gradient(ellipse 55% 45% at 82% 18%, rgba(200, 150, 220, 0.75), transparent 60%),
+      radial-gradient(ellipse 60% 55% at 50% 85%, rgba(255, 200, 160, 0.55), transparent 60%),
+      radial-gradient(ellipse 70% 60% at 90% 75%, rgba(120, 160, 220, 0.6), transparent 60%),
+      linear-gradient(180deg, #3F6BB1 0%, #5380C2 28%, #6B8FCC 55%, #B79A88 100%);
+    background-attachment: fixed;
+    padding-bottom: 80px;
+  }
+
+  /* ── Banner identifying this as the target ── */
+  .banner {
+    position: sticky; top: 0; z-index: 50;
+    height: 38px;
+    display: flex; align-items: center; justify-content: center;
+    gap: 10px;
+    background: linear-gradient(180deg, rgba(20,22,28,0.96), rgba(20,22,28,0.86));
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    color: #f4f4f7; font-size: 12.5px;
+    box-shadow: 0 0.5px 0 rgba(255,255,255,0.08) inset,
+                0 4px 14px rgba(0,0,0,0.4);
+  }
+  .banner .badge {
+    background: rgba(48,209,88,0.18);
+    color: #6CE89A;
+    border: 0.5px solid rgba(48,209,88,0.45);
+    padding: 2px 9px; border-radius: 100px;
+    font-size: 10.5px; font-weight: 600;
+    letter-spacing: 0.06em; text-transform: uppercase;
+  }
+
+  /* Menu bar — verbatim baseline */
+  .menubar {
+    height: 26px;
+    background: rgba(255,255,255,0.32);
+    backdrop-filter: blur(40px) saturate(180%);
+    -webkit-backdrop-filter: blur(40px) saturate(180%);
+    box-shadow: inset 0 -0.5px 0 rgba(0,0,0,0.06);
+    display: flex; align-items: center;
+    padding: 0 14px; gap: 18px;
+    font-size: 13.5px; color: #1a1a1a;
+    position: sticky; top: 38px; z-index: 49;
+  }
+  .menubar .app { font-weight: 600; }
+  .menubar .item { font-weight: 400; opacity: 0.92; }
+  .menubar .right { margin-left: auto; display: flex; align-items: center; gap: 14px; font-size: 12.5px; }
+  .menubar .icon { width: 16px; height: 16px; opacity: 0.85; display: inline-flex; align-items: center; }
+  .menubar .recording-anchor {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 1px 7px; border-radius: 5px;
+    background: rgba(0,0,0,0.06);
+    box-shadow: inset 0 0 0 0.5px rgba(0,0,0,0.08);
+  }
+  .menubar .recording-anchor .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: linear-gradient(180deg, #FF6258, #FF2D20);
+    box-shadow: 0 0 6px rgba(255,45,32,0.55);
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.45} }
+
+  /* Stage */
+  .stage {
+    padding: 60px 40px 40px;
+    display: flex; flex-wrap: wrap;
+    justify-content: center; gap: 48px;
+  }
+  .variant-block {
+    display: flex; flex-direction: column; align-items: center; width: 380px;
+  }
+  .variant-tag {
+    color: rgba(255,255,255,0.78);
+    font-size: 10.5px; font-weight: 600;
+    letter-spacing: 0.18em; text-transform: uppercase;
+    margin-bottom: 4px;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.18);
+  }
+  .variant-name {
+    color: white; font-size: 19px; font-weight: 600;
+    margin-bottom: 4px;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.22);
+    letter-spacing: -0.01em;
+  }
+  .variant-desc {
+    color: rgba(255,255,255,0.78);
+    font-size: 12.5px;
+    margin-bottom: 24px;
+    text-shadow: 0 1px 1px rgba(0,0,0,0.15);
+    text-align: center; max-width: 380px;
+    line-height: 1.4;
+  }
+
+  /* Popover frame — verbatim baseline */
+  .popover {
+    width: 380px;
+    border-radius: 14px;
+    position: relative;
+    padding: 14px;
+    box-shadow:
+      0 0 0 0.5px rgba(0,0,0,0.22),
+      0 1px 0 rgba(255,255,255,0.6) inset,
+      0 22px 60px rgba(0,0,0,0.32),
+      0 6px 16px rgba(0,0,0,0.18);
+  }
+
+  /* Light variant — verbatim baseline tokens */
+  .light {
+    background: rgba(244, 244, 246, 0.78);
+    backdrop-filter: blur(60px) saturate(180%);
+    -webkit-backdrop-filter: blur(60px) saturate(180%);
+    color: #1c1c1e;
+    --label: rgba(0,0,0,0.86);
+    --value: rgba(0,0,0,0.92);
+    --secondary: rgba(0,0,0,0.55);
+    --tertiary: rgba(0,0,0,0.4);
+    --separator: rgba(0,0,0,0.08);
+    --group-bg: rgba(255,255,255,0.55);
+    --group-stroke: rgba(0,0,0,0.06);
+    --control-bg: #ffffff;
+    --control-stroke: rgba(0,0,0,0.12);
+    --control-shadow: 0 0.5px 1px rgba(0,0,0,0.06);
+    --field-bg: #ffffff;
+    --chip-bg: rgba(0,0,0,0.05);
+    --accent: #007AFF;
+    --record-grad: linear-gradient(180deg, #FF6258 0%, #FF2D20 100%);
+    --record-shadow: 0 1px 0 rgba(255,255,255,0.4) inset, 0 2px 6px rgba(255,45,32,0.32), 0 8px 18px rgba(255,45,32,0.18);
+    --go-grad: linear-gradient(180deg, #4DA3FF 0%, #007AFF 100%);
+    --go-shadow: 0 1px 0 rgba(255,255,255,0.4) inset, 0 2px 6px rgba(0,122,255,0.32), 0 8px 18px rgba(0,122,255,0.18);
+    --success-bg: rgba(48,209,88,0.18);
+    --success-fg: #0A6E2C;
+    --success-dot: #30D158;
+    --mic-color: #34C759;
+    --sys-color: #007AFF;
+  }
+  .dark {
+    background: rgba(40, 40, 42, 0.74);
+    backdrop-filter: blur(60px) saturate(180%);
+    -webkit-backdrop-filter: blur(60px) saturate(180%);
+    color: #F4F4F4;
+    --label: rgba(255,255,255,0.92);
+    --value: rgba(255,255,255,0.96);
+    --secondary: rgba(255,255,255,0.55);
+    --tertiary: rgba(255,255,255,0.38);
+    --separator: rgba(255,255,255,0.09);
+    --group-bg: rgba(255,255,255,0.06);
+    --group-stroke: rgba(255,255,255,0.08);
+    --control-bg: rgba(255,255,255,0.12);
+    --control-stroke: rgba(255,255,255,0.14);
+    --control-shadow: 0 0.5px 0 rgba(255,255,255,0.06) inset;
+    --field-bg: rgba(0,0,0,0.28);
+    --chip-bg: rgba(255,255,255,0.08);
+    --accent: #0A84FF;
+    --record-grad: linear-gradient(180deg, #FF6B61 0%, #FF3B30 100%);
+    --record-shadow: 0 1px 0 rgba(255,255,255,0.25) inset, 0 2px 6px rgba(255,45,32,0.4), 0 10px 22px rgba(255,45,32,0.22);
+    --go-grad: linear-gradient(180deg, #5AB1FF 0%, #0A84FF 100%);
+    --go-shadow: 0 1px 0 rgba(255,255,255,0.25) inset, 0 2px 6px rgba(10,132,255,0.4), 0 10px 22px rgba(10,132,255,0.22);
+    --success-bg: rgba(48,209,88,0.22);
+    --success-fg: #6CE89A;
+    --success-dot: #30D158;
+    --mic-color: #30D158;
+    --sys-color: #0A84FF;
+  }
+
+  /* Header — verbatim baseline */
+  .header { padding: 4px 4px 12px; margin-bottom: 4px; }
+  .header-input {
+    appearance: none; -webkit-appearance: none;
+    width: 100%; background: transparent; border: none;
+    padding: 1px 2px 2px 2px;
+    font-family: inherit; font-size: 17px; font-weight: 600;
+    letter-spacing: -0.015em;
+    color: var(--value); border-radius: 4px;
+  }
+  .header-input:hover { background: var(--chip-bg); }
+  .header-input:focus { outline: none; box-shadow: 0 0 0 3px rgba(10,132,255,0.35); background: var(--field-bg); }
+  .header-meta {
+    margin-top: 6px; font-size: 11.5px; color: var(--secondary);
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  }
+  .header-meta .sep { opacity: 0.45; }
+  .perm-pill {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: var(--success-bg); color: var(--success-fg);
+    padding: 2px 8px 2px 6px; border-radius: 100px;
+    font-size: 10.5px; font-weight: 600; letter-spacing: 0.01em;
+  }
+  .perm-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success-dot); }
+
+  /* NEW PRIMITIVE: segmented control (top mode switch) ──────── */
+  .segmented {
+    display: flex;
+    background: var(--chip-bg);
+    border-radius: 8px;
+    padding: 3px;
+    margin: 0 0 14px 0;
+    box-shadow: inset 0 0 0 0.5px var(--group-stroke);
+  }
+  .segmented button {
+    appearance: none; -webkit-appearance: none; border: none;
+    flex: 1; padding: 5px 10px; cursor: pointer;
+    background: transparent;
+    color: var(--secondary);
+    font-family: inherit; font-size: 12.5px; font-weight: 500;
+    border-radius: 6px;
+    transition: background 0.14s ease, color 0.14s ease, box-shadow 0.14s ease;
+  }
+  .segmented button.on {
+    background: var(--control-bg);
+    color: var(--value);
+    box-shadow: 0 0 0 0.5px var(--control-stroke), var(--control-shadow);
+    font-weight: 600;
+  }
+  .segmented button:hover:not(.on) { color: var(--label); }
+
+  /* Sections / groups / rows — verbatim baseline */
+  .section + .section { margin-top: 14px; }
+  .section-title {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 8px 6px;
+    font-size: 11px; font-weight: 600;
+    color: var(--secondary);
+    text-transform: uppercase; letter-spacing: 0.07em;
+  }
+  .section-title .meta-right {
+    text-transform: none; letter-spacing: 0;
+    font-size: 11px; font-weight: 500; color: var(--secondary);
+  }
+  .group {
+    background: var(--group-bg);
+    border-radius: 10px; overflow: hidden;
+    box-shadow: 0 0 0 0.5px var(--group-stroke);
+  }
+  .row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 12px; min-height: 36px; gap: 10px;
+  }
+  .row + .row { border-top: 0.5px solid var(--separator); }
+  .row .label { font-size: 13px; color: var(--label); flex-shrink: 0; }
+  .row .control { display: flex; align-items: center; gap: 6px; color: var(--value); font-size: 13px; min-width: 0; }
+
+  /* .popup — verbatim baseline */
+  .popup {
+    appearance: none; -webkit-appearance: none; border: none;
+    font-family: inherit; font-size: 13px; color: var(--value);
+    background-color: var(--control-bg);
+    box-shadow: 0 0 0 0.5px var(--control-stroke), var(--control-shadow);
+    padding: 3px 22px 3px 8px; border-radius: 5px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='10' viewBox='0 0 8 10'%3E%3Cpath fill='%23999' d='M4 0L0 4h8zM4 10L0 6h8z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 6px center;
+    background-size: 8px 10px;
+    line-height: 18px; cursor: pointer;
+    max-width: 220px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .dark .popup {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='10' viewBox='0 0 8 10'%3E%3Cpath fill='%23bbb' d='M4 0L0 4h8zM4 10L0 6h8z'/%3E%3C/svg%3E");
+  }
+
+  /* Buttons — verbatim baseline + go variant */
+  .btn {
+    appearance: none; -webkit-appearance: none; border: none;
+    background: var(--control-bg);
+    box-shadow: 0 0 0 0.5px var(--control-stroke), var(--control-shadow);
+    color: var(--value); font-family: inherit;
+    font-size: 12px; padding: 5px 11px; border-radius: 5px;
+    cursor: pointer;
+  }
+  .btn:hover { filter: brightness(0.97); }
+  .btn:disabled { opacity: 0.5; cursor: default; }
+
+  .record-btn, .go-btn {
+    appearance: none; -webkit-appearance: none; border: none;
+    color: white; font-family: inherit;
+    font-size: 13.5px; font-weight: 600; letter-spacing: 0.005em;
+    padding: 7px 16px 7px 12px; border-radius: 8px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .record-btn { background: var(--record-grad); box-shadow: var(--record-shadow); }
+  .go-btn     { background: var(--go-grad);     box-shadow: var(--go-shadow); }
+  .record-btn .rec-glyph,
+  .record-btn .stop-glyph {
+    width: 12px; height: 12px; background: white;
+    box-shadow: 0 0 0 1.5px rgba(255,255,255,0.4);
+  }
+  .record-btn .rec-glyph  { border-radius: 50%; }
+  .record-btn .stop-glyph { border-radius: 2px; }
+
+  /* Transcript pane (Transcription mode) */
+  .transcript-pane {
+    background: var(--field-bg);
+    box-shadow: inset 0 0 0 0.5px var(--control-stroke);
+    border-radius: 8px;
+    padding: 10px 12px;
+    max-height: 200px;
+    overflow-y: auto;
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: var(--value);
+  }
+  .transcript-pane .seg-line { margin-bottom: 8px; }
+  .transcript-pane .seg-line:last-child { margin-bottom: 0; }
+  .transcript-pane .seg-line .ts {
+    color: var(--secondary);
+    font-size: 11px;
+    font-family: ui-monospace, monospace;
+    margin-right: 8px;
+  }
+  .transcript-pane .seg-line .who {
+    font-weight: 600;
+    color: var(--label);
+    margin-right: 6px;
+  }
+  .transcript-pane .seg-line .who.mic { color: var(--mic-color); }
+  .transcript-pane .seg-line .who.sys { color: var(--sys-color); }
+  .transcript-pane .caret {
+    display: inline-block; width: 6px; height: 12px;
+    background: var(--value); vertical-align: -1px; margin-left: 2px;
+    animation: caret 1s steps(1, end) infinite;
+  }
+  @keyframes caret { 50% { opacity: 0; } }
+
+  /* Asking mode: input + history */
+  .ask-input-row {
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 10px;
+    background: var(--group-bg);
+    border-radius: 10px;
+    box-shadow: 0 0 0 0.5px var(--group-stroke);
+    margin-bottom: 10px;
+  }
+  .ask-input-row .mic-stub {
+    width: 18px; height: 18px;
+    color: var(--tertiary); flex-shrink: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    cursor: not-allowed;
+  }
+  .ask-input {
+    flex: 1; min-width: 0; background: transparent;
+    border: none; outline: none;
+    font-family: inherit; font-size: 13px; color: var(--value);
+    padding: 4px 0;
+  }
+  .ask-input::placeholder { color: var(--tertiary); }
+
+  .qa-history {
+    background: var(--field-bg);
+    box-shadow: inset 0 0 0 0.5px var(--control-stroke);
+    border-radius: 8px;
+    padding: 6px;
+    max-height: 240px;
+    overflow-y: auto;
+  }
+  .qa-history .qa {
+    padding: 8px 10px;
+    border-radius: 6px;
+  }
+  .qa-history .qa + .qa {
+    border-top: 0.5px solid var(--separator);
+    margin-top: 0;
+  }
+  .qa-history .qa .meta {
+    font-size: 11px; color: var(--secondary);
+    margin-bottom: 3px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .qa-history .qa .meta .who { font-weight: 600; color: var(--accent); }
+  .qa-history .qa .meta .ts-rec {
+    color: var(--secondary);
+    font-family: ui-monospace, monospace;
+    font-size: 10.5px;
+  }
+  .qa-history .qa .body { font-size: 13px; color: var(--value); line-height: 1.45; }
+  .qa-history .qa .body.streaming::after {
+    content: ''; display: inline-block;
+    width: 6px; height: 12px; background: var(--value);
+    vertical-align: -1px; margin-left: 2px;
+    animation: caret 1s steps(1, end) infinite;
+  }
+  .stream-glyph {
+    display: inline-block; width: 8px; height: 8px;
+    border-radius: 50%; background: var(--accent);
+    animation: streampulse 1s ease-in-out infinite;
+  }
+  @keyframes streampulse {
+    0%,100% { transform: scale(0.7); opacity: 0.6; }
+    50%     { transform: scale(1.0); opacity: 1.0; }
+  }
+  .qa-empty {
+    padding: 24px 14px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--secondary);
+    line-height: 1.55;
+  }
+
+  /* ── NEW PRIMITIVE: bottom status bar with audio indicators ── */
+  .statusbar {
+    margin-top: 14px;
+    background: var(--group-bg);
+    box-shadow: 0 0 0 0.5px var(--group-stroke);
+    border-radius: 10px;
+    padding: 8px 10px;
+    display: flex; align-items: center; gap: 10px;
+    min-height: 38px;
+  }
+  .indicator {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11px; color: var(--secondary);
+  }
+  .indicator .ind-label {
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    opacity: 0.85;
+    min-width: 22px;
+    text-align: right;
+  }
+  .indicator-bars {
+    display: inline-flex; gap: 2px;
+    align-items: flex-end;
+    height: 16px;
+  }
+  .indicator-bars .bar {
+    width: 3px; height: 3px;
+    border-radius: 1.5px;
+    background: var(--separator);
+    transition: height 0.18s ease, background 0.18s ease;
+  }
+  .indicator.mic .bar.on { background: var(--mic-color); box-shadow: 0 0 4px color-mix(in srgb, var(--mic-color) 55%, transparent); }
+  .indicator.sys .bar.on { background: var(--sys-color); box-shadow: 0 0 4px color-mix(in srgb, var(--sys-color) 55%, transparent); }
+  .statusbar .divider {
+    width: 0.5px; height: 16px; background: var(--separator);
+  }
+  .statusbar .elapsed {
+    font-size: 11.5px; color: var(--secondary);
+    font-variant-numeric: tabular-nums;
+  }
+  .statusbar .spacer { flex: 1; }
+  .statusbar .rec-state {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11px; color: var(--secondary);
+  }
+  .statusbar .rec-state .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: linear-gradient(180deg, #FF6258, #FF2D20);
+    box-shadow: 0 0 6px rgba(255,45,32,0.55);
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  .statusbar.stopped .rec-state .dot {
+    background: var(--secondary);
+    box-shadow: none; animation: none;
+  }
+  .statusbar .actionbtn { flex-shrink: 0; }
+
+  /* Modal — Save dialog */
+  .modal-scrim {
+    position: fixed; inset: 0; z-index: 80;
+    background: rgba(0,0,0,0.45);
+    display: none;
+    align-items: center; justify-content: center;
+    backdrop-filter: blur(2px);
+  }
+  .modal-scrim.show { display: flex; }
+  .modal {
+    width: 420px;
+    border-radius: 14px;
+    padding: 18px;
+    background: rgba(244, 244, 246, 0.97);
+    backdrop-filter: blur(60px) saturate(180%);
+    -webkit-backdrop-filter: blur(60px) saturate(180%);
+    color: #1c1c1e;
+    box-shadow:
+      0 0 0 0.5px rgba(0,0,0,0.22),
+      0 1px 0 rgba(255,255,255,0.6) inset,
+      0 22px 60px rgba(0,0,0,0.4);
+    --label: rgba(0,0,0,0.86);
+    --value: rgba(0,0,0,0.92);
+    --secondary: rgba(0,0,0,0.55);
+    --separator: rgba(0,0,0,0.08);
+    --group-bg: rgba(255,255,255,0.6);
+    --group-stroke: rgba(0,0,0,0.06);
+    --control-bg: #ffffff;
+    --control-stroke: rgba(0,0,0,0.12);
+    --control-shadow: 0 0.5px 1px rgba(0,0,0,0.06);
+    --field-bg: #ffffff;
+    --chip-bg: rgba(0,0,0,0.05);
+    --accent: #007AFF;
+    --go-grad: linear-gradient(180deg, #4DA3FF 0%, #007AFF 100%);
+    --go-shadow: 0 1px 0 rgba(255,255,255,0.4) inset, 0 2px 6px rgba(0,122,255,0.32), 0 8px 18px rgba(0,122,255,0.18);
+    --success-bg: rgba(48,209,88,0.18);
+    --success-fg: #0A6E2C;
+    --success-dot: #30D158;
+  }
+  .modal h2 {
+    font-size: 15px; font-weight: 600; letter-spacing: -0.005em;
+    margin-bottom: 4px;
+  }
+  .modal .modal-sub {
+    font-size: 12px; color: var(--secondary);
+    margin-bottom: 12px;
+    line-height: 1.4;
+  }
+  .modal-input-label {
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--secondary);
+    margin-bottom: 5px;
+  }
+  .modal-input {
+    width: 100%;
+    background: var(--field-bg);
+    border: none;
+    box-shadow: inset 0 0 0 0.5px var(--control-stroke);
+    border-radius: 6px;
+    padding: 7px 9px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12.5px;
+    color: var(--value);
+  }
+  .modal-input:focus {
+    outline: none;
+    box-shadow: inset 0 0 0 0.5px var(--control-stroke), 0 0 0 3px rgba(10,132,255,0.35);
+  }
+  .modal-path-hint {
+    margin-top: 6px;
+    font-size: 11px; color: var(--secondary);
+    font-family: ui-monospace, monospace;
+  }
+  .modal-path-hint .accent { color: var(--accent); }
+
+  .modal-section-title {
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--secondary);
+    margin: 14px 0 6px;
+  }
+  .modal-filelist {
+    background: var(--group-bg);
+    border-radius: 8px;
+    box-shadow: 0 0 0 0.5px var(--group-stroke);
+    overflow: hidden;
+  }
+  .modal-filelist .file-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 11px;
+    font-size: 12.5px;
+    color: var(--value);
+  }
+  .modal-filelist .file-row + .file-row {
+    border-top: 0.5px solid var(--separator);
+  }
+  .modal-filelist .file-row .ico {
+    color: var(--accent);
+    display: inline-flex;
+    flex-shrink: 0;
+  }
+  .modal-filelist .file-row .filename {
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+  }
+  .modal-filelist .file-row .descr {
+    color: var(--secondary);
+    font-size: 11px;
+    margin-left: auto;
+  }
+
+  .modal-actions {
+    display: flex; gap: 8px; align-items: center;
+    margin-top: 16px;
+  }
+  .modal-actions .spacer { flex: 1; }
+
+  /* Toast */
+  .toast-wrap {
+    position: fixed; top: 50px; right: 70px;
+    z-index: 90; pointer-events: none;
+  }
+  .toast {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: rgba(48,209,88,0.22);
+    color: #0A6E2C;
+    padding: 6px 12px 6px 10px;
+    border-radius: 100px;
+    font-size: 12px; font-weight: 500;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.25),
+                0 0 0 0.5px rgba(48,209,88,0.45);
+    backdrop-filter: blur(40px) saturate(180%);
+    pointer-events: auto;
+    cursor: pointer;
+    opacity: 0; transform: translateY(-6px);
+    transition: opacity 0.22s ease, transform 0.22s ease;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast .dot {
+    width: 7px; height: 7px; border-radius: 50%; background: #30D158;
+  }
+
+  /* Footnote */
+  .footnote {
+    margin: 32px auto 0;
+    text-align: center;
+    color: rgba(255,255,255,0.78);
+    font-size: 12px;
+    text-shadow: 0 1px 1px rgba(0,0,0,0.18);
+    max-width: 760px;
+    line-height: 1.55;
+  }
+  .footnote code, .footnote kbd {
+    background: rgba(0,0,0,0.22); padding: 1px 6px;
+    border-radius: 3px; color: white;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 11px;
+  }
+  .controlbar {
+    margin: 12px auto 0;
+    display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;
+  }
+  .controlbar .pill-btn {
+    appearance: none; -webkit-appearance: none; border: none; cursor: pointer;
+    background: rgba(255,255,255,0.16);
+    backdrop-filter: blur(20px) saturate(180%);
+    color: white; font-size: 12px; font-weight: 500;
+    padding: 6px 12px; border-radius: 100px;
+    box-shadow: inset 0 0 0 0.5px rgba(255,255,255,0.22),
+                0 4px 14px rgba(0,0,0,0.22);
+  }
+  .controlbar .pill-btn:hover { background: rgba(255,255,255,0.22); }
+
+  /* Body slide animation for mode switch */
+  .body-area {
+    position: relative;
+    overflow: hidden;
+  }
+  .body-area .mode-pane {
+    transition: opacity 0.16s ease, transform 0.16s ease;
+  }
+  .body-area .mode-pane.entering {
+    opacity: 0; transform: translateY(4px);
+  }
+</style>
+</head>
+<body>
+
+<!-- ============== TARGET banner ============== -->
+<div class="banner">
+  <span class="badge">Target state</span>
+  <strong>macrec-ui menu-bar popover — Switch pattern (Transcription | Asking) + bottom indicators + Save…</strong>
+</div>
+
+<!-- ============== Menu bar (verbatim baseline) ============== -->
+<div class="menubar">
+  <span style="display:inline-flex; align-items:center;">
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M10.6 7.4c0-1.6 1.3-2.4 1.4-2.5-.7-1.1-1.9-1.2-2.3-1.2-1-.1-1.9.6-2.4.6s-1.3-.6-2.1-.6c-1.1 0-2.1.6-2.6 1.6-1.1 1.9-.3 4.8.8 6.4.5.8 1.2 1.6 2 1.6.8 0 1.1-.5 2.1-.5s1.2.5 2.1.5c.9 0 1.4-.8 2-1.6.6-.9.8-1.7.9-1.8-.1-.1-1.7-.6-1.7-2.5zM9 2.7c.4-.5.7-1.2.6-1.9-.6 0-1.3.4-1.7.9-.4.4-.7 1.1-.6 1.8.7.1 1.4-.3 1.7-.8z"/></svg>
+  </span>
+  <span class="app">macrec-ui</span>
+  <span class="item">File</span>
+  <span class="item">Edit</span>
+  <span class="item">View</span>
+  <span class="item">Window</span>
+  <span class="item">Help</span>
+  <span class="right">
+    <span class="icon" title="Spotlight"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="6" cy="6" r="4"/><path d="M9 9l3 3" stroke-linecap="round"/></svg></span>
+    <span class="icon" title="Control Center"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1" y="1" width="5" height="5" rx="1"/><rect x="8" y="1" width="5" height="5" rx="1"/><rect x="1" y="8" width="5" height="5" rx="1"/><rect x="8" y="8" width="5" height="5" rx="1"/></svg></span>
+    <span class="recording-anchor"><span class="dot"></span><span style="font-weight:600; font-size: 11.5px;">REC · <span id="anchor-clock">14:30</span></span></span>
+    <span style="font-variant-numeric: tabular-nums;">Wed 12 May · 21:36</span>
+  </span>
+</div>
+
+<!-- ============== Demo control bar (review-only) ============== -->
+<div class="controlbar">
+  <button class="pill-btn" onclick="setMode('transcription')">Show Transcription mode</button>
+  <button class="pill-btn" onclick="setMode('asking')">Show Asking mode</button>
+  <button class="pill-btn" onclick="forceStop()">Force Stop (show Save…)</button>
+  <button class="pill-btn" onclick="forceRecord()">Reset to Recording</button>
+</div>
+
+<!-- ============== Popover (light variant — primary) ============== -->
+<div class="stage">
+  <div class="variant-block">
+    <div class="variant-tag">Target · Light · Recording</div>
+    <div class="variant-name">macrec-ui — Transcription mode (active)</div>
+    <div class="variant-desc">Top: segmented switch [Transcription | Asking]. Bottom: mic + system-audio indicators in a status bar. While recording, the right-most action is a red Stop button.</div>
+
+    <div class="popover light" id="popover-main">
+      <!-- HEADER -->
+      <div class="header">
+        <input class="header-input" id="filename-input" value="recording-2026-05-12-14-30" />
+        <div class="header-meta">
+          <span class="perm-pill" id="state-pill"><span class="dot"></span><span id="state-pill-text">Recording · live</span></span>
+          <span class="sep">·</span>
+          <span>~/Recordings</span>
+        </div>
+      </div>
+
+      <!-- ── NEW: top segmented switch (Pattern C) ── -->
+      <div class="segmented" role="tablist" aria-label="Popover mode">
+        <button id="seg-transcription" class="on" role="tab" aria-selected="true" onclick="setMode('transcription')">Transcription</button>
+        <button id="seg-asking" role="tab" aria-selected="false" onclick="setMode('asking')">Asking</button>
+      </div>
+
+      <!-- ============ BODY (mode-dependent) ============ -->
+      <div class="body-area">
+
+        <!-- Transcription mode -->
+        <div class="mode-pane" id="pane-transcription">
+          <div class="section">
+            <div class="section-title"><span>Engine &amp; language</span></div>
+            <div class="group">
+              <div class="row">
+                <span class="label">Engine</span>
+                <div class="control">
+                  <select class="popup" id="engine-select" onchange="onEngineChange()">
+                    <option value="soniox" selected>Soniox — cloud, multilingual</option>
+                    <option value="apple-speech">Apple Speech — on-device</option>
+                    <option value="apple-cloud">Apple Speech — Cloud</option>
+                    <option value="whisperkit">WhisperKit — on-device</option>
+                    <option value="parakeet">Parakeet — on-device, multilingual</option>
+                    <option value="gemini">Google Gemini — cloud</option>
+                    <option value="elevenlabs">ElevenLabs — cloud</option>
+                    <option value="azure-batch">Azure OpenAI — batch</option>
+                    <option value="azure-realtime">Azure OpenAI — realtime</option>
+                  </select>
+                </div>
+              </div>
+              <div class="row">
+                <span class="label">Language</span>
+                <div class="control">
+                  <select class="popup" id="lang-select">
+                    <option>Greek (Greece) — el-GR</option>
+                    <option>English (US) — en-US</option>
+                    <option selected>Auto-detect</option>
+                    <option>French (FR) — fr-FR</option>
+                    <option>Spanish (ES) — es-ES</option>
+                    <option>German (DE) — de-DE</option>
+                  </select>
+                </div>
+              </div>
+              <div class="row">
+                <span class="label">Source</span>
+                <div class="control">
+                  <select class="popup">
+                    <option selected>Mixed</option>
+                    <option>System audio only</option>
+                    <option>Microphone only</option>
+                    <option>Split (system + mic)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section-title"><span>Live transcript</span><span class="meta-right" id="transcript-count">0 segments</span></div>
+            <div class="transcript-pane" id="transcript-pane">
+              <div class="seg-line">
+                <span class="ts">00:00:04</span>
+                <span class="who mic">Mic</span>
+                Hi Sarah, thanks for taking the time today.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Asking mode -->
+        <div class="mode-pane" id="pane-asking" style="display:none">
+          <div class="ask-input-row">
+            <span class="mic-stub" title="Voice input — coming soon">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M7 1a2 2 0 0 0-2 2v4a2 2 0 0 0 4 0V3a2 2 0 0 0-2-2zM3 7a4 4 0 0 0 8 0h1a5 5 0 0 1-4.5 4.97V13H10v1H4v-1h2.5v-1.03A5 5 0 0 1 2 7h1z"/></svg>
+            </span>
+            <input class="ask-input" id="ask-input" placeholder="Ask a question about this recording…" />
+            <button class="go-btn" onclick="submitQuestion()">Ask <span style="opacity:0.8; font-size:12px; font-weight:500;">↩</span></button>
+          </div>
+
+          <div class="section-title" style="padding-left: 4px; padding-right: 4px;">
+            <span>Q&amp;A history</span><span class="meta-right" id="qa-count">0 pairs</span>
+          </div>
+          <div class="qa-history" id="qa-history">
+            <div class="qa-empty" id="qa-empty">
+              No questions yet. Type one above to ask the agent about what's been said so far.<br>
+              <span style="opacity:0.7;">Default provider: openai (gpt-4o) — change in Settings</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ── NEW: bottom status bar ── -->
+      <div class="statusbar" id="statusbar">
+        <div class="indicator mic">
+          <span class="ind-label">mic</span>
+          <span class="indicator-bars" id="mic-bars">
+            <span class="bar"></span><span class="bar"></span><span class="bar"></span>
+            <span class="bar"></span><span class="bar"></span><span class="bar"></span><span class="bar"></span>
+          </span>
+        </div>
+        <div class="divider"></div>
+        <div class="indicator sys">
+          <span class="ind-label">sys</span>
+          <span class="indicator-bars" id="sys-bars">
+            <span class="bar"></span><span class="bar"></span><span class="bar"></span>
+            <span class="bar"></span><span class="bar"></span><span class="bar"></span><span class="bar"></span>
+          </span>
+        </div>
+        <div class="divider"></div>
+        <span class="rec-state" id="rec-state">
+          <span class="dot"></span>
+          <span id="rec-state-text">Recording</span>
+        </span>
+        <span class="elapsed" id="statusbar-clock" style="margin-left: 4px;">14:30</span>
+
+        <span class="spacer"></span>
+
+        <button class="record-btn actionbtn" id="action-btn" onclick="onActionClick()">
+          <span class="stop-glyph"></span>
+          <span id="action-btn-label">Stop</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Static dark variant for reference -->
+  <div class="variant-block">
+    <div class="variant-tag">Target · Dark · Asking</div>
+    <div class="variant-name">Asking mode — dark</div>
+    <div class="variant-desc">Same surface, after dark, with the Asking segment selected. Shows the persistent input bar at the top of the body and one Q&A pair in the history.</div>
+
+    <div class="popover dark">
+      <div class="header">
+        <input class="header-input" value="recording-2026-05-12-14-30" />
+        <div class="header-meta">
+          <span class="perm-pill"><span class="dot"></span>Recording · live</span>
+          <span class="sep">·</span>
+          <span>openai (gpt-4o)</span>
+        </div>
+      </div>
+
+      <div class="segmented">
+        <button>Transcription</button>
+        <button class="on">Asking</button>
+      </div>
+
+      <div class="ask-input-row">
+        <span class="mic-stub">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M7 1a2 2 0 0 0-2 2v4a2 2 0 0 0 4 0V3a2 2 0 0 0-2-2zM3 7a4 4 0 0 0 8 0h1a5 5 0 0 1-4.5 4.97V13H10v1H4v-1h2.5v-1.03A5 5 0 0 1 2 7h1z"/></svg>
+        </span>
+        <input class="ask-input" placeholder="Ask a question about this recording…" />
+        <button class="go-btn">Ask <span style="opacity:0.8; font-size:12px; font-weight:500;">↩</span></button>
+      </div>
+
+      <div class="section-title" style="padding-left: 4px; padding-right: 4px;">
+        <span>Q&amp;A history</span><span class="meta-right">2 pairs</span>
+      </div>
+      <div class="qa-history">
+        <div class="qa">
+          <div class="meta"><span class="who">🅀 You</span> · asked at <span class="ts-rec">03:14 in recording</span></div>
+          <div class="body">What was the customer's title again?</div>
+          <div class="meta" style="margin-top:6px;"><span class="who">🅐 Assistant</span> · <span class="ts-rec">03:15</span></div>
+          <div class="body">Sarah Chen introduced herself at 02:41 as "VP of Platform Engineering" at Northwind.</div>
+        </div>
+        <div class="qa">
+          <div class="meta"><span class="who">🅀 You</span> · asked at <span class="ts-rec">05:32 in recording</span></div>
+          <div class="body">Action items so far?</div>
+          <div class="meta" style="margin-top:6px;"><span class="who">🅐 Assistant</span> · <span class="stream-glyph"></span> <span style="color:var(--secondary)">streaming…</span></div>
+          <div class="body streaming">1) You: send DPA to legal. 2) Sarah: confirm SSO Q3 timeline in writing. 3) Both: align on burst pricing tier</div>
+        </div>
+      </div>
+
+      <div class="statusbar">
+        <div class="indicator mic">
+          <span class="ind-label">mic</span>
+          <span class="indicator-bars" data-static="true">
+            <span class="bar on" style="height:4px"></span><span class="bar on" style="height:8px"></span>
+            <span class="bar on" style="height:11px"></span><span class="bar on" style="height:6px"></span>
+            <span class="bar" style="height:3px"></span><span class="bar" style="height:3px"></span><span class="bar" style="height:3px"></span>
+          </span>
+        </div>
+        <div class="divider"></div>
+        <div class="indicator sys">
+          <span class="ind-label">sys</span>
+          <span class="indicator-bars" data-static="true">
+            <span class="bar on" style="height:10px"></span><span class="bar on" style="height:14px"></span>
+            <span class="bar on" style="height:9px"></span><span class="bar on" style="height:6px"></span>
+            <span class="bar on" style="height:4px"></span><span class="bar" style="height:3px"></span><span class="bar" style="height:3px"></span>
+          </span>
+        </div>
+        <div class="divider"></div>
+        <span class="rec-state"><span class="dot"></span>Recording</span>
+        <span class="elapsed" style="margin-left:4px;">14:32</span>
+        <span class="spacer"></span>
+        <button class="record-btn"><span class="stop-glyph"></span>Stop</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============== Save modal ============== -->
+<div class="modal-scrim" id="save-modal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="save-title">
+    <h2 id="save-title">Save this recording</h2>
+    <div class="modal-sub">macrec will save the audio plus the transcript + Q&amp;A artifacts under a single folder in <code style="font-family:ui-monospace,monospace">~/Recordings/</code>.</div>
+
+    <div class="modal-input-label">Folder name</div>
+    <input class="modal-input" id="folder-name" value="recording-2026-05-12-21-36" autocomplete="off" />
+    <div class="modal-path-hint">→ <span class="accent" id="folder-path-preview">~/Recordings/recording-2026-05-12-21-36/</span></div>
+
+    <div class="modal-section-title">Will be saved</div>
+    <div class="modal-filelist">
+      <div class="file-row">
+        <span class="ico">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M3 1h5l3 3v8.4A.6.6 0 0 1 10.4 13H3.6A.6.6 0 0 1 3 12.4V1.6A.6.6 0 0 1 3.6 1H3z"/></svg>
+        </span>
+        <span class="filename">transcript.md</span>
+        <span class="descr">speech segments, timestamped</span>
+      </div>
+      <div class="file-row">
+        <span class="ico">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M3 1h5l3 3v8.4A.6.6 0 0 1 10.4 13H3.6A.6.6 0 0 1 3 12.4V1.6A.6.6 0 0 1 3.6 1H3z"/></svg>
+        </span>
+        <span class="filename">qa.md</span>
+        <span class="descr" id="qa-file-descr">Q&amp;A interjections (2 pairs)</span>
+      </div>
+      <div class="file-row">
+        <span class="ico">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M7 1a3 3 0 0 0-3 3v3a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3zM2 7a5 5 0 0 0 10 0h-1a4 4 0 0 1-8 0H2zM6.5 11.95V13h-2v1h5v-1h-2v-1.05a5.04 5.04 0 0 0 .5-.05V13h-2v-1.05a5.04 5.04 0 0 0 .5.05z"/></svg>
+        </span>
+        <span class="filename">recording-001.m4a</span>
+        <span class="descr">audio (mixed, AAC)</span>
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <span class="spacer"></span>
+      <button class="btn" onclick="closeSaveModal()">Cancel</button>
+      <button class="go-btn" onclick="confirmSave()">Save <span style="opacity:0.8; font-size:12px; font-weight:500;">↩</span></button>
+    </div>
+  </div>
+</div>
+
+<!-- ============== Toast ============== -->
+<div class="toast-wrap">
+  <div class="toast" id="toast" onclick="hideToast()">
+    <span class="dot"></span>
+    <span id="toast-text">✓ Saved to ~/Recordings/recording-2026-05-12-21-36/</span>
+  </div>
+</div>
+
+<div class="footnote">
+  Mockup at 1× macOS scale, sharing every primitive with
+  <code>docs/design/mockups/popover-redesign.html</code>.
+  Try: switch modes via the segmented control; type a question in Asking mode and press <kbd>↩</kbd>;
+  click <strong>Stop</strong> in the status bar to flip the button to <strong>Save…</strong>, which opens the folder-name dialog.
+</div>
+
+<script>
+  // ─────────── State ───────────
+  let RECORDING = true;        // toggled by Stop / Reset
+  let MODE = 'transcription';  // 'transcription' | 'asking'
+  let SECS = 14*60 + 30;       // elapsed seconds
+  let TRANSCRIPT = [
+    { ts:'00:00:04', who:'mic', text:'Hi Sarah, thanks for taking the time today.' }
+  ];
+  let QA = [];
+  const FAKE_SPEECH = [
+    { who:'sys', text:'Of course! Happy to walk through the security review.' },
+    { who:'mic', text:'Great — can you see the dashboard I just shared?' },
+    { who:'sys', text:'Yes, latency chart on the left looks healthy. Throughput too.' },
+    { who:'mic', text:'On the SSO question, we\'d love to understand the timeline.' },
+    { who:'sys', text:'Realistically Q3 — but SAML federation is available today if that helps.' },
+    { who:'mic', text:'SAML works for the pilot. Let\'s align on burst pricing next.' },
+    { who:'sys', text:'Burst is metered per 100k events. We can carve out a pilot SKU.' },
+    { who:'mic', text:'Perfect. I\'ll loop in legal on the DPA today.' },
+    { who:'sys', text:'Sounds good. I have a hard stop at the top of the hour.' }
+  ];
+  let speechIdx = 0;
+
+  // ─────────── Mode switching ───────────
+  function setMode(name) {
+    MODE = name;
+    document.getElementById('seg-transcription').classList.toggle('on', name === 'transcription');
+    document.getElementById('seg-asking').classList.toggle('on', name === 'asking');
+    document.getElementById('seg-transcription').setAttribute('aria-selected', name === 'transcription');
+    document.getElementById('seg-asking').setAttribute('aria-selected', name === 'asking');
+    const t = document.getElementById('pane-transcription');
+    const a = document.getElementById('pane-asking');
+    const showT = (name === 'transcription');
+    [t, a].forEach(el => el.classList.add('entering'));
+    requestAnimationFrame(() => {
+      t.style.display = showT ? '' : 'none';
+      a.style.display = showT ? 'none' : '';
+      setTimeout(() => [t, a].forEach(el => el.classList.remove('entering')), 16);
+    });
+    if (name === 'asking') {
+      setTimeout(() => document.getElementById('ask-input')?.focus(), 60);
+    }
+  }
+
+  // ─────────── Stop / Save flow ───────────
+  function onActionClick() {
+    if (RECORDING) doStop();
+    else openSaveModal();
+  }
+  function doStop() {
+    RECORDING = false;
+    // Mute the bars / change rec-state
+    document.getElementById('rec-state-text').textContent = 'Stopped';
+    document.getElementById('statusbar').classList.add('stopped');
+    document.getElementById('state-pill-text').textContent = 'Stopped · ready to save';
+    document.getElementById('state-pill').style.background = 'var(--chip-bg)';
+    document.getElementById('state-pill').style.color = 'var(--secondary)';
+    document.getElementById('state-pill').querySelector('.dot').style.background = 'var(--secondary)';
+    // Swap action button: red Stop → blue Save…
+    const btn = document.getElementById('action-btn');
+    btn.classList.remove('record-btn');
+    btn.classList.add('go-btn');
+    btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 13 13" fill="currentColor" style="opacity:0.95;"><path d="M1 3.2A1.2 1.2 0 0 1 2.2 2h2.4l1 1.2h5.2A1.2 1.2 0 0 1 12 4.4v5.4A1.2 1.2 0 0 1 10.8 11H2.2A1.2 1.2 0 0 1 1 9.8z"/></svg><span id="action-btn-label">Save…</span>';
+  }
+  function forceStop() {
+    if (RECORDING) doStop();
+  }
+  function forceRecord() {
+    RECORDING = true;
+    document.getElementById('rec-state-text').textContent = 'Recording';
+    document.getElementById('statusbar').classList.remove('stopped');
+    document.getElementById('state-pill-text').textContent = 'Recording · live';
+    document.getElementById('state-pill').removeAttribute('style');
+    document.getElementById('state-pill').querySelector('.dot').removeAttribute('style');
+    const btn = document.getElementById('action-btn');
+    btn.classList.remove('go-btn');
+    btn.classList.add('record-btn');
+    btn.innerHTML = '<span class="stop-glyph"></span><span id="action-btn-label">Stop</span>';
+  }
+
+  function openSaveModal() {
+    document.getElementById('save-modal').classList.add('show');
+    const fn = document.getElementById('folder-name');
+    fn.value = computeDefaultFolderName();
+    updateFolderPathPreview();
+    fn.focus(); fn.select();
+    document.getElementById('qa-file-descr').textContent =
+      `Q&A interjections (${QA.length} pair${QA.length === 1 ? '' : 's'})`;
+  }
+  function closeSaveModal() {
+    document.getElementById('save-modal').classList.remove('show');
+  }
+  function confirmSave() {
+    const name = (document.getElementById('folder-name').value || '').trim() || computeDefaultFolderName();
+    document.getElementById('toast-text').textContent = `✓ Saved to ~/Recordings/${name}/`;
+    closeSaveModal();
+    showToast();
+  }
+  function updateFolderPathPreview() {
+    const fn = (document.getElementById('folder-name').value || '').trim() || computeDefaultFolderName();
+    document.getElementById('folder-path-preview').textContent = `~/Recordings/${fn}/`;
+  }
+  function computeDefaultFolderName() {
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth()+1).padStart(2,'0');
+    const dd = String(d.getDate()).padStart(2,'0');
+    const HH = String(d.getHours()).padStart(2,'0');
+    const MM = String(d.getMinutes()).padStart(2,'0');
+    return `recording-${yyyy}-${mm}-${dd}-${HH}-${MM}`;
+  }
+
+  // ─────────── Toast ───────────
+  function showToast() {
+    const t = document.getElementById('toast');
+    t.classList.add('show');
+    clearTimeout(window.__toastTimer);
+    window.__toastTimer = setTimeout(() => t.classList.remove('show'), 4500);
+  }
+  function hideToast() {
+    document.getElementById('toast').classList.remove('show');
+  }
+
+  // ─────────── Audio indicator animation ───────────
+  function animateBars() {
+    const sets = [
+      { el: document.getElementById('mic-bars'), amp: 0.65 },
+      { el: document.getElementById('sys-bars'), amp: 0.9 }
+    ];
+    sets.forEach(({el, amp}) => {
+      if (!el) return;
+      const segs = el.querySelectorAll('.bar');
+      const stopped = !RECORDING;
+      segs.forEach((b, i) => {
+        if (stopped) {
+          b.style.height = '3px';
+          b.classList.remove('on');
+          return;
+        }
+        // pseudo-random amplitude for each bar this tick
+        const wave = Math.sin(Date.now() / 240 + i * 0.6) * 0.5 + 0.5;
+        const noise = Math.random() * 0.4;
+        const v = Math.max(0, Math.min(1, wave * 0.65 + noise * amp * 0.9));
+        const h = Math.max(3, Math.round(v * 14));
+        b.style.height = h + 'px';
+        b.classList.toggle('on', h > 4);
+      });
+    });
+  }
+  setInterval(animateBars, 90);
+
+  // ─────────── Live transcript pump (Transcription mode) ───────────
+  function renderTranscript() {
+    const pane = document.getElementById('transcript-pane');
+    if (!pane) return;
+    pane.innerHTML = '';
+    for (const s of TRANSCRIPT) {
+      const line = document.createElement('div');
+      line.className = 'seg-line';
+      line.innerHTML = `<span class="ts">${s.ts}</span><span class="who ${s.who}">${s.who === 'mic' ? 'Mic' : 'System'}</span> `;
+      line.appendChild(document.createTextNode(s.text));
+      pane.appendChild(line);
+    }
+    pane.scrollTop = pane.scrollHeight;
+    document.getElementById('transcript-count').textContent = `${TRANSCRIPT.length} segments`;
+  }
+  function pumpTranscript() {
+    setInterval(() => {
+      if (!RECORDING) return;
+      if (speechIdx >= FAKE_SPEECH.length) return;
+      SECS += 6 + Math.floor(Math.random() * 5);
+      const s = FAKE_SPEECH[speechIdx++];
+      TRANSCRIPT.push({
+        ts: fmtTs(SECS - (14*60 + 30) + 4),
+        who: s.who, text: s.text
+      });
+      renderTranscript();
+    }, 4000);
+  }
+  function fmtTs(t) {
+    const h = String(Math.floor(t/3600)).padStart(2,'0');
+    const m = String(Math.floor((t%3600)/60)).padStart(2,'0');
+    const s = String(t%60).padStart(2,'0');
+    return `${h}:${m}:${s}`;
+  }
+  function fmtClock(secs) {
+    return `${String(Math.floor(secs/60)).padStart(2,'0')}:${String(secs%60).padStart(2,'0')}`;
+  }
+
+  // ─────────── Clock tick ───────────
+  setInterval(() => {
+    if (!RECORDING) return;
+    SECS++;
+    const t = fmtClock(SECS);
+    document.getElementById('statusbar-clock').textContent = t;
+    document.getElementById('anchor-clock').textContent = t;
+  }, 1000);
+
+  // ─────────── Asking mode ───────────
+  function renderQA() {
+    const list = document.getElementById('qa-history');
+    document.getElementById('qa-count').textContent = `${QA.length} pair${QA.length === 1 ? '' : 's'}`;
+    if (!QA.length) {
+      list.innerHTML = '<div class="qa-empty">No questions yet. Type one above to ask the agent about what\'s been said so far.<br><span style="opacity:0.7;">Default provider: openai (gpt-4o) — change in Settings</span></div>';
+      return;
+    }
+    list.innerHTML = '';
+    for (const entry of QA) {
+      const wrap = document.createElement('div');
+      wrap.className = 'qa';
+      wrap.innerHTML = `
+        <div class="meta"><span class="who">🅀 You</span> · asked at <span class="ts-rec">${entry.ts} in recording</span></div>
+        <div class="body q-body"></div>
+        <div class="meta" style="margin-top:6px;">
+          <span class="who">🅐 Assistant</span>
+          ${entry.streaming ? '· <span class="stream-glyph"></span> <span style="color:var(--secondary)">streaming…</span>' : ''}
+        </div>
+        <div class="body a-body${entry.streaming ? ' streaming' : ''}"></div>`;
+      wrap.querySelector('.q-body').textContent = entry.q;
+      wrap.querySelector('.a-body').textContent = entry.a || '';
+      list.appendChild(wrap);
+    }
+    list.scrollTop = list.scrollHeight;
+  }
+  function submitQuestion() {
+    const input = document.getElementById('ask-input');
+    const q = (input.value || '').trim();
+    if (!q) return;
+    input.value = '';
+    const entry = {
+      ts: fmtClock(SECS),
+      q,
+      a: '',
+      streaming: true
+    };
+    QA.push(entry);
+    renderQA();
+    // simulate streaming response
+    const reply = pickReply(q);
+    let i = 0;
+    const tick = setInterval(() => {
+      i += 3;
+      entry.a = reply.slice(0, i);
+      renderQA();
+      if (i >= reply.length) {
+        clearInterval(tick);
+        entry.a = reply;
+        entry.streaming = false;
+        renderQA();
+      }
+    }, 35);
+  }
+  function pickReply(q) {
+    const ql = q.toLowerCase();
+    if (ql.includes('title') || ql.includes('who') || ql.includes('sarah'))
+      return 'Sarah Chen introduced herself at 02:41 as "VP of Platform Engineering" at Northwind.';
+    if (ql.includes('action') || ql.includes('summ') || ql.includes('next'))
+      return '1) You: send DPA to legal. 2) Sarah: confirm SSO Q3 timeline in writing. 3) Both: align on burst pricing tier.';
+    if (ql.includes('sso'))
+      return 'SAML federation is available today; full SSO will land in Q3 per the speaker.';
+    return 'Based on the last few minutes: the pilot is locked to a 6-week window starting June 2; SAML federation unblocks SSO concerns until Q3.';
+  }
+
+  // ─────────── Init ───────────
+  document.addEventListener('DOMContentLoaded', () => {
+    renderTranscript();
+    renderQA();
+    pumpTranscript();
+    document.getElementById('ask-input').addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); submitQuestion(); }
+    });
+    document.getElementById('folder-name').addEventListener('input', updateFolderPathPreview);
+    // Esc to close save modal; Cmd+S inside modal triggers Save
+    document.addEventListener('keydown', e => {
+      const modal = document.getElementById('save-modal');
+      if (modal.classList.contains('show')) {
+        if (e.key === 'Escape') { e.preventDefault(); closeSaveModal(); }
+        if (e.key === 'Enter')  { e.preventDefault(); confirmSave(); }
+      }
+    });
+  });
+</script>
+
+</body>
+</html>
