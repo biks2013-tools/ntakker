@@ -146,24 +146,16 @@ public final class RecordingSession: @unchecked Sendable {
     private let transcriptionProviderFactory: TranscriptionProviderFactoryClosure?
 
     /// Active transcription dispatcher for this session. Created in
-    /// `run()` when transcription is enabled (single mode via
-    /// `options.transcriptionProviderId != "none"`, or dual mode via
-    /// `options.dualTranscription != nil`); stopped in the finalize
-    /// path. `nil` when transcription is disabled — the recording
-    /// path is byte-identical in that case (NFR-17 / AC-LT-2).
+    /// `run()` when transcription is enabled (`options.transcriptionProviderId
+    /// != "none"`); stopped in the finalize path. `nil` when
+    /// transcription is disabled — the recording path is byte-identical
+    /// in that case (NFR-17 / AC-LT-2).
     ///
-    /// Plan-010 Phase C / Lane L-4 (DT-INV — project-design §DT-4):
-    /// the choice between the single-mode `TranscriptionManager` and
-    /// the dual-mode `DualTranscriptionManager` is made ONCE here at
-    /// `setUpTranscriptionPipelineIfNeeded(...)` time. After
-    /// construction, every subsequent operation (`ingestFrame`,
-    /// `rotateSidecar`, `stop`, `currentMetrics`) goes through the
-    /// `TranscriptionDispatcher` protocol — there are NO per-callsite
-    /// `if dual { ... } else { ... }` branches in this file.
-    ///
-    /// The dispatcher owns its own per-session sidecar writer (or
-    /// shared writer in dual mode); the session does not retain a
-    /// separate sidecar reference (plan-004 Phase E rewrite).
+    /// Every subsequent operation (`ingestFrame`, `rotateSidecar`,
+    /// `stop`, `currentMetrics`) goes through the
+    /// `TranscriptionDispatcher` protocol; the session itself is
+    /// mode-agnostic. The dispatcher owns its own per-session sidecar
+    /// writer (plan-004 Phase E rewrite).
     private var _transcriptionDispatcher: (any TranscriptionDispatcher)?
 
     /// Token for the live tap installed on the aligner. Removed on
@@ -845,19 +837,11 @@ public final class RecordingSession: @unchecked Sendable {
         // audio segment is already accepting frames and the partial
         // sidecar is on disk.
         //
-        // Plan-010 / DT-INV: the same call dispatches through the
-        // protocol whether the underlying dispatcher is a single-mode
-        // `TranscriptionManager` (sidecar format from
-        // `options.transcriptionFormat`) or a dual-mode
-        // `DualTranscriptionManager` (sidecar format from
-        // `options.dualTranscription!.sidecarFormat`). We resolve the
-        // format polymorphically here.
         let dispatcherSnapshot: (any TranscriptionDispatcher)? = serialQueue.sync {
             self._transcriptionDispatcher
         }
         if let dispatcher = dispatcherSnapshot {
-            let sidecarFormat: TranscriptFormat = options.dualTranscription?.sidecarFormat
-                ?? options.transcriptionFormat
+            let sidecarFormat: TranscriptFormat = options.transcriptionFormat
             do {
                 try await dispatcher.rotateSidecar(
                     toAudioURL: nextOutput,
@@ -1165,137 +1149,84 @@ public final class RecordingSession: @unchecked Sendable {
     }
 
     /// Install the live transcription pipeline if transcription is
-    /// enabled. "Enabled" means EITHER:
-    ///
-    ///   * Single mode — `options.transcriptionProviderId` selects a
-    ///     real provider (i.e. is non-empty / non-`"none"` / non-
-    ///     `"noop"`). The session constructs a `TranscriptionManager`.
-    ///
-    ///   * Dual mode (plan-010) — `options.dualTranscription != nil`.
-    ///     The session constructs a `DualTranscriptionManager`.
-    ///
-    /// When neither path applies, this is a no-op and the recording
-    /// path is byte-identical to pre-Phase-G behavior (NFR-17 /
-    /// AC-LT-2).
-    ///
-    /// **Plan-010 Phase C / Lane L-4 (DT-INV).** The choice between
-    /// single and dual mode is made ONCE here. After this method
-    /// returns, the session holds a `(any TranscriptionDispatcher)?`
-    /// in `_transcriptionDispatcher` and every subsequent operation
-    /// (`ingestFrame` via the aligner tap, `rotateSidecar` from
-    /// `split(...)`, `stop` from teardown) goes through the protocol —
-    /// there are NO `if dual { ... } else { ... }` branches anywhere
-    /// else in this file.
+    /// enabled. "Enabled" means `options.transcriptionProviderId`
+    /// selects a real provider (non-empty / non-`"none"` / non-`"noop"`).
+    /// When transcription is disabled this is a no-op and the recording
+    /// path is byte-identical to pre-Phase-G behavior (NFR-17 / AC-LT-2).
     ///
     /// On success, populates the three pieces of state:
-    ///   * `_transcriptionDispatcher` (single or dual)
+    ///   * `_transcriptionDispatcher`
     ///   * `_transcriptionTapToken` (installed on `aligner.addLiveTap`)
     ///   * `_transcriptionForwarderTask` (dispatcher events → public stream)
     ///
-    /// The sidecar writer(s) live inside the dispatcher (single mode:
-    /// per-session writer owned by `TranscriptionManager`; dual mode:
-    /// shared writer owned by `DualTranscriptionManager`); the session
-    /// does not retain a separate sidecar reference.
+    /// The sidecar writer lives inside the dispatcher (per-session
+    /// writer owned by `TranscriptionManager`); the session does not
+    /// retain a separate sidecar reference.
     ///
     /// Throws on missing API key, unknown provider, non-writable
-    /// sidecar path, downsampler init failure, or any of the
-    /// `DualTranscriptionConfig` validation guards. Per the project
+    /// sidecar path, or downsampler init failure. Per the project
     /// "no fallback" rule, any of these errors aborts `run()` and
     /// surfaces back to the CLI / UI caller.
     private func setUpTranscriptionPipelineIfNeeded(
         aligner: HostClockAligner
     ) async throws {
-        // ----------------------------------------------------------
-        // Step 1: pick the dispatcher type ONCE (DT-INV).
-        // Dual takes precedence — when both `dualTranscription` is
-        // configured AND a single-mode `transcriptionProviderId` is
-        // set, the dual config wins. (In practice the UI/CLI layers
-        // mute the single-mode controls when dual is enabled, so the
-        // overlap is defensive.)
-        // ----------------------------------------------------------
         let dispatcher: (any TranscriptionDispatcher)?
         let trSource: TranscriptionSource
         let summary: String
 
-        if let dualConfig = options.dualTranscription {
-            // Dual-mode construction. The DualTranscriptionManager
-            // owns provider construction, both downsamplers, and the
-            // shared sidecar writer internally.
-            let dualMgr: DualTranscriptionManager
-            do {
-                dualMgr = try DualTranscriptionManager(
-                    config: dualConfig,
-                    sidecarBaseURL: options.output,
-                    sidecarPolicy: .streaming,
-                    logger: LoggerFactory.make("macrec.transcription.dual")
-                )
-            } catch let macrecError as MacrecError {
-                throw macrecError
-            } catch {
-                throw MacrecError.unknown(
-                    "dual transcription manager init failed: \(error.localizedDescription)"
+        // Plan-012 Phase C4 introduces a second branch on top of the
+        // legacy single path: when the user picks `--transcribe-source
+        // both` we build TWO single-source TranscriptionManagers (one
+        // per SourceTag) and wrap them in a
+        // SourceSplitTranscriptionManager. Otherwise we fall through
+        // to the unchanged single path.
+        let providerId = options.transcriptionProviderId ?? "none"
+        let normalized = providerId.lowercased()
+        guard !normalized.isEmpty, normalized != "none", normalized != "noop" else {
+            // Transcription disabled — nothing to do, recording
+            // path is unchanged.
+            return
+        }
+        let kind = TranscriptionDispatcherSelector.chooseKind(for: options)
+        switch kind {
+        case .sourceSplit:
+            // Plan-012 Phase C4 — true `--transcribe-source both`
+            // routing. Build two parallel managers, each driving
+            // its own provider instance, sidecar writer, and
+            // metrics struct, then wrap in
+            // SourceSplitTranscriptionManager.
+            if normalized == "elevenlabs" {
+                logger.warning(
+                    "ElevenLabs Free/Starter tiers cap concurrent STT requests at 8; --transcribe-source both will run two parallel POSTs and may surface concurrent_limit_exceeded (HTTP 429)."
                 )
             }
-            dispatcher = dualMgr
-            trSource = dualConfig.source
-            summary = "dual (channelA=\(dualConfig.channelA.providerId)/\(dualConfig.channelA.locale), channelB=\(dualConfig.channelB.providerId)/\(dualConfig.channelB.locale), source=\(trSource.rawValue), sidecar=\(dualConfig.sidecarFormat.rawValue))"
-        } else {
-            // Single-mode construction. Plan-012 Phase C4 introduces
-            // a third branch on top of the legacy single path: when
-            // the user picks `--transcribe-source both` we build TWO
-            // single-source TranscriptionManagers (one per SourceTag)
-            // and wrap them in a SourceSplitTranscriptionManager.
-            // Otherwise we fall through to the unchanged single path.
-            let providerId = options.transcriptionProviderId ?? "none"
-            let normalized = providerId.lowercased()
-            guard !normalized.isEmpty, normalized != "none", normalized != "noop" else {
-                // Transcription disabled — nothing to do, recording
-                // path is unchanged.
-                return
-            }
-            let kind = TranscriptionDispatcherSelector.chooseKind(for: options)
-            switch kind {
-            case .sourceSplit:
-                // Plan-012 Phase C4 — true `--transcribe-source both`
-                // routing. Build two parallel managers, each driving
-                // its own provider instance, sidecar writer, and
-                // metrics struct, then wrap in
-                // SourceSplitTranscriptionManager.
-                if normalized == "elevenlabs" {
-                    logger.warning(
-                        "ElevenLabs Free/Starter tiers cap concurrent STT requests at 8; --transcribe-source both will run two parallel POSTs and may surface concurrent_limit_exceeded (HTTP 429)."
-                    )
-                }
-                let (sysMgr, _, sysSummary) = try await buildSingleModeManager(
-                    normalizedProviderId: normalized,
-                    sourceOverride: .system,
-                    sidecarSourceTag: .system
-                )
-                let (micMgr, _, micSummary) = try await buildSingleModeManager(
-                    normalizedProviderId: normalized,
-                    sourceOverride: .mic,
-                    sidecarSourceTag: .microphone
-                )
-                let split = SourceSplitTranscriptionManager(
-                    systemManager: sysMgr,
-                    microphoneManager: micMgr,
-                    logger: LoggerFactory.make("macrec.transcription.source-split")
-                )
-                dispatcher = split
-                trSource = .both
-                summary = "source-split (\(sysSummary) || \(micSummary))"
-            case .single, .none, .dual:
-                // .dual is unreachable here (handled by the outer
-                // `if let dualConfig` branch); .none was filtered by
-                // the guard above. The `.single` arm is the legacy
-                // path.
-                let (mgr, source, summaryLine) = try await buildSingleModeManager(
-                    normalizedProviderId: normalized
-                )
-                dispatcher = mgr
-                trSource = source
-                summary = summaryLine
-            }
+            let (sysMgr, _, sysSummary) = try await buildSingleModeManager(
+                normalizedProviderId: normalized,
+                sourceOverride: .system,
+                sidecarSourceTag: .system
+            )
+            let (micMgr, _, micSummary) = try await buildSingleModeManager(
+                normalizedProviderId: normalized,
+                sourceOverride: .mic,
+                sidecarSourceTag: .microphone
+            )
+            let split = SourceSplitTranscriptionManager(
+                systemManager: sysMgr,
+                microphoneManager: micMgr,
+                logger: LoggerFactory.make("macrec.transcription.source-split")
+            )
+            dispatcher = split
+            trSource = .both
+            summary = "source-split (\(sysSummary) || \(micSummary))"
+        case .single, .none:
+            // .none was filtered by the guard above. The `.single`
+            // arm is the legacy path.
+            let (mgr, source, summaryLine) = try await buildSingleModeManager(
+                normalizedProviderId: normalized
+            )
+            dispatcher = mgr
+            trSource = source
+            summary = summaryLine
         }
 
         guard let dispatcher else {
@@ -1303,12 +1234,10 @@ public final class RecordingSession: @unchecked Sendable {
         }
 
         // ----------------------------------------------------------
-        // Step 2: start the dispatcher and wire the forwarder Task.
-        // The dispatcher protocol's `start()` is `async throws` —
-        // single-mode `TranscriptionManager.start()` is non-throwing
-        // (Swift allows the conformance), dual-mode
-        // `DualTranscriptionManager.start()` throws on both-channel-
-        // down.
+        // Start the dispatcher and wire the forwarder Task. The
+        // dispatcher protocol's `start()` is `async throws` —
+        // `TranscriptionManager.start()` is non-throwing (Swift allows
+        // the conformance).
         // ----------------------------------------------------------
         let dispatcherEvents: AsyncStream<TranscriptionEvent>
         do {
@@ -1360,9 +1289,7 @@ public final class RecordingSession: @unchecked Sendable {
         // the same `BufferSummer` the recorder uses, then synthesise
         // a single-buffer `AlignedFrame` that the dispatcher picks up
         // through its existing `.system` branch. This keeps the
-        // dispatcher's API surface unchanged. The same routing
-        // applies to the dual dispatcher because its `ingestFrame`
-        // also reads `frame.systemBuffer` per `tag == .system`.
+        // dispatcher's API surface unchanged.
         // ----------------------------------------------------------
         let token = aligner.addLiveTap { [weak dispatcher] frame in
             guard let dispatcher else { return }
@@ -1405,11 +1332,11 @@ public final class RecordingSession: @unchecked Sendable {
         logger.info("transcription pipeline ready: \(summary)")
     }
 
-    /// Build a single-mode `TranscriptionManager` from the resolved
+    /// Build a `TranscriptionManager` from the resolved
     /// `RecordingOptions`. Extracted from
-    /// `setUpTranscriptionPipelineIfNeeded` (plan-010 L-4) so the
-    /// outer method can branch cleanly between single and dual
-    /// construction without duplicating the long single-mode setup.
+    /// `setUpTranscriptionPipelineIfNeeded` so the outer method can
+    /// branch cleanly between the legacy single path and the
+    /// source-split path without duplicating the long setup.
     ///
     /// Returns the manager (typed as `TranscriptionManager`, the
     /// caller widens to `any TranscriptionDispatcher`), the resolved
@@ -1613,19 +1540,12 @@ public final class RecordingSession: @unchecked Sendable {
     ///
     ///   1. Remove the aligner tap (no more frames flow into the
     ///      dispatcher).
-    ///   2. Stop the dispatcher (single-mode: final-drains the
-    ///      per-source buffers, waits up to
-    ///      `TranscriptionManager.stopDrainSeconds` for outstanding
-    ///      provider calls, closes the sidecar; dual-mode:
-    ///      concurrently stops both pipelines with their own per-
-    ///      channel deadlines, closes the shared sidecar). Both end
-    ///      by finishing the events stream.
+    ///   2. Stop the dispatcher (final-drains the per-source buffers,
+    ///      waits up to `TranscriptionManager.stopDrainSeconds` for
+    ///      outstanding provider calls, closes the sidecar, and
+    ///      finishes the events stream).
     ///   3. Await the forwarder task (so the last events make it to
     ///      the public `transcriptEvents` stream).
-    ///
-    /// Plan-010 / DT-INV: the call goes through the
-    /// `TranscriptionDispatcher` protocol — no per-callsite mode
-    /// branch.
     private func tearDownTranscriptionPipelineIfNeeded(
         aligner: HostClockAligner
     ) async {

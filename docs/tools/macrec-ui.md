@@ -261,32 +261,6 @@
         queues (NFR-11). Active any time at least one capture source
         is delivering buffers.
 
-        ### Mode switch (Single / Dual) — plan-010 Lane L-7
-
-        A compact segmented `Picker` ("Single" / "Dual") rendered at the
-        TOP of the Live Transcription section, above all other
-        transcription controls. Drives whether the panel composes the
-        existing single-provider control set or the new dual-provider
-        control set (one Apple on-device channel + one Apple Cloud
-        channel running concurrently against identical audio frames).
-
-        - **Single** *(default)* — preserves the pre-plan-010 behaviour.
-          The four control rows below the switch (Transcribe / Source /
-          Transcript format / Language) plus the per-provider API-key
-          row render exactly as documented in the rest of this section.
-          AC-1 hard constraint: pixel-identical to the pre-plan-010
-          panel for users who never flip the switch.
-        - **Dual** — placeholder in Lane L-7. The dual-mode control set
-          (audio source picker, per-channel locale pickers, sidecar
-          format, inline per-channel error display, per-channel metrics)
-          is added by subsequent plan-010 lanes (L-8 controls, L-9
-          dual-lane transcript display, L-11 metrics wiring, L-12
-          privacy disclosure).
-
-        Persisted under `@AppStorage("com.macrec.ui.transcriptionMode")`
-        — see "AppStorage UserDefaults keys" below for the full
-        persistence contract.
-
         ### Live transcription picker (FR-49)
 
         Dropdown labelled **"Live transcription"** with one entry per
@@ -447,44 +421,6 @@
         - The panel is hidden when the Live-transcription picker is
           `None` (no panel space wasted in the no-transcription
           configuration).
-
-        #### Dual live transcript display (plan-010 Lane L-9 — FR-6)
-
-        When the mode switch is set to **Dual**, the live transcript
-        panel renders two stacked lanes (Channel A on top, Channel B
-        on the bottom) instead of the single flat list. Each lane is
-        an INDEPENDENT scroll surface with its own auto-scroll-to-
-        bottom — a slow-streaming Channel B does not drag Channel A's
-        scroll position. Layout decision is DT-ADR-8 / OQ-5: stacked
-        lanes were picked over side-by-side (the popover is too narrow
-        for two readable text columns, especially with mixed Greek +
-        Latin scripts) and over a single chronological feed (the two
-        channels lag at different rates, so the merged stream visually
-        "jumps").
-
-        - Each lane has a small caption header showing the channel's
-          user-facing label: `EN — Channel A (Apple on-device)` /
-          `EL — Channel B (Apple Cloud)`. The label string comes from
-          `DualSidecarLabel.channelLabel(for:)` so it is unified with
-          the sidecar writer's channel label (FR-7).
-        - Per-segment row treatment is identical to single mode:
-          italic-secondary while the segment is partial, plain-primary
-          once finalised, optional uppercase BCP-47 language chip
-          when `segment.language` is non-nil.
-        - The shared `Clear transcript` button (top-right of the
-          panel) clears BOTH lanes atomically — internally it calls
-          `recordingController.clearTranscriptSegments()` once, which
-          empties the underlying `transcriptSegments` array; both
-          lanes' filtered partitions go empty and re-render.
-        - The lanes share the panel's vertical space 50/50 with a
-          0.5pt separator between them (palette `separator` token).
-        - Partition logic: `transcriptSegments.filter { model == "apple" }`
-          → Channel A; `… { model == "apple-cloud" }` → Channel B.
-          Segments with any other (or nil) `model` are NOT rendered in
-          dual mode by design — they are out-of-band.
-        - Single mode rendering is BYTE-FOR-BYTE UNCHANGED (DT-INV);
-          flipping the mode switch back to Single restores the prior
-          flat-list panel verbatim.
 
         ### Privacy disclosure dialog (FR-53)
 
@@ -856,11 +792,6 @@
         | `com.macrec.ui.appearance`                  | User-chosen appearance mode raw value (`system` / `light` / `dark`). Default `system` (added by plan-008 — see "Theming" below). Read by `AppearanceHostingRoot`, `AppearanceSwitcher`, and `GeneralSettingsView`. |
         | `com.macrec.ui.transcriptionEnabled`        | Master gate for the live-transcription pipeline. `Bool`, default `true`. When `false`, `ControlBar.startTapped()` overrides the engine to `"none"` for the duration of the recording WITHOUT mutating `com.macrec.ui.transcribeProvider` — re-enabling restores the user's last engine (added by plan-008, UR-ADR-7). |
         | `com.macrec.ui.popoverHeight`               | Persisted vertical popover height (Double, default `600`). Driven by `ResizeHandle` drag gesture; `PopoverController.heightObserver` pushes the value onto `NSPopover.contentSize`. |
-        | `com.macrec.ui.transcriptionMode`           | Live-transcription mode (`String`, raw value of `LiveTranscriptionMode`; allowed values `"single"` / `"dual"`). Default `"single"` — preserves pre-plan-010 behaviour for upgrading users (no migration needed). Bound by the segmented `TranscriptionModeSwitch` at the top of the Live Transcription section (plan-010 Lane L-7); mirrored by `RecordingController.transcriptionMode` (the canonical key spelling is exposed as `RecordingController.transcriptionModeStorageKey` for non-`@AppStorage` consumers). The `dual` selection is only honoured at Start time when `RecordingOptions.dualTranscription` is non-nil; bad / missing values collapse to `"single"`. Four additional dual-only keys (rows below) are added by plan-010 Lane L-8 — they are disjoint from the single-mode keys above so toggling Single↔Dual round-trips Single-mode state verbatim (AC-2). |
-        | `com.macrec.ui.dual.channelALocale`          | Channel A (Apple on-device) BCP-47 locale identifier for dual-mode live transcription (`String`). Default `"en-US"` (per `DualLocaleSets.channelADefaultLocale`). Bound by the Channel A row in `DualTranscriptionControls` (plan-010 Lane L-8). The picker draws ONLY from `DualLocaleSets.channelASupportedLocales` (~42 locales sourced from `SpeechTranscriber.supportedLocales`; **does NOT include Greek `el-GR`**). Disjoint from `com.macrec.ui.transcribeLanguage` so single-mode state is preserved on Single↔Dual round-trip. Bad / missing values are caught at session-open by `DualTranscriptionConfig.init` (no UI-level fallback — see CLAUDE.md no-fallback rule). |
-        | `com.macrec.ui.dual.channelBLocale`          | Channel B (Apple Cloud) BCP-47 locale identifier for dual-mode live transcription (`String`). Default `"el-GR"` (per `DualLocaleSets.channelBDefaultLocale`). Bound by the Channel B row in `DualTranscriptionControls` (plan-010 Lane L-8). The picker draws from `DualLocaleSets.channelBSupportedLocales` (~57 locales sourced from `SFSpeechRecognizer.supportedLocales()`; **includes Greek `el-GR`**). Disjoint from `com.macrec.ui.transcribeLanguage2`. Validated at session-open by `DualTranscriptionConfig.init`. |
-        | `com.macrec.ui.dual.source`                  | Audio source for dual-mode live transcription (`String`, raw value of `TranscriptionSource`; allowed values `system` / `mic` / `mixed` / `both`). Default `"mixed"`. Bound by the Source picker at the top of `DualTranscriptionControls` (plan-010 Lane L-8). **Disjoint from the single-mode `com.macrec.ui.transcribeSource`** so toggling Single↔Dual never corrupts the single-mode source selection (AC-2 / DT-ADR-13). |
-        | `com.macrec.ui.dual.transcriptFormat`        | Sidecar transcript format for dual-mode live transcription (`String`, raw value of `TranscriptFormat`; allowed values `jsonl` / `srt` / `vtt` / `txt`). Default `"jsonl"`. Bound by the Transcript-format picker at the bottom of `DualTranscriptionControls` (plan-010 Lane L-8). **Disjoint from the single-mode `com.macrec.ui.transcriptFormat`** for the same AC-2 round-trip reason. |
 
         These keys are managed via SwiftUI's `@AppStorage` property
         wrapper inside the popover views; they are written

@@ -97,7 +97,7 @@ public struct StartCommand: AsyncParsableCommand {
     // (shell → ~/.tool-agents/macrec/.env → ./.env). Putting a key on a
     // command line would leak it into shell history and `ps` output.
 
-    @Option(name: .long, help: "Live transcription provider (none | apple | apple-cloud | gemini | whisperkit | parakeet | soniox | azure | azure-openai-realtime | elevenlabs | dual). Default: apple (per plan-005 Phase H). Pass `dual` to enable dual-mode transcription (Channel A on-device + Channel B cloud); the four --transcribe-dual-* flags below become required. Env: MACREC_TRANSCRIBE.")
+    @Option(name: .long, help: "Live transcription provider (none | apple | apple-cloud | gemini | whisperkit | parakeet | soniox | azure | azure-openai-realtime | elevenlabs). Default: apple (per plan-005 Phase H). Env: MACREC_TRANSCRIBE.")
     public var transcribe: String?
 
     @Option(name: .long, help: "Audio source for transcription (system | mic | mixed | both). Default: mixed. Ignored when --transcribe none. Env: MACREC_TRANSCRIBE_SOURCE.")
@@ -126,29 +126,6 @@ public struct StartCommand: AsyncParsableCommand {
 
     @Option(name: .long, help: "Parakeet language hint (bare ISO-639-1, e.g. 'el'). Informational only — FluidAudio v0.8.x has no per-call language API; the multilingual model auto-detects. Env: MACREC_PARAKEET_LANGUAGE.")
     public var parakeetLanguage: String?
-
-    // MARK: - Dual-mode transcription knobs (plan-010 Phase H; design §DT-10)
-    //
-    // Required when `--transcribe dual` is selected. NO defaults are
-    // applied at the engine layer (CLAUDE.md "no fallback for missing
-    // config"); the AppStorage defaults `en-US` / `el-GR` / `mixed` /
-    // `jsonl` documented in §DT-10 are UI-layer values written into
-    // persistent storage on first use, NOT silent substitutions in
-    // `ConfigResolver`. The CLI must either supply each value explicitly
-    // OR have it resolvable through the four-tier env-var chain
-    // (shell → ~/.tool-agents/macrec/.env → ./.env → CLI flag).
-
-    @Option(name: .long, help: "Channel A (Apple on-device) BCP-47 locale, e.g. en-US. Required when --transcribe dual. Env: MACREC_TRANSCRIBE_DUAL_LOCALE_A. (plan-010 §DT-10)")
-    public var transcribeDualLocaleA: String?
-
-    @Option(name: .long, help: "Channel B (Apple Cloud) BCP-47 locale, e.g. el-GR. Required when --transcribe dual. Env: MACREC_TRANSCRIBE_DUAL_LOCALE_B. (plan-010 §DT-10)")
-    public var transcribeDualLocaleB: String?
-
-    @Option(name: .long, help: "Audio source for dual-mode transcription (system | mic | mixed | both). Required when --transcribe dual. Env: MACREC_TRANSCRIBE_DUAL_SOURCE. (plan-010 §DT-10)")
-    public var transcribeDualSource: String?
-
-    @Option(name: .long, help: "Sidecar transcript format for dual mode (jsonl | txt | srt | vtt). Required when --transcribe dual. Env: MACREC_TRANSCRIBE_DUAL_FORMAT. (plan-010 §DT-10)")
-    public var transcribeDualFormat: String?
 
     public init() {}
 
@@ -267,11 +244,6 @@ public struct StartCommand: AsyncParsableCommand {
         if let v = sonioxDiarize           { o[ConfigResolver.Keys.sonioxDiarize] = v ? "true" : "false" }
         if let v = parakeetModel           { o[ConfigResolver.Keys.parakeetModel] = v }
         if let v = parakeetLanguage        { o[ConfigResolver.Keys.parakeetLanguage] = v }
-        // -- Dual-mode transcription (plan-010 Phase H; design §DT-10) --
-        if let v = transcribeDualLocaleA   { o[ConfigResolver.Keys.transcribeDualLocaleA] = v }
-        if let v = transcribeDualLocaleB   { o[ConfigResolver.Keys.transcribeDualLocaleB] = v }
-        if let v = transcribeDualSource    { o[ConfigResolver.Keys.transcribeDualSource] = v }
-        if let v = transcribeDualFormat    { o[ConfigResolver.Keys.transcribeDualFormat] = v }
         // Soft validation (plan-006 Phase H): warn if --soniox-endpoint
         // was provided without selecting the Soniox provider. Don't
         // fail — the override is harmless and may be future-config.

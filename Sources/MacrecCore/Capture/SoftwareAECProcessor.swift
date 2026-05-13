@@ -15,7 +15,7 @@
 //      ScreenCaptureKit and AVCaptureSession.
 //
 //   2. Compute y_hat = w · x and the running envelopes:
-//        refEnv += α(|x|² - refEnv)        (short-term ref power)
+//        refEnv += α(mean(|x|²) - refEnv)  (short-term ref power)
 //        micEnv += α(|d|² - micEnv)        (short-term mic power)
 //      where α corresponds to a ~20 ms time constant.
 //
@@ -503,9 +503,15 @@ public final class SoftwareAECProcessor: @unchecked Sendable {
             let leakRetain = 1 - leak
             let alpha = self.envCoeff
             let oneMinusAlpha = 1 - alpha
+            // Gate envelopes live on per-sample mean-power scale.
+            // `refPower` below is the full L-sample window energy and
+            // remains the correct NLMS denominator, but comparing that
+            // directly to `d*d` makes the reference side about `L`
+            // times larger (~36 dB for L=4096). That disables the
+            // double-talk detector in exactly the case it must catch:
+            // local speech over system playback.
             let refActivityPower = self.config.referenceActivityRMSThreshold
                 * self.config.referenceActivityRMSThreshold
-                * Float(L)   // compare against ‖x‖² directly, not RMS
             let dtRatio = self.config.doubleTalkRatio
             let divergeLimit = self.divergenceResetSamples
 
@@ -551,9 +557,13 @@ public final class SoftwareAECProcessor: @unchecked Sendable {
                                     var yHat: Float = 0
                                     vDSP_dotpr(wPtr.baseAddress!, 1, window, 1, &yHat, vDSP_Length(L))
 
-                                    // ‖x‖²
+                                    // ‖x‖². Keep this full-window
+                                    // energy for the NLMS denominator,
+                                    // but use mean power for envelopes
+                                    // so gates compare like with like.
                                     var refPower: Float = 0
                                     vDSP_svesq(window, 1, &refPower, vDSP_Length(L))
+                                    let refMeanPower = refPower / Float(L)
 
                                     let d = dPtr[n]
                                     let dSq = d * d
@@ -561,7 +571,7 @@ public final class SoftwareAECProcessor: @unchecked Sendable {
                                     let eSq = e * e
 
                                     // --- Envelopes ---
-                                    refEnv = oneMinusAlpha * refEnv + alpha * refPower
+                                    refEnv = oneMinusAlpha * refEnv + alpha * refMeanPower
                                     micEnv = oneMinusAlpha * micEnv + alpha * dSq
                                     resEnv = oneMinusAlpha * resEnv + alpha * eSq
 

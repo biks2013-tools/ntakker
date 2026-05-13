@@ -7,14 +7,12 @@ struct TranscriptionDispatcherSelectorTests {
 
     private func opts(
         provider: String? = "apple",
-        source: TranscriptionSource = .mixed,
-        dual: DualTranscriptionConfig? = nil
+        source: TranscriptionSource = .mixed
     ) -> RecordingOptions {
         RecordingOptions(
             output: URL(fileURLWithPath: "/tmp/r.m4a"),
             transcriptionProviderId: provider,
-            transcriptionSource: source,
-            dualTranscription: dual
+            transcriptionSource: source
         )
     }
 

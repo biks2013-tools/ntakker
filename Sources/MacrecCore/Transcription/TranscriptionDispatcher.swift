@@ -1,60 +1,32 @@
-// MacrecCore/Transcription/TranscriptionDispatcher.swift — see
-// docs/design/project-design.md §DT-4 (Interfaces) and
-// docs/design/plan-010-dual-transcription.md §Phase C (Lane L-4).
+// MacrecCore/Transcription/TranscriptionDispatcher.swift
 //
-// Phase C / Lane L-4 (plan-010) — uniform façade over both the
-// single-mode `TranscriptionManager` (existing) and the dual-mode
-// `DualTranscriptionManager` (added in Wave 2 / Lane L-3). The
-// `RecordingSession` orchestrator holds ONE optional dispatcher,
-// chosen ONCE at construction time, and dispatches every
-// transcription operation through this protocol — there are no
-// per-callsite `if mode == .dual { ... } else { ... }` branches in
-// `RecordingSession` (DT-INV: §DT-4 "the choice between Single and
-// Dual is made ONCE at `RecordingSession` construction time; there is
-// NO per-callsite enum discriminator").
+// Uniform façade over the live-transcription pipeline.
+// `RecordingSession` holds one optional dispatcher and dispatches
+// every transcription operation through this protocol.
 //
-// The protocol intentionally tracks the existing
-// `TranscriptionManager`'s public surface 1:1 — the protocol was
-// extracted from that surface — so the existing single-mode
-// implementation conforms with no behavioural change. The dual
-// manager (Wave 2) was already implemented to the same shape.
-//
-// Dual-only surface NOT on this protocol:
-//   * `DualTranscriptionManager.currentDualMetrics() async -> DualChannelMetrics`
-//     — consumers that need per-channel metrics downcast (`as? DualTranscriptionManager`)
-//     and call directly. Keeps the protocol minimal while letting the
-//     dual manager expose extra methods that have no single-mode
-//     analogue.
-//
-// Sendability: the protocol is `AnyObject & Sendable` because both
+// Sendability: the protocol is `AnyObject & Sendable` because the
 // conforming types are reference types (`TranscriptionManager` is an
-// actor, `DualTranscriptionManager` is an actor). Holding a `(any
-// TranscriptionDispatcher)?` field on `RecordingSession` (a
+// actor, `SourceSplitTranscriptionManager` is an actor). Holding a
+// `(any TranscriptionDispatcher)?` field on `RecordingSession` (a
 // `@unchecked Sendable` final class) requires the existential to
 // itself be `Sendable`.
 
 import Foundation
 
-/// Uniform façade for orchestrators that drive one (single mode) or
-/// two (dual mode) transcription pipelines for a single recording
-/// session. `RecordingSession` holds one of these and dispatches
-/// every transcription operation through the protocol — see
-/// project-design §DT-4.
+/// Uniform façade for orchestrators that drive a transcription
+/// pipeline for a single recording session.
 ///
 /// **Conformance contract:**
 ///
 /// * `start()` may be called at most once per instance. Returns the
 ///   `AsyncStream<TranscriptionEvent>` consumers iterate to receive
-///   segment / metric / disclosure / per-channel-error events.
-///   Throws on a hard pre-flight failure that prevents any pipeline
-///   from coming up; in dual mode, single-channel failures are
-///   reported via `.dualChannelError(...)` events on the stream
-///   instead of throwing (the surviving channel keeps running).
+///   segment / metric / disclosure / error events. Throws on a hard
+///   pre-flight failure that prevents the pipeline from coming up.
 ///
 /// * `ingest(_:from:)` and `ingestFrame(_:from:)` are
 ///   fire-and-forget: implementations enqueue work onto an internal
-///   per-source / per-channel buffer and return without awaiting any
-///   provider call. Calling either after `stop()` is a no-op.
+///   per-source buffer and return without awaiting any provider
+///   call. Calling either after `stop()` is a no-op.
 ///
 /// * `rotateSidecar(toAudioURL:format:)` is called by
 ///   `RecordingSession.split(nextOutput:)` so the in-flight
@@ -65,10 +37,7 @@ import Foundation
 ///   returned by `start()` MUST have finished (`for await event in
 ///   stream` exits cleanly).
 ///
-/// * `currentMetrics()` returns a single combined snapshot. In dual
-///   mode this is the field-wise sum across both channels (see
-///   `DualTranscriptionManager.currentMetrics()` for the merge
-///   convention).
+/// * `currentMetrics()` returns a single combined snapshot.
 public protocol TranscriptionDispatcher: AnyObject, Sendable {
 
     /// Begin orchestration. Returns the event stream the caller must

@@ -202,6 +202,12 @@ final class PopoverController {
     /// button. Wired into the `NSStatusItem.button.action` selector by
     /// `AppDelegate`.
     ///
+    /// On every open we re-clamp `contentSize` to the current screen's
+    /// `visibleFrame` (menu bar + Dock already excluded). The persisted
+    /// `@AppStorage` value may have been set on a larger external
+    /// display; without this clamp, opening on a smaller built-in
+    /// screen would let the popover overflow.
+    ///
     /// - Parameter button: The status-item's button to anchor to. The
     ///   popover's arrow will point up at this button.
     func toggle(relativeTo button: NSStatusBarButton) {
@@ -209,11 +215,81 @@ final class PopoverController {
             logger.debug("toggle: closing popover")
             popover.performClose(nil)
         } else {
-            logger.debug("toggle: showing popover relative to status item button")
+            fitToCurrentScreen(anchor: button)
+            logger.debug("toggle: showing popover relative to status item button (contentSize=\(popover.contentSize))")
             // `.minY` places the popover below the status item with the
             // arrow pointing up — the standard menu-bar app placement.
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         }
+    }
+
+    /// Shrink the popover so it fits the current screen's
+    /// `visibleFrame`. Runs through three coordinated layers so that
+    /// SwiftUI's intrinsic content size (read from `RootView.frame(...)`)
+    /// cannot push back against the AppKit-side clamp:
+    ///
+    ///   1. **Persisted `@AppStorage`** — write the fitted height/width
+    ///      so `RootView.body` re-evaluates with the smaller value the
+    ///      next render. `RootView.fittedHeight(_:) / .fittedWidth(_:)`
+    ///      additionally re-clamp against `NSScreen.main` at every
+    ///      render as a defence-in-depth so the popover stays bounded
+    ///      even if this code path is bypassed.
+    ///   2. **`hostingController.preferredContentSize`** — force the
+    ///      NSHostingController's published size so `NSPopover` reads
+    ///      our clamp on its next `show(...)`. NSHostingController
+    ///      normally derives `preferredContentSize` from SwiftUI's
+    ///      intrinsic size; setting it explicitly here wins until the
+    ///      next SwiftUI layout pass (and SwiftUI's pass will agree
+    ///      because step 1 fixed `@AppStorage`).
+    ///   3. **`popover.contentSize`** — final belt-and-braces write.
+    ///
+    /// Status-item's screen wins; fallback to `NSScreen.main` then to
+    /// the first `NSScreen.screens` entry.
+    private func fitToCurrentScreen(anchor button: NSStatusBarButton) {
+        let screen = button.window?.screen ?? NSScreen.main ?? NSScreen.screens.first
+        guard let screen else { return }
+        let frame = screen.visibleFrame
+        // Reserve a margin: ~24pt below the status bar for the popover
+        // callout arrow + a small breathing gap so the resize handle
+        // stays hit-testable when the Dock is pinned to "always show".
+        let arrowMargin: CGFloat = 40
+        let edgeMargin: CGFloat = 16
+        let maxFittingHeight = max(Self.minHeight, frame.height - arrowMargin)
+        let maxFittingWidth  = max(Self.minWidth,  frame.width  - edgeMargin)
+        // Source of truth for the requested size is the persisted
+        // AppStorage value (not the current `popover.contentSize`),
+        // because the SwiftUI body reads `popoverHeight`/`popoverWidth`
+        // and applies `RootView.fittedHeight/Width`, which is what
+        // ultimately drives `preferredContentSize`.
+        let requestedH = CGFloat(UserDefaults.standard.object(forKey: RootView.popoverHeightKey) as? Double
+            ?? Double(popover.contentSize.height))
+        let requestedW = CGFloat(UserDefaults.standard.object(forKey: RootView.popoverWidthKey) as? Double
+            ?? Double(popover.contentSize.width))
+        let fittedH = min(requestedH, maxFittingHeight)
+        let fittedW = min(requestedW, maxFittingWidth)
+        logger.info("fitToCurrentScreen: requested=(\(requestedW), \(requestedH)) → fitted=(\(fittedW), \(fittedH)) for visibleFrame \(frame.size)")
+        // 1. Persisted AppStorage — drives RootView's intrinsic size on
+        //    the next layout pass. Writing the same value is a no-op
+        //    for SwiftUI's @AppStorage publisher.
+        if abs(requestedH - fittedH) >= 0.5 {
+            UserDefaults.standard.set(Double(fittedH), forKey: RootView.popoverHeightKey)
+        }
+        if abs(requestedW - fittedW) >= 0.5 {
+            UserDefaults.standard.set(Double(fittedW), forKey: RootView.popoverWidthKey)
+        }
+        let fittedSize = NSSize(width: fittedW, height: fittedH)
+        // 2. Hosting controller preferred size — read by NSPopover at
+        //    show time. Without this, AppKit may queue the older
+        //    intrinsic size from SwiftUI's last layout.
+        hostingController.preferredContentSize = fittedSize
+        // 3. Popover content size — belt-and-braces.
+        popover.contentSize = fittedSize
+        // Force SwiftUI to run a layout pass NOW so the hosting
+        // controller's view bounds match the new clamp before
+        // `popover.show(...)` queries the size. `layoutSubtreeIfNeeded`
+        // is synchronous and idempotent.
+        hostingController.view.setFrameSize(fittedSize)
+        hostingController.view.layoutSubtreeIfNeeded()
     }
 
     /// Programmatically dismiss the popover. Used by Phase F's quit

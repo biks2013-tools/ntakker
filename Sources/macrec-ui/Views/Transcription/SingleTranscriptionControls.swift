@@ -36,13 +36,9 @@
 
 import SwiftUI
 
-/// Single-mode live-transcription control set. Wraps the existing
-/// four-row block (Transcribe / Source / Transcript format / Language)
-/// plus the per-provider API-key row.
-///
-/// Used by `LiveTranscriptionSection` when
-/// `RecordingController.transcriptionMode == .single` (the v1.5
-/// default and the only mode pre-plan-010).
+/// Live-transcription control set. Wraps the four-row block
+/// (Transcribe / Source / Transcript format / Language) plus the
+/// per-provider API-key row.
 struct SingleTranscriptionControls: View {
     @Environment(\.palette) private var palette
 

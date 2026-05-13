@@ -408,21 +408,6 @@ public struct RecordingOptions: Sendable, Equatable {
     /// (~10–20 % extra compute per chunk). `nil` → false.
     public let whisperKitWordTimestamps: Bool?
 
-    // MARK: - Dual-transcription (plan-010 Phase A; design §DT-3)
-
-    /// Resolved dual-transcription configuration. NON-NIL means
-    /// `RecordingSession` constructs a `DualTranscriptionManager`
-    /// (Channel A = Apple on-device, Channel B = Apple Cloud, fed
-    /// identical audio frames). NIL means single-mode transcription
-    /// (or no transcription, depending on `transcriptionProviderId`).
-    /// The two paths are mutually exclusive.
-    ///
-    /// Construction fully validated at the `DualTranscriptionConfig`
-    /// throwing-init boundary — by the time the value reaches this
-    /// field, locales are confirmed members of the per-channel
-    /// supported sets (NO fallback per CLAUDE.md).
-    public let dualTranscription: DualTranscriptionConfig?
-
     public init(
         output: URL,
         format: OutputFormat = .m4a,
@@ -475,8 +460,7 @@ public struct RecordingOptions: Sendable, Equatable {
         whisperKitTemperature: Float? = nil,
         whisperKitWordTimestamps: Bool? = nil,
         parakeetModel: String? = nil,
-        parakeetLanguage: String? = nil,
-        dualTranscription: DualTranscriptionConfig? = nil
+        parakeetLanguage: String? = nil
     ) {
         self.output = output
         self.format = format
@@ -530,7 +514,6 @@ public struct RecordingOptions: Sendable, Equatable {
         self.whisperKitWordTimestamps = whisperKitWordTimestamps
         self.parakeetModel = parakeetModel
         self.parakeetLanguage = parakeetLanguage
-        self.dualTranscription = dualTranscription
     }
 
     // MARK: - Defaults
@@ -637,8 +620,7 @@ extension RecordingOptions {
             whisperKitTemperature: whisperKitTemperature,
             whisperKitWordTimestamps: whisperKitWordTimestamps,
             parakeetModel: parakeetModel,
-            parakeetLanguage: parakeetLanguage,
-            dualTranscription: dualTranscription
+            parakeetLanguage: parakeetLanguage
         )
     }
 }

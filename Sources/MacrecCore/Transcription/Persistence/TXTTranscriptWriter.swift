@@ -13,7 +13,6 @@
 // append the new rendering at EOF.
 
 import Foundation
-import Logging
 
 /// Plain-text sidecar writer.
 public final class TXTTranscriptWriter: TranscriptFormatWriter {
@@ -21,8 +20,6 @@ public final class TXTTranscriptWriter: TranscriptFormatWriter {
     public let url: URL
     private let handle: FileHandle
     private var index: [UUID: Range<UInt64>] = [:]
-    private let mode: LiveTranscriptionMode
-    private let logger = Logger(label: "macrec.transcription.sidecar.txt")
 
     private static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -30,17 +27,8 @@ public final class TXTTranscriptWriter: TranscriptFormatWriter {
         return f
     }()
 
-    /// - Parameters:
-    ///   - url: destination sidecar file
-    ///   - mode: persistence mode. `.single` (default) preserves the
-    ///     pre-plan-010 line layout exactly. `.dual` prefixes each line
-    ///     with `[<channel-label>] ` (per design §DT-7) — the label is
-    ///     resolved through `DualSidecarLabel.channelTag(forModel:)`
-    ///     plus `channelLabel(for:)`. Segments whose model isn't one of
-    ///     the v1 providers are emitted WITHOUT a channel prefix.
-    public init(url: URL, mode: LiveTranscriptionMode = .single) throws {
+    public init(url: URL) throws {
         self.url = url
-        self.mode = mode
         FileManager.default.createFile(atPath: url.path, contents: nil)
         self.handle = try FileHandle(forUpdating: url)
         try handle.seekToEnd()
@@ -105,59 +93,20 @@ public final class TXTTranscriptWriter: TranscriptFormatWriter {
     /// batch pipeline) the prefix is omitted entirely — no empty
     /// `[]` is emitted — preserving the pre-Phase-F format.
     ///
-    /// Plan-010 Lane L-6 — dual mode prefixes each line with
-    /// `[<channel-label>] ` (per design §DT-7) and OMITS the
-    /// `source[lang]:` prefix; the channel tag carries the per-channel
-    /// identity (Apple on-device "EN" vs Apple Cloud "EL"), so a
-    /// multilingual session reads:
-    ///
-    ///     [12:34:56] [EN] hello world
-    ///     [12:34:57] [EL] καλημέρα
-    ///
-    /// Single-mode rendering is byte-equivalent to the pre-plan-010
-    /// output (NFR-1 / AC-1). When `mode == .dual` but the segment's
-    /// model isn't `"apple"` / `"apple-cloud"`, a warning is logged and
-    /// the line is rendered without the channel prefix (no fallback —
-    /// see Lane L-6 spec).
-    ///
     /// Plan-012 Phase A7 — when the segment carries a non-nil
     /// `speaker` (Soniox diarization is on), an extra `[S<N>]` tag is
-    /// inserted using `SpeakerSidecarLabel.label(for:)`. In single mode
-    /// it sits between the language tag and the colon; in dual mode it
-    /// is appended after the channel-label bracket. When `speaker` is
-    /// `nil` every legacy code path is taken textually unchanged so
-    /// existing snapshot fixtures stay byte-equivalent (DT-INV).
+    /// inserted using `SpeakerSidecarLabel.label(for:)` between the
+    /// language tag and the colon. When `speaker` is `nil` every legacy
+    /// code path is taken textually unchanged so existing snapshot
+    /// fixtures stay byte-equivalent.
     private func render(_ segment: TranscriptSegment) -> String {
         let ts = Self.timeFormatter.string(from: segment.timestamp)
         let speakerLabel = SpeakerSidecarLabel.label(for: segment.speaker)
-        switch mode {
-        case .single:
-            let langTag = segment.language.map { " [\(Self.shortTag($0))]" } ?? ""
-            if let speakerLabel {
-                return "[\(ts)] \(segment.source.rawValue)\(langTag) [\(speakerLabel)]: \(segment.text)\n"
-            }
-            return "[\(ts)] \(segment.source.rawValue)\(langTag): \(segment.text)\n"
-        case .dual:
-            if let tag = DualSidecarLabel.channelTag(forModel: segment.model) {
-                let label = DualSidecarLabel.channelLabel(for: tag)
-                if let speakerLabel {
-                    return "[\(ts)] [\(label)] [\(speakerLabel)] \(segment.text)\n"
-                }
-                return "[\(ts)] [\(label)] \(segment.text)\n"
-            } else {
-                logger.warning(
-                    """
-                    TXT sidecar in dual mode received segment with \
-                    unknown model=\(segment.model ?? "nil"); emitting \
-                    without channel prefix. id=\(segment.id.uuidString)
-                    """
-                )
-                if let speakerLabel {
-                    return "[\(ts)] [\(speakerLabel)] \(segment.text)\n"
-                }
-                return "[\(ts)] \(segment.text)\n"
-            }
+        let langTag = segment.language.map { " [\(Self.shortTag($0))]" } ?? ""
+        if let speakerLabel {
+            return "[\(ts)] \(segment.source.rawValue)\(langTag) [\(speakerLabel)]: \(segment.text)\n"
         }
+        return "[\(ts)] \(segment.source.rawValue)\(langTag): \(segment.text)\n"
     }
 
     /// `"en-US"` → `"en"`, `"el-GR"` → `"el"`. Keeps the BCP-47 primary

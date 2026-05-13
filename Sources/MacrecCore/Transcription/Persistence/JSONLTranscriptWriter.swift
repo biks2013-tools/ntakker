@@ -39,7 +39,6 @@ public final class JSONLTranscriptWriter: TranscriptFormatWriter {
     public let url: URL
     private let handle: FileHandle
     private var index: [UUID: Range<UInt64>] = [:]
-    private let mode: LiveTranscriptionMode
 
     private static let isoFormatter: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
@@ -47,17 +46,8 @@ public final class JSONLTranscriptWriter: TranscriptFormatWriter {
         return f
     }()
 
-    /// - Parameters:
-    ///   - url: destination sidecar file
-    ///   - mode: persistence mode. `.single` (default) preserves the
-    ///     pre-plan-010 byte layout exactly. `.dual` adds an OPTIONAL
-    ///     `channel` field per segment, derived from
-    ///     `DualSidecarLabel.channelTag(forModel:)` and serialised via
-    ///     `encodeIfPresent` so segments whose model isn't one of the
-    ///     v1 providers omit the field entirely (no fallback).
-    public init(url: URL, mode: LiveTranscriptionMode = .single) throws {
+    public init(url: URL) throws {
         self.url = url
-        self.mode = mode
         FileManager.default.createFile(atPath: url.path, contents: nil)
         self.handle = try FileHandle(forUpdating: url)
         try handle.seekToEnd()
@@ -130,16 +120,6 @@ public final class JSONLTranscriptWriter: TranscriptFormatWriter {
     /// see no schema change. When non-nil the field appears as
     /// `"language":"<bcp47>"`.
     ///
-    /// Plan-010 Lane L-6 adds the OPTIONAL `channel` convenience field
-    /// for dual-mode sidecars. It is only populated when `mode == .dual`
-    /// AND `DualSidecarLabel.channelTag(forModel:)` returns a non-nil
-    /// tag — segments whose `model` is neither `"apple"` nor
-    /// `"apple-cloud"` (e.g. a stray legacy provider; dual-mode is
-    /// expected to only have the v1 pair) omit the field entirely so
-    /// the sidecar never carries a wrong-channel hint. In `.single`
-    /// mode the field is ALWAYS omitted, preserving byte equivalence
-    /// with pre-plan-010 output (NFR-1 / AC-1).
-    ///
     /// Plan-012 Phase A7 adds the OPTIONAL `speaker` field that carries
     /// the RAW provider value (e.g. Soniox `"spk:1"`) — JSONL is the
     /// authoritative machine-readable sidecar, so we keep the unmodified
@@ -159,14 +139,7 @@ public final class JSONLTranscriptWriter: TranscriptFormatWriter {
             let durationSec: Double?
             let language: String?
             let speaker: String?
-            let channel: String?
         }
-        let channel: String? = {
-            guard mode == .dual,
-                  let tag = DualSidecarLabel.channelTag(forModel: segment.model)
-            else { return nil }
-            return DualSidecarLabel.channelLabel(for: tag)
-        }()
         let wire = Wire(
             id: segment.id.uuidString,
             timestamp: Self.isoFormatter.string(from: segment.timestamp),
@@ -175,8 +148,7 @@ public final class JSONLTranscriptWriter: TranscriptFormatWriter {
             model: segment.model,
             durationSec: segment.durationSec,
             language: segment.language,
-            speaker: segment.speaker,
-            channel: channel
+            speaker: segment.speaker
         )
         let data = try JSONEncoder().encode(wire)
         return String(data: data, encoding: .utf8) ?? "{}"

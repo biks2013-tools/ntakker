@@ -132,61 +132,6 @@ public final class RecordingController {
     /// each time `setOptions(_:)` is called.
     public private(set) var transcriptionMissingKey: Bool = false
 
-    // MARK: - Dual-mode observed state (plan-010 Phase C / Lane L-5)
-    //
-    // Frozen contract (project-design §DT-13 inter-lane contract #5).
-    // Property names and types here are consumed by L-7 (mode switch +
-    // single sub-view), L-8 (dual controls panel), L-9 (dual live
-    // transcript view), and L-11 (per-channel metrics view). Do not
-    // rename or change types without coordinating across those lanes.
-
-    /// `UserDefaults` / `@AppStorage` key carrying the persisted
-    /// live-transcription mode. The single canonical spelling for this
-    /// key. SwiftUI's `@AppStorage("com.macrec.ui.transcriptionMode")`
-    /// in the picker views writes to the same `UserDefaults.standard`
-    /// slot this controller observes (mirroring §DT-9 / DT-ADR-13).
-    public nonisolated static let transcriptionModeStorageKey: String = "com.macrec.ui.transcriptionMode"
-
-    /// Mirror of the `@AppStorage("com.macrec.ui.transcriptionMode")`
-    /// value, kept in sync via a `UserDefaults.didChangeNotification`
-    /// observer registered in `init`. Default `.single` (matches
-    /// `LiveTranscriptionMode`'s documented default — first launch and
-    /// any value the resolver cannot decode collapse to `.single`).
-    ///
-    /// Per the L-5 lane spec: this value drives (a) the UI gating
-    /// decision (which sub-view L-7/L-8/L-9 renders) and (b) whether
-    /// the controller attempts to populate `dualMetrics` from the
-    /// in-flight dispatcher. The controller itself does NOT construct
-    /// the dispatcher (that is L-4's territory in `RecordingSession`);
-    /// it merely observes the mode value the user has selected so the
-    /// rest of the UI can branch correctly.
-    public private(set) var transcriptionMode: LiveTranscriptionMode = .single
-
-    /// Per-channel split of the active transcription pipeline's
-    /// metrics. `nil` when the session is not running OR when
-    /// `transcriptionMode == .single` OR when (defensively) the
-    /// dispatcher in flight does not match the published mode.
-    ///
-    /// Populated by `applyDualMetrics(_:)`, which L-11's per-channel
-    /// metrics view will drive on the same cadence as the existing
-    /// `transcriptionMetrics` poll once L-4 exposes the dispatcher
-    /// reference through `SessionCoordinator`. Until L-4 lands the
-    /// dispatcher protocol and the `currentDualMetrics()` downcast
-    /// pathway, this property remains `nil` — single-mode UI ignores
-    /// it and dual-mode UI renders a graceful "—" placeholder.
-    public private(set) var dualMetrics: DualChannelMetrics?
-
-    /// Per-channel error map populated from
-    /// `TranscriptionEvent.dualChannelError(channel:, detail:)` events.
-    /// Keyed by `DualChannelTag` so an arrival on Channel A does NOT
-    /// clear an existing Channel B error (and vice versa). Cleared
-    /// wholesale at the next `start()` call.
-    ///
-    /// Consumed by L-8 (controls panel inline error label per channel)
-    /// and L-9 (per-lane error badge). Read access pattern is
-    /// `dualChannelErrors[.channelA]` / `dualChannelErrors[.channelB]`.
-    public private(set) var dualChannelErrors: [DualChannelTag: String] = [:]
-
     /// Maximum number of segments retained in `transcriptSegments`.
     /// Older segments are dropped from the head of the array when the
     /// cap is exceeded — the sidecar file remains the persistent
@@ -229,14 +174,6 @@ public final class RecordingController {
     /// `.recording` transition. Used to compute `segmentElapsed`.
     private var segmentStartedAt: ContinuousClock.Instant?
 
-    /// `UserDefaults.didChangeNotification` observer token that keeps
-    /// `transcriptionMode` in sync with whatever SwiftUI's
-    /// `@AppStorage("com.macrec.ui.transcriptionMode")` writes to the
-    /// shared store. Released in `cancelAll()` and on deinit.
-    /// Pattern mirrors `PopoverController.sizeObserver` (the existing
-    /// AppStorage-bridge idiom in this codebase).
-    private var transcriptionModeObserver: NSObjectProtocol?
-
     // MARK: - Init
 
     /// Construct a controller. The coordinator is built lazily in
@@ -253,14 +190,6 @@ public final class RecordingController {
     ) {
         self.logger = logger
         self.clock = clock
-        // Plan-010 / L-5: seed `transcriptionMode` from the persisted
-        // UserDefaults value (set by SwiftUI's `@AppStorage` in the
-        // mode-switch view, or by an earlier session). Bad / missing
-        // values collapse to `.single` (the documented default — see
-        // `LiveTranscriptionMode`). Subsequent writes by the picker
-        // are picked up by the notification observer below.
-        self.transcriptionMode = Self.loadTranscriptionMode()
-        installTranscriptionModeObserver()
     }
 
     // MARK: - View inputs
@@ -361,12 +290,6 @@ public final class RecordingController {
         pendingDisclosure = nil
         lastTranscriptionError = nil
         transcriptionStatus = .idle
-        // Plan-010 / L-5: reset dual-mode per-session state. The dual
-        // metrics slot stays nil until L-11 wires the dispatcher
-        // downcast; the per-channel error map is cleared so a stale
-        // error from a prior session does not leak into the new one.
-        dualMetrics = nil
-        dualChannelErrors = [:]
 
         let coord = SessionCoordinator(
             baseOptions: options,
@@ -556,30 +479,6 @@ public final class RecordingController {
             Task { await coordinator.teardown() }
         }
         coordinator = nil
-        if let token = transcriptionModeObserver {
-            NotificationCenter.default.removeObserver(token)
-            transcriptionModeObserver = nil
-        }
-    }
-
-    deinit {
-        // Defensive: in tests / short-lived controllers `cancelAll()`
-        // may not be invoked. Drop the notification observer here too
-        // so the controller releases cleanly. Other state (event task,
-        // coordinator) is owned by the host app's `cancelAll()` call.
-        //
-        // Plan-010 Wave-3 / Lane L-4 build-fix: Swift 6's stricter
-        // actor isolation rules forbid a non-isolated deinit from
-        // reading a `@MainActor`-isolated property. Snapshot the token
-        // through `MainActor.assumeIsolated` — at deinit time there is
-        // no other reference to `self`, so the snapshot is race-free
-        // (Swift's deinit guarantees serialise here). The observer
-        // removal itself is safe to call from any thread per
-        // `NotificationCenter`'s documented contract.
-        let token = MainActor.assumeIsolated { transcriptionModeObserver }
-        if let token {
-            NotificationCenter.default.removeObserver(token)
-        }
     }
 
     // MARK: - Internal — event forwarding
@@ -674,43 +573,6 @@ public final class RecordingController {
             logger.error("transcript event: error \(detail)")
             lastTranscriptionError = detail
             transcriptionStatus = .error(detail)
-        case let .dualChannelError(channel, detail):
-            // Plan-010 Phase C / L-5: route the per-channel error to the
-            // dedicated `dualChannelErrors` keyed-by-channel surface
-            // (frozen contract #5; consumed by L-7/L-8/L-9/L-11).
-            //
-            // KEY semantics (per L-5 prompt): per-channel; arrival of an
-            // A-error does NOT clear an existing B-error. Each entry is
-            // overwritten only by a subsequent error on the SAME channel
-            // (or cleared at the next session start in `start()`).
-            //
-            // Coexistence with `lastTranscriptionError`: the single-mode
-            // amber-banner consumer reads `lastTranscriptionError`; the
-            // dual-mode per-lane error badges read `dualChannelErrors`.
-            // Single-mode UI is, by construction, never wired to
-            // `.dualChannelError` events (a `TranscriptionManager` does
-            // not emit them); dual-mode UI is wired to
-            // `dualChannelErrors`. The two surfaces therefore do not
-            // overlap in normal operation. To keep the existing single-
-            // mode `lastTranscriptionError`-based amber banner usable
-            // for backward compat (e.g. a dual session viewed by a
-            // panel that has not yet been migrated to per-channel UI),
-            // we ALSO set `lastTranscriptionError` to a channel-tagged
-            // message and flip `transcriptionStatus` to `.error(...)`.
-            // Once L-7..L-11 land their per-channel surfaces, panels in
-            // dual mode should ignore these legacy fields and read
-            // `dualChannelErrors` instead.
-            let label: String
-            switch channel {
-            case .channelA: label = "Channel A"
-            case .channelB: label = "Channel B"
-            }
-            let tagged = "\(label): \(detail)"
-            logger.error("transcript event: dualChannelError \(tagged)")
-            dualChannelErrors[channel] = detail
-            // Backward-compat surface (kept until per-channel UI lands):
-            lastTranscriptionError = tagged
-            transcriptionStatus = .error(tagged)
         }
     }
 
@@ -885,99 +747,4 @@ public final class RecordingController {
         latestLevels = nil
     }
 
-    // MARK: - Plan-010 / L-5 — dual-mode helpers
-
-    /// Apply a `DualChannelMetrics` snapshot taken from a downcast of
-    /// the in-flight `DualTranscriptionManager` (via
-    /// `currentDualMetrics()`). Public surface kept narrow: only the
-    /// per-channel metrics view (L-11) and the SessionCoordinator-
-    /// adjacent polling task (Phase I) call this. Documented contract:
-    ///
-    ///   * If `transcriptionMode == .dual`, the supplied snapshot is
-    ///     stored verbatim. Subsequent UI reads of `dualMetrics` see
-    ///     the new value.
-    ///   * If `transcriptionMode == .single`, the call is treated as
-    ///     defensive noise (the dispatcher is a `TranscriptionManager`,
-    ///     not a `DualTranscriptionManager`, so there is no per-channel
-    ///     split to publish). A debug log line is emitted; the slot
-    ///     stays nil to keep the contract tight.
-    public func applyDualMetrics(_ snapshot: DualChannelMetrics?) {
-        guard transcriptionMode == .dual else {
-            if snapshot != nil {
-                logger.debug("applyDualMetrics ignored — controller is in single mode")
-            }
-            // Make sure the slot is empty in single mode; defensive
-            // against a leftover dual-mode value from a prior session.
-            dualMetrics = nil
-            return
-        }
-        dualMetrics = snapshot
-    }
-
-    /// Load the persisted live-transcription mode from
-    /// `UserDefaults.standard`. Bad / missing values collapse to
-    /// `.single` (matches `LiveTranscriptionMode`'s documented default
-    /// — first launch and unparseable raw values).
-    ///
-    /// Marked `nonisolated` (2026-05-02) — pure read against
-    /// `UserDefaults.standard` (itself thread-safe) with no
-    /// actor-isolated state touched. Lets the
-    /// `installTranscriptionModeObserver()` `@Sendable` closure call
-    /// it synchronously without the Swift 6 strict-concurrency
-    /// implicit-async-call warning.
-    private nonisolated static func loadTranscriptionMode() -> LiveTranscriptionMode {
-        guard let raw = UserDefaults.standard.string(forKey: transcriptionModeStorageKey),
-              let parsed = LiveTranscriptionMode(rawValue: raw)
-        else {
-            return .single
-        }
-        return parsed
-    }
-
-    /// Register a `UserDefaults.didChangeNotification` observer so the
-    /// `transcriptionMode` published property tracks
-    /// `@AppStorage("com.macrec.ui.transcriptionMode")` writes from
-    /// the SwiftUI mode-switch view (L-7). Pattern mirrors
-    /// `PopoverController.sizeObserver` (the existing in-process
-    /// AppStorage-bridge idiom in this codebase) — `@AppStorage` only
-    /// writes through a plain string key, which the notification
-    /// observes uniformly.
-    private func installTranscriptionModeObserver() {
-        // Tear down any prior token defensively (init is normally
-        // single-shot but callers may re-register in tests).
-        if let token = transcriptionModeObserver {
-            NotificationCenter.default.removeObserver(token)
-            transcriptionModeObserver = nil
-        }
-        // `addObserver(forName:object:queue:)` invokes the block on
-        // the supplied queue (`.main`). The closure is `@Sendable`;
-        // we use `MainActor.assumeIsolated` to enter the controller's
-        // actor isolation for the mutation site (matches the project's
-        // existing main-thread bridge idiom in `PopoverController`).
-        transcriptionModeObserver = NotificationCenter.default.addObserver(
-            forName: UserDefaults.didChangeNotification,
-            object: UserDefaults.standard,
-            queue: .main
-        ) { [weak self] _ in
-            // The notification fires for every defaults write across
-            // the whole process. Re-read our specific key and only
-            // mutate the published slot when it materially changed —
-            // avoids spurious Observation churn.
-            let newValue = Self.loadTranscriptionMode()
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                if self.transcriptionMode != newValue {
-                    self.transcriptionMode = newValue
-                    self.logger.debug("transcriptionMode updated from AppStorage: \(newValue.rawValue)")
-                    // Mode flip implies the dual-metrics slot might be
-                    // stale (e.g. user toggled back to single mid-
-                    // session). Drop it; the next applyDualMetrics
-                    // call (or session start) will repopulate.
-                    if newValue == .single && self.dualMetrics != nil {
-                        self.dualMetrics = nil
-                    }
-                }
-            }
-        }
-    }
 }

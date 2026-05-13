@@ -128,16 +128,13 @@
                                   (changed from `none` in v1.5 / plan-005).
                                   Allowed: none | apple | apple-cloud | gemini
                                   | soniox | whisperkit | azure |
-                                  azure-openai-realtime | elevenlabs | dual.
+                                  azure-openai-realtime | elevenlabs.
                                   (`gemini-live` is accepted as a deprecated
                                   alias for one release; the resolver lowers
                                   it to `gemini` and logs a deprecation
-                                  notice.) Pass `dual` to enable dual-mode
-                                  transcription (Channel A on-device + Channel
-                                  B cloud); the four --transcribe-dual-* flags
-                                  below become required. Env: MACREC_TRANSCRIBE.
+                                  notice.) Env: MACREC_TRANSCRIBE.
                                   (FR-48 / plan-003 / plan-004 / plan-005 /
-                                  plan-006 / plan-007 / plan-010)
+                                  plan-006 / plan-007)
           --soniox-endpoint <url>
                                   Soniox WebSocket endpoint override (for
                                   EU/JP data residency). Default:
@@ -174,31 +171,6 @@
                                   is logged at start; recording is NOT blocked.
                                   Env: MACREC_TRANSCRIBE_KEY_EXPIRES_AT.
                                   (plan-003 §LT-5.2)
-          --transcribe-dual-locale-a <bcp-47>
-                                  Channel A (Apple on-device) BCP-47 locale,
-                                  e.g. en-US. Required when --transcribe dual.
-                                  No engine-layer default — missing value
-                                  raises exit 64. Env:
-                                  MACREC_TRANSCRIBE_DUAL_LOCALE_A. (plan-010
-                                  §DT-10)
-          --transcribe-dual-locale-b <bcp-47>
-                                  Channel B (Apple Cloud) BCP-47 locale, e.g.
-                                  el-GR. Required when --transcribe dual. No
-                                  engine-layer default. Env:
-                                  MACREC_TRANSCRIBE_DUAL_LOCALE_B. (plan-010
-                                  §DT-10)
-          --transcribe-dual-source <source>
-                                  Audio source for dual-mode transcription
-                                  (system | mic | mixed | both). Required when
-                                  --transcribe dual. Env:
-                                  MACREC_TRANSCRIBE_DUAL_SOURCE. (plan-010
-                                  §DT-10)
-          --transcribe-dual-format <format>
-                                  Sidecar transcript format for dual mode
-                                  (jsonl | txt | srt | vtt). Required when
-                                  --transcribe dual. Env:
-                                  MACREC_TRANSCRIBE_DUAL_FORMAT. (plan-010
-                                  §DT-10)
           --version               Show the version.
           -h, --help              Show help information.
         ```
@@ -748,7 +720,6 @@
         | `gemini`       | Google Gemini REST batch API (HTTPS POST; 2.5 s WAV chunks at 16 kHz mono PCM16; plan-004).       | `GOOGLE_API_KEY`   |
         | `gemini-live`  | Deprecated alias for `gemini` (one-release transition; resolver lowers it to `gemini` and warns). | `GOOGLE_API_KEY`   |
         | `soniox`       | **Soniox cloud streaming** (WebSocket; PCM16 16 kHz mono frames; plan-006). Default model `stt-rt-v4`. Supports language identification across multiple BCP-47 hints (e.g. `el,en`); endpoint detection is enabled; speaker diarization is OFF in v1. ~$0.12/hour at list price. | `SONIOX_API_KEY`   |
-        | `dual`         | **Dual-mode transcription** (plan-010). NOT a single provider — runs `apple` (on-device, Channel A) AND `apple-cloud` (cloud, Channel B) in parallel against the same audio source. Required co-flags: `--transcribe-dual-locale-{a,b}`, `--transcribe-dual-source`, `--transcribe-dual-format`. The single-mode co-flags `--transcribe-language`, `--transcribe-source`, `--transcribe-format`, `--transcribe-model` are forbidden in dual mode. | _(none — Channel B uses the system Speech Recognition grant; Channel A is on-device)_ |
 
         Additional providers (OpenAI Realtime, Deepgram Streaming,
         AssemblyAI Streaming) are admitted by the `TranscriptionProvider`
@@ -812,8 +783,6 @@
 
         **UI:** the live transcript panel renders TWO stacked auto-
         scrolling lanes labelled `System audio` and `Microphone`.
-        Dual-mode (`--transcribe dual`) is unaffected — its existing
-        Channel A / Channel B layout takes precedence over source-split.
 
         ### Long-session behaviour
 
@@ -1089,182 +1058,6 @@
         (version: .v3)`). Because we're batch-only by design, the
         absence of the streaming manager is irrelevant. Bump the pin
         once upstream resolves the strict-concurrency issue.
-
-        ### Dual-mode transcription (plan-010)
-
-        Dual mode runs **two** live-transcription channels in parallel
-        against the same captured audio:
-
-        - **Channel A — Apple on-device.** `SpeechAnalyzer +
-          SpeechTranscriber` (macOS 26+). Locale set sourced from
-          `SpeechTranscriber.supportedLocales` (~42 locales; English
-          variants present, Greek **not** present at macOS 26 launch).
-          No API key, no network.
-        - **Channel B — Apple Cloud.** `SFSpeechRecognizer` with
-          `requiresOnDeviceRecognition = false`. Locale set sourced
-          from `SFSpeechRecognizer.supportedLocales()` (~57 locales,
-          includes `el-GR`). No API key required, but every call hits
-          Apple's Speech Recognition cloud — the **`apple-cloud`
-          quota / latency / privacy disclaimers from single-mode
-          `apple-cloud` apply identically** (see "Privacy warning"
-          below for the reused disclosure copy).
-
-        Per-channel locale choice is asymmetric on purpose. The v1
-        defaults are `en-US` for Channel A and `el-GR` for Channel B
-        — i.e. the on-device side captures inserted English words and
-        the cloud side captures Greek dialogue. Defaults are
-        AppStorage values written by the UI on first launch; the CLI
-        does **not** apply them silently. Missing required dual-mode
-        values raise `MacrecError.transcriptionConfigurationMissing`
-        (exit 64) per the project's no-fallback rule (CLAUDE.md).
-
-        Both channels write into ONE merged sidecar (DT-INV-3). Each
-        segment is tagged with the channel via the existing
-        `TranscriptSegment.model` field (`"apple"` for A,
-        `"apple-cloud"` for B); the per-format on-disk conventions
-        listed below add an additional human-readable channel cue.
-
-        #### CLI flags
-
-        ```sh
-        macrec start \
-            --transcribe dual \
-            --transcribe-dual-locale-a en-US \
-            --transcribe-dual-locale-b el-GR \
-            --transcribe-dual-source mixed \
-            --transcribe-dual-format jsonl \
-            --output ~/recordings/bilingual-meeting.m4a
-        ```
-
-        | Flag                            | Env var                              | Allowed values                       |
-        |---------------------------------|--------------------------------------|--------------------------------------|
-        | `--transcribe dual`             | `MACREC_TRANSCRIBE=dual`             | enables dual mode                    |
-        | `--transcribe-dual-locale-a`    | `MACREC_TRANSCRIBE_DUAL_LOCALE_A`    | any BCP-47 in `SpeechTranscriber.supportedLocales` |
-        | `--transcribe-dual-locale-b`    | `MACREC_TRANSCRIBE_DUAL_LOCALE_B`    | any BCP-47 in `SFSpeechRecognizer.supportedLocales()` |
-        | `--transcribe-dual-source`      | `MACREC_TRANSCRIBE_DUAL_SOURCE`      | `system | mic | mixed | both`        |
-        | `--transcribe-dual-format`      | `MACREC_TRANSCRIBE_DUAL_FORMAT`      | `jsonl | txt | srt | vtt`            |
-
-        All four `MACREC_TRANSCRIBE_DUAL_*` env vars resolve through
-        the standard four-tier chain (shell env → `~/.tool-agents/macrec/.env`
-        → `./.env` → CLI flag, lowest to highest priority — same as
-        every other `MACREC_TRANSCRIBE_*` family member). There is
-        intentionally NO `MACREC_TRANSCRIBE_DUAL` boolean env var — set
-        `MACREC_TRANSCRIBE=dual` (or pass `--transcribe dual`) to
-        flip the resolver into dual mode.
-
-        #### Mutual exclusivity (single-mode-only co-flags)
-
-        The following single-mode co-flags are **forbidden** when
-        `--transcribe dual` is selected — passing them raises
-        `MacrecError.transcriptionConfigConflict` (exit 64):
-
-        | Single-mode flag           | Dual-mode equivalent                                |
-        |----------------------------|-----------------------------------------------------|
-        | `--transcribe-language`    | `--transcribe-dual-locale-a` + `--transcribe-dual-locale-b` |
-        | `--transcribe-source`      | `--transcribe-dual-source`                          |
-        | `--transcribe-format`      | `--transcribe-dual-format`                          |
-        | `--transcribe-model`       | _(no equivalent — providers are pinned to apple + apple-cloud)_ |
-
-        #### Sidecar conventions (design `§DT-7`)
-
-        All four sidecar formats remain byte-equivalent to single mode
-        when single mode is used; dual mode adds a per-segment channel
-        cue. The channel label is the uppercased BCP-47 primary subtag
-        of the segment's locale (`en-US` → `EN`; `el-GR` → `EL`),
-        computed via `DualSidecarLabel.channelLabel(for:)` (one
-        canonical implementation; if the convention changes, only that
-        helper changes).
-
-        - **JSONL (`--transcribe-dual-format jsonl`)** — adds an
-          OPTIONAL `channel` field (`"A"` for `apple`, `"B"` for
-          `apple-cloud`) appended as the LAST field of each line for
-          grep/jq convenience. Single-mode JSONL output is byte-identical
-          to today (no `channel` key emitted).
-
-          ```jsonl
-          {"id":"E1...","timestamp":"2026-05-01T12:00:01.230Z","text":"Hello world","source":"system","model":"apple","language":"en-US","channel":"A","durationSec":0.88,"isFinal":true}
-          {"id":"7C...","timestamp":"2026-05-01T12:00:01.920Z","text":"Καλημέρα","source":"system","model":"apple-cloud","language":"el-GR","channel":"B","durationSec":1.50,"isFinal":true}
-          ```
-
-        - **TXT (`--transcribe-dual-format txt`)** — prefixes each
-          line with `[<LANG>] ` after the timestamp. Single-mode TXT
-          output remains unchanged (no `[EN]` / `[EL]` prefix).
-
-          ```
-          [00:00:01.230] [EN] Hello world
-          [00:00:01.920] [EL] Καλημέρα
-          [00:00:03.110] [EN] this is a test
-          ```
-
-        - **SRT (`--transcribe-dual-format srt`)** — prefixes the cue
-          text with `<LANG>: `. Cue numbers are monotonic across both
-          channels (one shared counter); cue overlap between A and B
-          is intentional and tolerated by mainstream players (mpv,
-          VLC).
-
-          ```
-          1
-          00:00:01,230 --> 00:00:02,110
-          EN: Hello world
-
-          2
-          00:00:01,920 --> 00:00:03,420
-          EL: Καλημέρα
-          ```
-
-        - **VTT (`--transcribe-dual-format vtt`)** — wraps each cue
-          text in a WebVTT voice tag `<v EN>...</v>` /
-          `<v EL>...</v>`.
-
-          ```
-          WEBVTT
-
-          00:00:01.230 --> 00:00:02.110
-          <v EN>Hello world</v>
-
-          00:00:01.920 --> 00:00:03.420
-          <v EL>Καλημέρα</v>
-          ```
-
-        #### apple-cloud caveat reuse
-
-        > **Channel B hits the cloud.** Dual mode runs Channel B
-        > through `SFSpeechRecognizer` with
-        > `requiresOnDeviceRecognition = false`; the captured audio is
-        > sent to **Apple's Speech Recognition servers**. Every
-        > `apple-cloud` caveat documented for single-mode
-        > `--transcribe apple-cloud` applies to Channel B identically:
-        >
-        > - **Quota.** Apple enforces a device-wide quota of
-        >   approximately 1,000 requests per hour and roughly 60
-        >   seconds of audio per request; `macrec` rotates the
-        >   underlying recognition task every 55 seconds to stay
-        >   inside that limit.
-        > - **Latency.** Channel B latency depends on Apple's cloud
-        >   round-trip; Channel A (on-device) is always lower-latency.
-        >   Per-channel latency is exposed via the dual metrics
-        >   surface (`DualChannelMetrics`; v1 surfaces in macrec-ui
-        >   only).
-        > - **Privacy.** The exact `appleCloudBodyText` disclosure
-        >   shown by macrec-ui's privacy sheet covers Channel B
-        >   verbatim (FR-8 / DT-11). The fact that the SAME audio
-        >   also reaches an on-device provider (Channel A) does not
-        >   change Channel B's privacy posture and does not require
-        >   new disclosure.
-        >
-        > See "Privacy warning" above for the full disclosure body.
-        > Channel A (on-device) requires the **Speech Recognition**
-        > TCC grant — same prompt as single-mode `--transcribe apple`
-        > — but performs no network IO.
-
-        #### Recording-integrity isolation invariant
-
-        Per design §DT-4 (channel isolation, FR-4), a runtime failure
-        in either channel is surfaced as a non-fatal
-        `TranscriptionEvent.dualChannelError(channel:detail:)` on the
-        merged event stream. The sibling channel keeps streaming and
-        the on-disk recording is **never** affected. Cancelling or
-        stopping one channel does not cascade.
 
         ## Building from source
 

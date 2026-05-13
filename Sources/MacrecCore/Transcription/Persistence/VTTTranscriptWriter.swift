@@ -18,7 +18,6 @@
 //     line + the body line + a blank line terminator.
 
 import Foundation
-import Logging
 
 /// WebVTT-format sidecar writer.
 public final class VTTTranscriptWriter: TranscriptFormatWriter {
@@ -28,28 +27,11 @@ public final class VTTTranscriptWriter: TranscriptFormatWriter {
     private var index: [UUID: Range<UInt64>] = [:]
     private let sessionStart: Date
     private var headerWritten = false
-    private let mode: LiveTranscriptionMode
-    private let logger = Logger(label: "macrec.transcription.sidecar.vtt")
 
-    /// - Parameters:
-    ///   - url: destination sidecar file
-    ///   - sessionStart: time origin for cue timestamps
-    ///   - mode: persistence mode. `.single` (default) preserves the
-    ///     pre-plan-010 cue layout exactly. `.dual` wraps the cue body
-    ///     in WebVTT voice tags `<v EN>...</v>` / `<v EL>...</v>` (per
-    ///     design §DT-7 / DT-ADR-10) and OMITS the `source[lang]:`
-    ///     prefix.
-    ///
-    ///     Dual-mode cues are NOT re-sorted by start time — they are
-    ///     written in arrival order (first-finalised-first-written).
-    ///     Cues from the two channels can therefore overlap, which is
-    ///     intentional and tolerated by mainstream players.
     public init(url: URL,
-                sessionStart: Date = Date(),
-                mode: LiveTranscriptionMode = .single) throws {
+                sessionStart: Date = Date()) throws {
         self.url = url
         self.sessionStart = sessionStart
-        self.mode = mode
         FileManager.default.createFile(atPath: url.path, contents: nil)
         self.handle = try FileHandle(forUpdating: url)
         try handle.seekToEnd()
@@ -131,62 +113,22 @@ public final class VTTTranscriptWriter: TranscriptFormatWriter {
     /// batch pipeline) no prefix is emitted — preserving the
     /// pre-Phase-F WebVTT layout.
     ///
-    /// Plan-010 Lane L-6 — dual mode wraps the cue body in WebVTT voice
-    /// tags `<v EN>...</v>` / `<v EL>...</v>` (per design §DT-7 /
-    /// DT-ADR-10):
-    ///
-    ///     00:00:01.230 --> 00:00:02.110
-    ///     <v EN>Hello world</v>
-    ///
-    ///     00:00:01.920 --> 00:00:03.420
-    ///     <v EL>Καλημέρα</v>
-    ///
-    /// Single-mode rendering is byte-equivalent to the pre-plan-010
-    /// output (NFR-1 / AC-1). When `mode == .dual` but the segment's
-    /// model isn't `"apple"` / `"apple-cloud"`, a warning is logged and
-    /// the cue body is emitted without the voice tag.
-    ///
     /// Plan-012 Phase A7 — when the segment carries a non-nil
     /// `speaker` (Soniox diarization is on), the cue text is wrapped
     /// in WebVTT voice tags `<v S<N>>...</v>` (label resolved via
     /// `SpeakerSidecarLabel.label(for:)`). When `speaker` is `nil`
     /// every legacy code path is taken textually unchanged so pre-A7
-    /// VTT fixtures stay byte-equivalent (DT-INV).
+    /// VTT fixtures stay byte-equivalent.
     private func render(_ segment: TranscriptSegment) -> String {
         let start = segment.timestamp.timeIntervalSince(sessionStart)
         let end = segment.lastUpdated.timeIntervalSince(sessionStart)
         let speakerLabel = SpeakerSidecarLabel.label(for: segment.speaker)
+        let langTag = segment.language.map { " [\(Self.shortTag($0))]" } ?? ""
         let body: String
-        switch mode {
-        case .single:
-            let langTag = segment.language.map { " [\(Self.shortTag($0))]" } ?? ""
-            if let speakerLabel {
-                body = "\(segment.source.rawValue)\(langTag): <v \(speakerLabel)>\(segment.text)</v>"
-            } else {
-                body = "\(segment.source.rawValue)\(langTag): \(segment.text)"
-            }
-        case .dual:
-            if let tag = DualSidecarLabel.channelTag(forModel: segment.model) {
-                let label = DualSidecarLabel.channelLabel(for: tag)
-                if let speakerLabel {
-                    body = "<v \(label)><v \(speakerLabel)>\(segment.text)</v></v>"
-                } else {
-                    body = "<v \(label)>\(segment.text)</v>"
-                }
-            } else {
-                logger.warning(
-                    """
-                    VTT sidecar in dual mode received segment with \
-                    unknown model=\(segment.model ?? "nil"); emitting \
-                    cue without voice tag. id=\(segment.id.uuidString)
-                    """
-                )
-                if let speakerLabel {
-                    body = "<v \(speakerLabel)>\(segment.text)</v>"
-                } else {
-                    body = segment.text
-                }
-            }
+        if let speakerLabel {
+            body = "\(segment.source.rawValue)\(langTag): <v \(speakerLabel)>\(segment.text)</v>"
+        } else {
+            body = "\(segment.source.rawValue)\(langTag): \(segment.text)"
         }
         return "\(Self.vttTime(start)) --> \(Self.vttTime(end))\n\(body)\n\n"
     }

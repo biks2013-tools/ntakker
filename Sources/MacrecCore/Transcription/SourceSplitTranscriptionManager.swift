@@ -7,8 +7,9 @@
 //
 // Why composition (not modify TranscriptionManager): keeps the
 // existing single-source code path byte-equivalent for non-`both`
-// modes and makes dual-source strictly additive. Each inner manager
-// owns its own provider instance, sidecar writer, and metrics struct.
+// modes and makes parallel-source strictly additive. Each inner
+// manager owns its own provider instance, sidecar writer, and
+// metrics struct.
 //
 // Phase C1 (this file's first cut):
 //   * Routes `ingest(_:from:)` / `ingestFrame(_:from:)` by SourceTag
@@ -143,18 +144,14 @@ private actor SourceSplitMergeFinishCounter {
 /// the manager comes into existence). Unit-testable in isolation.
 public enum TranscriptionDispatcherKind: Equatable, Sendable {
     case none           // transcription disabled (provider id is none/noop/empty)
-    case single         // single-mode TranscriptionManager (existing path)
-    case dual           // dual-mode DualTranscriptionManager
-    case sourceSplit    // single-mode + source==.both → SourceSplitTranscriptionManager
+    case single         // TranscriptionManager (legacy path)
+    case sourceSplit    // single-source TranscriptionManager + source==.both → SourceSplitTranscriptionManager
 }
 
 public enum TranscriptionDispatcherSelector {
     /// Decide which dispatcher kind matches a given RecordingOptions.
     /// Pure function — no side effects, no I/O.
     public static func chooseKind(for opts: RecordingOptions) -> TranscriptionDispatcherKind {
-        if opts.dualTranscription != nil {
-            return .dual
-        }
         let providerId = (opts.transcriptionProviderId ?? "").lowercased()
         if providerId.isEmpty || providerId == "none" || providerId == "noop" {
             return .none

@@ -1,10 +1,10 @@
 // macrec-ui/Views/MicEchoCancellationToggle.swift — plan-013 §4.4
 //
 // SwiftUI Toggle bound to the `com.macrec.ui.micAEC` AppStorage key.
-// Default: `true` (AEC on). Off captures the raw mic via the legacy
-// `AVMicrophoneSource`; on routes through `VPMicrophoneSource`
-// (`AVAudioEngine` + voice-processing AEC) so Apple's echo-cancellation
-// subtracts system-output bleed from the mic signal.
+// Default: `false` (AEC off). Off captures the raw mic via
+// `AVMicrophoneSource`; on routes the captured mic buffers through
+// `SoftwareAECProcessor`, which uses captured system audio as the
+// adaptive-filter reference.
 //
 // Locked while a recording is in flight — the source is wired in
 // `RecordingSession.run()` from the immutable `RecordingOptions`

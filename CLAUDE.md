@@ -55,6 +55,27 @@
 
 - Every time you are asked to solve an issue, you must resolve it AND thoroughly document both the issue and the solution.
 
+<dependency-vetting>
+- Before adding ANY new runtime dependency to a project (`package.json`, `pyproject.toml`, `go.mod`, etc.), you MUST verify the version you are about to pin is free of known security advisories. Apply this rule especially to:
+  - **Browser/embedded-engine packages:** `electron`, `puppeteer`, `playwright`, `chromium`, `webview2` — they ship with full browser engines and accumulate CVEs fast.
+  - **Test/build toolchains:** `vitest`, `vite`, `esbuild`, `webpack`, `rollup`, `parcel` — frequent dev-server-RCE advisories with transitive impact.
+  - **Network/proxy libraries:** `node-http-proxy`, `http-proxy-3`, `proxy-chain`, `axios`, `node-fetch`, `request`, `got`, `undici`.
+  - **Cryptography / auth libraries:** `jsonwebtoken`, `jose`, `bcrypt`, `node-forge`, `crypto-js`.
+
+- Vetting procedure (run BEFORE writing the dependency into the manifest):
+  1. Identify the latest stable major version available on the registry (e.g. `npm view <pkg> versions --json | tail -10` or `pnpm info <pkg> versions --json`).
+  2. Check the package's security advisory page (GitHub Advisory Database, npmjs.com vulnerability tab, or `npm audit --package <pkg>@<version> --json`) for the candidate version.
+  3. If the candidate version has unfixed advisories at HIGH severity or above, bump to the next non-vulnerable major (or, if no such version exists, surface the trade-off to the user via AskUserQuestion before proceeding).
+  4. Pin to a caret range against the verified clean version (e.g. `"electron": "^39.8.5"`, not `"electron": "^38"`).
+  5. Record the vetted-on date in a one-line comment in `Issues - Pending Items.md` under a "Dependency vetting log" section so future audits can date the decision.
+
+- For ESPECIALLY fast-moving packages (`electron`, `vite`, `vitest`, `esbuild`), ALWAYS pull the latest stable major even when a reference implementation uses an older one. The reference's version is informational, not authoritative — verify it is still on a supported branch before adopting it verbatim.
+
+- After installing, ALWAYS run the project's audit command (`pnpm audit`, `npm audit`, `pip-audit`, `cargo audit`, `go list -m -u -json all | nancy sleuth`, etc.) and confirm the advisory count is zero before marking the scaffolding step complete. Treat any HIGH-or-above advisory as a blocker; surface it before continuing.
+
+- When a transitive dependency carries an advisory that the direct dependency has not yet fixed (e.g. `vitest@1` pulling `vite@5` with a CVE), use the package manager's override mechanism (`pnpm.overrides`, `npm overrides`, `yarn resolutions`, `cargo [patch]`) to force the fixed transitive version, AND document the override in `Issues - Pending Items.md` with its expiry condition (i.e. "remove this override once direct-dep X reaches version Y").
+</dependency-vetting>
+
 </structure-and-conventions>
 
 ## Project Memory / Approved Exceptions
@@ -89,7 +110,7 @@ This section records explicit, user-approved exceptions to the Structure & Conve
 
 ### macrec
 
-macOS dual-source audio recorder: captures system audio (via `ScreenCaptureKit`) and the microphone (via `AVFoundation`) simultaneously and writes to `m4a` / `wav` / `caf` in `mixed`, `split`, or `stereo-split` layouts. Supports foreground execution (Ctrl-C to stop) or detached background execution paired with a `stop` subcommand. Foreground recordings can optionally stream the captured audio to a real-time speech-to-text provider (Apple, Apple Cloud, Gemini, Soniox, Azure, Azure Realtime, ElevenLabs, WhisperKit, **Parakeet** — multilingual on-device via FluidAudio, plan-012) via `--transcribe`, producing a JSONL / TXT / SRT / VTT transcript sidecar alongside the audio file. Plan-010 adds dual-mode transcription (`--transcribe dual`) — Apple on-device Channel A + Apple Cloud Channel B run concurrently against identical audio, writing one merged channel-tagged sidecar. Plan-012 (2026-05-02 / 2026-05-03) adds three independent enhancements: a Parakeet TDT V3 multilingual on-device provider (`parakeet`); default-on Soniox speaker diarization with `[S1]` / `[S2]` labels in every sidecar (overridable via `MACREC_SONIOX_DIARIZE`); and true `--transcribe-source both` source-split (two parallel transcription drivers, two sidecars `*.system.transcript.<ext>` + `*.microphone.transcript.<ext>`, two-lane live UI). Plan-013 (2026-05-09, revised same day after the Apple voice-processing approach proved incompatible with `SCStream`) adds **microphone acoustic echo cancellation** via a custom software NLMS adaptive filter (`SoftwareAECProcessor`) wired between the existing capture sources and the aligner: it takes the captured system-audio buffers as the reference signal and subtracts the estimated speaker-to-mic echo from the raw mic before it reaches the encoder, preserving the mic's native frequency response (no AGC, no NS, no band narrowing). Plan-014 (2026-05-09, same day) ships the v5 stability rewrite — PTS-aligned reference windowing, reference-activity gating, double-talk detection, 50 ms windowed divergence reset, soft-knee output limiter — and **flips the AEC default to off (opt-in)**. Turn AEC on per session via `--mic-aec on` (CLI), `MACREC_MIC_AEC=on` (env), or the popover toggle. See [docs/design/plan-012-stt-enhancements.md](docs/design/plan-012-stt-enhancements.md) for the STT task list, [docs/design/plan-013-microphone-aec.md](docs/design/plan-013-microphone-aec.md) for the original AEC plan (including §0 on the failed first attempt and §11 on the v3/v4 divergence defect), [docs/design/plan-014-aec-stability.md](docs/design/plan-014-aec-stability.md) for the v5 stability rewrite + opt-in default, and [docs/design/refined-request-stt-enhancements.md](docs/design/refined-request-stt-enhancements.md) for the STT spec.
+macOS dual-source audio recorder: captures system audio (via `ScreenCaptureKit`) and the microphone (via `AVFoundation`) simultaneously and writes to `m4a` / `wav` / `caf` in `mixed`, `split`, or `stereo-split` layouts. Supports foreground execution (Ctrl-C to stop) or detached background execution paired with a `stop` subcommand. Foreground recordings can optionally stream the captured audio to a real-time speech-to-text provider (Apple, Apple Cloud, Gemini, Soniox, Azure, Azure Realtime, ElevenLabs, WhisperKit, **Parakeet** — multilingual on-device via FluidAudio, plan-012) via `--transcribe`, producing a JSONL / TXT / SRT / VTT transcript sidecar alongside the audio file. Plan-012 (2026-05-02 / 2026-05-03) adds three independent enhancements: a Parakeet TDT V3 multilingual on-device provider (`parakeet`); default-on Soniox speaker diarization with `[S1]` / `[S2]` labels in every sidecar (overridable via `MACREC_SONIOX_DIARIZE`); and true `--transcribe-source both` source-split (two parallel transcription drivers, two sidecars `*.system.transcript.<ext>` + `*.microphone.transcript.<ext>`, two-lane live UI). Plan-013 (2026-05-09, revised same day after the Apple voice-processing approach proved incompatible with `SCStream`) adds **microphone acoustic echo cancellation** via a custom software NLMS adaptive filter (`SoftwareAECProcessor`) wired between the existing capture sources and the aligner: it takes the captured system-audio buffers as the reference signal and subtracts the estimated speaker-to-mic echo from the raw mic before it reaches the encoder, preserving the mic's native frequency response (no AGC, no NS, no band narrowing). Plan-014 (2026-05-09, same day) ships the v5 stability rewrite — PTS-aligned reference windowing, reference-activity gating, double-talk detection, 50 ms windowed divergence reset, soft-knee output limiter — and **flips the AEC default to off (opt-in)**. Turn AEC on per session via `--mic-aec on` (CLI), `MACREC_MIC_AEC=on` (env), or the popover toggle. See [docs/design/plan-012-stt-enhancements.md](docs/design/plan-012-stt-enhancements.md) for the STT task list, [docs/design/plan-013-microphone-aec.md](docs/design/plan-013-microphone-aec.md) for the original AEC plan (including §0 on the failed first attempt and §11 on the v3/v4 divergence defect), [docs/design/plan-014-aec-stability.md](docs/design/plan-014-aec-stability.md) for the v5 stability rewrite + opt-in default, and [docs/design/refined-request-stt-enhancements.md](docs/design/refined-request-stt-enhancements.md) for the STT spec.
 
 Documentation: [docs/tools/macrec.md](docs/tools/macrec.md)
 
@@ -123,12 +144,12 @@ macrec --help
 
 Notes:
 
-- TCC: the CLI inherits Microphone + Screen Recording grants attached to the parent terminal binary (Terminal.app, iTerm, etc.). On first run macOS will pop the two prompts; click Allow. Apple Cloud Speech Recognition (`--transcribe apple-cloud` / `dual`) does **not** work from the raw CLI — it only works from the bundled `macrec-ui.app` (see the `macrec-ui` section below).
+- TCC: the CLI inherits Microphone + Screen Recording grants attached to the parent terminal binary (Terminal.app, iTerm, etc.). On first run macOS will pop the two prompts; click Allow. Apple Cloud Speech Recognition (`--transcribe apple-cloud`) does **not** work from the raw CLI — it only works from the bundled `macrec-ui.app` (see the `macrec-ui` section below).
 - Provider API keys (Gemini, Soniox, Azure, ElevenLabs) are read from environment variables, then `~/.tool-agents/macrec/.env`, then the local `.env`, then CLI flags. See `docs/tools/macrec.md` for the full resolution chain.
 
 ### macrec-ui
 
-macOS menu-bar status item app for the `macrec` audio recorder. Provides a popover toolbar to start, pause, resume, stop, and split recordings, with elapsed-time, format/layout/folder/mic selectors, permission status, and per-source level meters; drives `MacrecCore` in-process and ships under a separate bundle id (`com.local.macrec-ui`) so its TCC grants are independent of the CLI's. The popover also exposes opt-in live transcription (None / Gemini Live picker, source picker, sidecar-format picker, inline live-transcript panel, one-time privacy-disclosure dialog, and per-recording cost / latency display) plus a Single/Dual mode switch (plan-010) that surfaces a per-channel locale / format / metrics panel and a stacked dual-lane live-transcript display when Dual is active. Plan-013 (2026-05-09) adds a "Mic echo cancellation" toggle in the General section — when on, a custom software NLMS adaptive filter (`SoftwareAECProcessor`) subtracts estimated speaker-to-mic acoustic bleed from the raw mic signal using the captured system audio as reference; native mic frequency response is preserved. Plan-014 (2026-05-09) ships the v5 stability rewrite (PTS-aligned reference, ref-activity gate, double-talk detector, divergence reset, soft-knee limiter) and **flips the toggle's default to off** — AEC is now opt-in.
+macOS menu-bar status item app for the `macrec` audio recorder. Provides a popover toolbar to start, pause, resume, stop, and split recordings, with elapsed-time, format/layout/folder/mic selectors, permission status, and per-source level meters; drives `MacrecCore` in-process and ships under a separate bundle id (`com.local.macrec-ui`) so its TCC grants are independent of the CLI's. The popover also exposes opt-in live transcription (provider picker, source picker, sidecar-format picker, inline live-transcript panel, one-time privacy-disclosure dialog, and per-recording cost / latency display). Plan-013 (2026-05-09) adds a "Mic echo cancellation" toggle in the General section — when on, a custom software NLMS adaptive filter (`SoftwareAECProcessor`) subtracts estimated speaker-to-mic acoustic bleed from the raw mic signal using the captured system audio as reference; native mic frequency response is preserved. Plan-014 (2026-05-09) ships the v5 stability rewrite (PTS-aligned reference, ref-activity gate, double-talk detector, divergence reset, soft-knee limiter) and **flips the toggle's default to off** — AEC is now opt-in.
 
 Documentation: [docs/tools/macrec-ui.md](docs/tools/macrec-ui.md)
 
@@ -183,27 +204,9 @@ Notes:
 - The bundle id (`com.local.macrec-ui`) is identical between `dist/…` and `/Applications/…`, so existing Microphone, Screen Recording, and Speech Recognition TCC grants carry over — no need to re-approve permissions after deploying.
 - After upgrading the bundle in `/Applications`, relaunch the menu-bar icon (quit via the popover's Quit action, then `open` again). macOS does not auto-restart it.
 
-### dual-transcript-merger
-
-TypeScript CLI that merges dual-channel JSONL sidecar transcripts produced by `macrec --transcribe dual` (Channel A = Apple on-device, Channel B = Apple Cloud) into a single chronologically-ordered file. Interleaves both channels by timestamp and applies a configurable cross-language hallucination filter (`conservative` / `aggressive` / `off`), outputting either metadata-preserving JSONL or human-readable TXT.
-
-Documentation: [docs/tools/dual-transcript-merger.md](docs/tools/dual-transcript-merger.md)
-
-#### Install as a direct command
-
-```sh
-cd tools/dual-transcript-merger
-npm install               # also runs the `prepare` script: tsc + chmod +x dist/cli.js
-npm link                  # installs `dual-transcript-merger` on PATH globally
-
-dual-transcript-merger /path/to/sidecar.jsonl --filter aggressive --format txt
-```
-
-`npm link` creates a symlink in your global `bin` directory (e.g. `/opt/homebrew/bin/dual-transcript-merger` on Apple Silicon Homebrew, `~/.npm-global/bin/...` for user-scoped npm setups). The `prepare` + `postbuild` scripts in `package.json` keep the binary executable across rebuilds — you don't need to `chmod +x` manually after `npm run build`. To uninstall, run `npm unlink -g dual-transcript-merger` from anywhere.
-
 ### convo-coach
 
-TypeScript CLI that reads a `macrec` transcript sidecar (single-channel or dual-channel JSONL) and streams live conversational coaching advice from a configurable LLM provider to stdout, simultaneously writing every response to a dated `.advice-*.md` sidecar file next to the source transcript. Supports all eight standard providers (OpenAI, Anthropic, Google Gemini, Azure OpenAI, Azure AI Inference, Ollama, LiteLLM, MLX-LM) via the Vercel AI SDK, with conversation-window slicing (`--last`, `--since`), stdin streaming mode, and auto-detect of the most-recent recording. Defaults to `azure-openai` when `--provider` / `COACH_PROVIDER` are unset (per Project Memory Exception 003).
+TypeScript CLI that reads a `macrec` transcript sidecar (JSONL) and streams live conversational coaching advice from a configurable LLM provider to stdout, simultaneously writing every response to a dated `.advice-*.md` sidecar file next to the source transcript. Supports all eight standard providers (OpenAI, Anthropic, Google Gemini, Azure OpenAI, Azure AI Inference, Ollama, LiteLLM, MLX-LM) via the Vercel AI SDK, with conversation-window slicing (`--last`, `--since`), stdin streaming mode, and auto-detect of the most-recent recording. Defaults to `azure-openai` when `--provider` / `COACH_PROVIDER` are unset (per Project Memory Exception 003).
 
 Documentation: [docs/tools/convo-coach.md](docs/tools/convo-coach.md)
 

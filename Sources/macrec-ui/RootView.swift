@@ -65,28 +65,6 @@ struct RootView: View {
     /// Whether the privacy sheet is currently presented.
     @State private var showPrivacySheet: Bool = false
 
-    /// Plan-010 Lane L-12 (Phase J / §DT-11): the live-transcription
-    /// mode raw value, mirrored from the same `@AppStorage` slot driven
-    /// by `TranscriptionModeSwitch` (L-7). Read here so the Start-tap
-    /// guard below can branch on Single vs Dual without going through
-    /// `RecordingController.transcriptionMode` (which is itself a
-    /// mirror of this same key, but observing AppStorage directly keeps
-    /// the gate reactive without a `Notification` round-trip).
-    @AppStorage(RecordingController.transcriptionModeStorageKey)
-    private var transcriptionModeRaw: String = LiveTranscriptionMode.single.rawValue
-
-    /// Plan-010 Lane L-12: which provider id the dual-mode disclosure
-    /// guard intercepted at Start-tap. `nil` when no dual-mode guard is
-    /// active. When non-nil, the privacy sheet's `selectedProvider`
-    /// renders this id (always `"apple-cloud"` in v1, since Channel B is
-    /// the only cloud channel in dual mode and on-device Channel A
-    /// (`apple`) needs no disclosure). Drives the `onAcknowledge` /
-    /// `onCancel` branches in the `.sheet` block so dual-mode acceptance
-    /// persists under the correct per-provider key and dual-mode cancel
-    /// does NOT mutate `transcribeProviderRaw` (which is a single-mode
-    /// concern).
-    @State private var dualModeDisclosureProvider: String? = nil
-
     /// Whether the Live Transcription section body is expanded.
     /// Re-activated 2026-05-02 — the section header now exposes a
     /// chevron + tap-to-toggle that drives this binding. Default `true`
@@ -137,6 +115,45 @@ struct RootView: View {
     /// UserDefaults key for the persisted popover width. Same exposure
     /// pattern as `popoverHeightKey`.
     static let popoverWidthKey = "com.macrec.ui.popoverWidth"
+
+    /// Reserved space above and below the popover body when fitting it
+    /// to the current screen's `visibleFrame`. The vertical reserve
+    /// covers the popover's callout arrow (~13pt) plus a small gap so
+    /// the resize handle stays hit-testable even with the Dock pinned
+    /// to "always show". The horizontal reserve is a symmetric edge
+    /// margin so the popover does not abut the screen edges.
+    private static let screenVerticalReserve: CGFloat = 40
+    private static let screenHorizontalReserve: CGFloat = 16
+
+    /// Compute the popover height for the current render, clamped
+    /// against `ResizeHandle`'s min/max AND the active screen's
+    /// `visibleFrame.height` minus `screenVerticalReserve`. Falls back
+    /// to the static `ResizeHandle.maxHeight` cap when no screen can
+    /// be resolved (extremely unusual). Pure function — re-evaluated
+    /// on every body render, so a popover re-shown on a smaller
+    /// display picks up the tighter cap automatically.
+    static func fittedHeight(_ requested: Double) -> CGFloat {
+        let screenCap: CGFloat = {
+            guard let screen = NSScreen.main ?? NSScreen.screens.first else {
+                return ResizeHandle.maxHeight
+            }
+            return max(ResizeHandle.minHeight, screen.visibleFrame.height - screenVerticalReserve)
+        }()
+        let staticCap = min(ResizeHandle.maxHeight, screenCap)
+        return min(max(CGFloat(requested), ResizeHandle.minHeight), staticCap)
+    }
+
+    /// Sibling of `fittedHeight(_:)` for the horizontal axis.
+    static func fittedWidth(_ requested: Double) -> CGFloat {
+        let screenCap: CGFloat = {
+            guard let screen = NSScreen.main ?? NSScreen.screens.first else {
+                return ResizeHandle.maxWidth
+            }
+            return max(ResizeHandle.minWidth, screen.visibleFrame.width - screenHorizontalReserve)
+        }()
+        let staticCap = min(ResizeHandle.maxWidth, screenCap)
+        return min(max(CGFloat(requested), ResizeHandle.minWidth), staticCap)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -232,77 +249,6 @@ struct RootView: View {
                         showPrivacySheet = true
                     }
                 }
-                .onChange(of: recordingController?.state) { oldValue, newValue in
-                    // Plan-010 Lane L-12 (Phase J / §DT-11) — Start-tap
-                    // guard for Dual mode. The single-mode privacy
-                    // disclosure trigger above fires on provider-pick
-                    // (`.onChange(of: transcribeProviderRaw)`), but
-                    // dual-mode flips no provider — the user just
-                    // toggles `transcriptionMode = .dual` and clicks
-                    // Start. §DT-11 requires the disclosure to fire on
-                    // Start-tap (NOT on mode toggle alone — the user
-                    // must be allowed to preview the dual panel without
-                    // committing to apple-cloud disclosure).
-                    //
-                    // The actual Start tap lives in
-                    // `ControlBar.startTapped()` (which is L-6
-                    // territory and is intentionally not modified by
-                    // L-12 — `ControlBar` already landed in Wave 4 and
-                    // L-12 must touch a disjoint file set). We
-                    // therefore observe the controller's state
-                    // transition from `.idle / .stopped / .failed`
-                    // (the showsStart-true set per ControlBar:174-181)
-                    // into `.starting` or `.recording`, which uniquely
-                    // signals "Start was just pressed".
-                    //
-                    // When that transition fires AND the active mode is
-                    // `.dual` AND apple-cloud has NOT been acknowledged
-                    // for this user (single OR dual — the per-provider
-                    // key is shared, per DT-ADR-12), we:
-                    //
-                    //   1. Stop the recording immediately via
-                    //      `controller.stop()` so no audio reaches
-                    //      Apple's cloud servers before the user has
-                    //      seen the disclosure.
-                    //   2. Present the existing PrivacyDisclosureSheet
-                    //      with `selectedProvider: "apple-cloud"` —
-                    //      verbatim copy per IP-15 / DT-ADR-12.
-                    //   3. On accept, persist the per-provider key.
-                    //      The user re-clicks Start to begin recording.
-                    //   4. On cancel, no key is persisted and the
-                    //      recording stays stopped.
-                    //
-                    // Channel A (`apple` on-device) does NOT need a
-                    // disclosure (no current single-mode `apple`
-                    // disclosure exists; the on-device path has no
-                    // privacy implications).
-                    guard let oldValue, let newValue else { return }
-                    let wasIdle: Bool = {
-                        switch oldValue {
-                        case .idle, .stopped, .failed: return true
-                        default: return false
-                        }
-                    }()
-                    let isStarting: Bool = {
-                        switch newValue {
-                        case .starting, .recording: return true
-                        default: return false
-                        }
-                    }()
-                    guard wasIdle, isStarting else { return }
-
-                    let mode = LiveTranscriptionMode(rawValue: transcriptionModeRaw) ?? .single
-                    guard mode == .dual else { return }
-
-                    // Channel B is always `apple-cloud` in v1 (DT-ADR-12).
-                    let providerId = "apple-cloud"
-                    if !Self.hasAcknowledged(provider: providerId) {
-                        recordingController?.stop()
-                        dualModeDisclosureProvider = providerId
-                        showPrivacySheet = true
-                    }
-                }
-
                 // -- Live transcript streaming panel --
                 LiveTranscriptPanel()
                     .frame(maxHeight: .infinity)
@@ -336,62 +282,26 @@ struct RootView: View {
             ResizeHandle(width: $popoverWidth, height: $popoverHeight)
         }
         .frame(
-            width:  min(max(popoverWidth,  ResizeHandle.minWidth),  ResizeHandle.maxWidth)
+            width:  Self.fittedWidth(popoverWidth)
         )
         .frame(
-            height: min(max(popoverHeight, ResizeHandle.minHeight), ResizeHandle.maxHeight),
+            height: Self.fittedHeight(popoverHeight),
             alignment: .top
         )
         .sheet(isPresented: $showPrivacySheet) {
-            // Plan-010 Lane L-12 (Phase J / §DT-11): when the dual-mode
-            // Start-tap guard armed `dualModeDisclosureProvider`, the
-            // sheet renders THAT provider's copy (always `apple-cloud`
-            // in v1) and routes accept / cancel through dual-mode
-            // branches that do NOT mutate `transcribeProviderRaw`
-            // (which is a Single-mode picker concern). Otherwise the
-            // sheet renders the existing Single-mode flow verbatim.
-            if let dualProvider = dualModeDisclosureProvider {
-                PrivacyDisclosureSheet(
-                    selectedProvider: dualProvider,
-                    onAcknowledge: {
-                        Self.persistAcknowledgement(for: dualProvider)
-                        // Leave `privacyAcknowledged` (the legacy
-                        // single-bool back-compat slot) untouched —
-                        // the per-provider key is the source of truth
-                        // post-plan-007 and the legacy slot is migrated
-                        // by `PrivacyDisclosureViewModel` only for the
-                        // Gemini flow.
-                        showPrivacySheet = false
-                        dualModeDisclosureProvider = nil
-                        // The recording was stopped by the guard; the
-                        // user must re-click Start to begin recording.
-                    },
-                    onCancel: {
-                        // Do NOT mutate `transcribeProviderRaw` — that
-                        // is a Single-mode concern. Dual mode reverts
-                        // to "no recording" by leaving the controller
-                        // in its post-`.stop()` state. The user can
-                        // toggle back to Single mode or re-open the
-                        // disclosure on the next Start.
-                        showPrivacySheet = false
-                        dualModeDisclosureProvider = nil
-                    }
-                )
-            } else {
-                PrivacyDisclosureSheet(
-                    selectedProvider: Self.normalize(transcribeProviderRaw),
-                    onAcknowledge: {
-                        let provider = Self.normalize(transcribeProviderRaw)
-                        Self.persistAcknowledgement(for: provider)
-                        privacyAcknowledged = true
-                        showPrivacySheet = false
-                    },
-                    onCancel: {
-                        transcribeProviderRaw = "apple"
-                        showPrivacySheet = false
-                    }
-                )
-            }
+            PrivacyDisclosureSheet(
+                selectedProvider: Self.normalize(transcribeProviderRaw),
+                onAcknowledge: {
+                    let provider = Self.normalize(transcribeProviderRaw)
+                    Self.persistAcknowledgement(for: provider)
+                    privacyAcknowledged = true
+                    showPrivacySheet = false
+                },
+                onCancel: {
+                    transcribeProviderRaw = "apple"
+                    showPrivacySheet = false
+                }
+            )
         }
     }
 
