@@ -61,12 +61,14 @@ final class PopoverController {
     /// `nonisolated` so the `@Sendable` closure passed to
     /// `NotificationCenter.addObserver(forName:object:queue:using:)`
     /// can read them without an actor hop.
+    // plan-015 (FR-IRQ-59..61): default width 480, with min/max
+    // 440-760 x 440-820. Kept in sync with `ResizeHandle.{min,max}{Width,Height}`.
     nonisolated static let defaultHeight: CGFloat = 600
-    nonisolated static let minHeight: CGFloat = 360
-    nonisolated static let maxHeight: CGFloat = 1100
-    nonisolated static let defaultWidth: CGFloat = 420
-    nonisolated static let minWidth: CGFloat = 360
-    nonisolated static let maxWidth: CGFloat = 720
+    nonisolated static let minHeight: CGFloat = 440
+    nonisolated static let maxHeight: CGFloat = 820
+    nonisolated static let defaultWidth: CGFloat = 480
+    nonisolated static let minWidth: CGFloat = 440
+    nonisolated static let maxWidth: CGFloat = 760
 
     /// Constructs the popover and wires its `contentViewController` to
     /// an `NSHostingController<AnyView>`. Behavior defaults to

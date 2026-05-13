@@ -1,42 +1,32 @@
 // macrec-ui/RootView.swift — see project-design.md §UR-5 (layout
-// architecture), §UR-4.5..§UR-4.13 (composed view contracts), and
-// plan-008 §E (central composition root).
+// architecture), §UR-4.5..§UR-4.13 (composed view contracts), plan-008
+// §E (central composition root), and **plan-015 Pattern C** (top
+// segmented control + bottom status bar + post-stop Save/New-Session).
 //
 // Top-level SwiftUI body that the `NSPopover` hosts via
-// `NSHostingController<RootView>`. Composition root for the new
-// popover layout: the legacy DisclosureGroup-based form is replaced
-// by an inset-grouped Form (UR-ADR-1) inside a three-band frame:
+// `NSHostingController<RootView>`. Composition root, post-plan-015:
 //
 //   1. Pinned top    — `ErrorBanner` + `PopoverHeader` (filename
-//                      title + metadata strip + optional permissions).
-//   2. Flexible mid  — General + Live Transcription `Form` sections
-//                      (intrinsic height) + `LiveTranscriptPanel`
-//                      (claims residual via `.frame(maxHeight:.infinity)`)
-//                      + transient level-meter / clock when recording.
-//   3. Pinned bottom — `PopoverFooter` (ReadyPill + ControlBar) +
-//                      `SavedToDisclosure` + `ResizeHandle`.
+//                      title + metadata strip + optional permissions)
+//                      + `PopoverModeSwitcher` (Transcription | Asking).
+//   2. Flexible mid  — **mode-dependent body**:
+//                      • Transcription mode: the legacy General +
+//                        Live Transcription `Form` sections (engine &
+//                        language collapsible, default-collapsed per
+//                        FR-IRQ-44a) + `LiveTranscriptPanel` (claims
+//                        residual via `.frame(maxHeight: .infinity)`).
+//                      • Asking mode: `AskingModeView` — Q&A history
+//                        scroll + persistent input row pinned bottom.
+//   3. Pinned bottom — `PopoverStatusBar` (mic + sys bouncing bars,
+//                      state pill, elapsed clock, action area
+//                      Stop/[New Session/Save…] per FR-IRQ-48) +
+//                      `SavedToDisclosure` (when segments exist) +
+//                      `ResizeHandle`.
 //
-// Elasticity invariant (§UR-5): the Form sections carry
-// `.fixedSize(horizontal: false, vertical: true)` so the
-// `LiveTranscriptPanel` is the only sibling claiming
-// `.frame(maxHeight: .infinity)`. The bottom band is therefore always
-// visible while the user resizes the popover via `ResizeHandle`.
-//
-// Unit E preserves every existing `@AppStorage` declaration even when
-// the new layout no longer reads from it (UR-ADR-10):
-//   * `transcriptionExpanded` and `recordingSettingsExpanded` are
-//     re-activated 2026-05-02 to drive the new collapsibility of the
-//     General + Live Transcription sections (chevron + tap-to-toggle).
-//     Default `true` preserves the post-plan-008 default of "both
-//     sections expanded" so an existing user sees no change on upgrade.
-//   * `transcribeProvider` and `privacyAcknowledged` continue to drive
-//     the cloud-provider privacy disclosure flow.
-//
-// Per the design (§15.12 Threading): every view is implicitly
-// `@MainActor` (SwiftUI default on macOS 14+); no explicit annotation
-// is required on the view itself. The environment-supplied
-// `RecordingController` is itself `@MainActor`-isolated so any reads
-// here are safe.
+// The Stop / New Session / Save callbacks are owned here (not by the
+// status bar) so all Pattern-C state machine transitions live in one
+// place — the Save dialog presentation, the New-Session confirmation
+// modal, and the `clearSession()` fade animation.
 
 import AppKit
 import MacrecCore
@@ -49,6 +39,11 @@ import SwiftUI
 struct RootView: View {
     @Environment(\.recordingController) private var recordingController
     @Environment(\.palette) private var palette
+
+    /// In-memory Asking-mode history. UI-local in Phase 1; promoted to
+    /// `MacrecCore.QASessionHistory` in Phase 4 so the floating overlay
+    /// (Phase 5) can share the same source of truth.
+    @StateObject private var askingStore = AskingSessionStore()
 
     /// Persisted provider id (mirrored from `TranscriptionPicker`'s
     /// `@AppStorage` slot) so this view can decide whether to show
@@ -65,73 +60,73 @@ struct RootView: View {
     /// Whether the privacy sheet is currently presented.
     @State private var showPrivacySheet: Bool = false
 
-    /// Whether the Live Transcription section body is expanded.
-    /// Re-activated 2026-05-02 — the section header now exposes a
-    /// chevron + tap-to-toggle that drives this binding. Default `true`
-    /// preserves the post-plan-008 default of "both sections expanded"
-    /// for users upgrading from a build that ignored the slot.
+    /// Whether the Live Transcription ("Engine & Language") section
+    /// body is expanded. plan-015 (FR-IRQ-44a) flips the fresh-launch
+    /// default to **false** so the live transcript pane has the
+    /// maximum vertical real-estate by default in Transcription mode.
     @AppStorage("com.macrec.ui.transcriptionExpanded")
-    private var transcriptionExpanded: Bool = true
+    private var transcriptionExpanded: Bool = false
 
-    /// Whether the General section body is expanded. Same lifecycle
-    /// notes as `transcriptionExpanded` above — re-activated to drive
-    /// the new collapsibility, default `true` to preserve UX.
+    /// Whether the General section body is expanded.
     @AppStorage("com.macrec.ui.recordingSettingsExpanded")
     private var recordingSettingsExpanded: Bool = true
 
-    /// Master enable/disable for live transcription (UR-ADR-7). Mirrored
-    /// here from `ControlBar.swift` (Unit I declared the slot) +
-    /// `LiveTranscriptionSectionHeader.swift` so the section visibility
-    /// can update without an extra Binding round-trip. Default `true`
-    /// preserves existing users' transcription on upgrade.
+    /// Master enable/disable for live transcription (UR-ADR-7).
     @AppStorage("com.macrec.ui.transcriptionEnabled")
     private var transcriptionEnabled: Bool = true
 
-    /// User-chosen popover height (vertical resizable popover). The
-    /// `ResizeHandle` at the bottom of the popover updates this via a
-    /// drag gesture. `PopoverController` observes this same key (via
-    /// `UserDefaults`) and pushes the value onto `NSPopover.contentSize`
-    /// so the AppKit popover frame actually grows/shrinks.
-    /// Default 600 matches the previous `maxHeight` cap so first-run
-    /// users see no change.
+    /// Pattern-C popover mode — Transcription (default) | Asking.
+    /// plan-015 FR-IRQ-43. Backed by the public storage key
+    /// `kPopoverModeStorageKey` declared in `PopoverModeSwitcher.swift`.
+    @AppStorage(kPopoverModeStorageKey)
+    private var popoverModeRaw: String = PopoverMode.transcription.rawValue
+
+    /// User-chosen popover height (vertical resizable popover).
     @AppStorage(RootView.popoverHeightKey)
     private var popoverHeight: Double = 600
 
-    /// UserDefaults key for the persisted popover height. Exposed as a
-    /// public-static constant so `PopoverController` can subscribe to
-    /// the same key without re-deriving the string.
     static let popoverHeightKey = "com.macrec.ui.popoverHeight"
 
-    /// User-chosen popover width (horizontal resizable popover, added
-    /// plan-008-followup-1). The `ResizeHandle` at the bottom of the
-    /// popover applies horizontal drag translation to this binding;
-    /// `PopoverController` observes the key and pushes the new
-    /// `NSPopover.contentSize.width` so the AppKit frame grows/shrinks.
-    /// Default 420 matches `PopoverController.defaultWidth` so first-run
-    /// users see the same width as before this feature landed.
+    /// plan-015 (FR-IRQ-59): default width raised to 480 so the new
+    /// status-bar layout (mic + sys indicators + state pill + clock +
+    /// `[ New Session ][ Save… ]` pair) fits without wrapping on first
+    /// launch. Matches `PopoverController.defaultWidth`.
     @AppStorage(RootView.popoverWidthKey)
-    private var popoverWidth: Double = 420
+    private var popoverWidth: Double = 480
 
-    /// UserDefaults key for the persisted popover width. Same exposure
-    /// pattern as `popoverHeightKey`.
     static let popoverWidthKey = "com.macrec.ui.popoverWidth"
 
-    /// Reserved space above and below the popover body when fitting it
-    /// to the current screen's `visibleFrame`. The vertical reserve
-    /// covers the popover's callout arrow (~13pt) plus a small gap so
-    /// the resize handle stays hit-testable even with the Dock pinned
-    /// to "always show". The horizontal reserve is a symmetric edge
-    /// margin so the popover does not abut the screen edges.
+    /// plan-015 sheet presentation flags.
+    @State private var showSaveDialog: Bool = false
+    @State private var showNewSessionConfirm: Bool = false
+    /// Brief opacity dip applied to the body when `clearSession()`
+    /// fires (FR-IRQ-56 visible-fade signal).
+    @State private var clearingFade: Bool = false
+    /// When true, the next successful Save (Save dialog → confirm)
+    /// chains into `clearSession()` per FR-IRQ-55 "Save and start new".
+    /// Cleared after the cycle completes or the dialog is cancelled.
+    @State private var pendingClearAfterSave: Bool = false
+
+    /// plan-015 Phase 4 (FR-IRQ-18) — Q&A privacy gate state.
+    /// Provider awaiting acknowledgement; non-nil presents the sheet.
+    @State private var askPrivacyProvider: AskProvider?
+    /// Q&A privacy view-model — bridge to `UserDefaults` keyspace.
+    private let askPrivacyVM = AskPrivacyDisclosureViewModel()
+
+    /// plan-015 Phase 2 — transient Save-result banner. Holds either
+    /// the success URL (for the Finder-reveal tap) or a typed error
+    /// message rendered inline in the popover footer.
+    @State private var saveResult: SaveOutcome?
+
+    /// Discriminated result of a Save attempt.
+    fileprivate enum SaveOutcome: Equatable {
+        case success(URL)
+        case failure(String)
+    }
+
     private static let screenVerticalReserve: CGFloat = 40
     private static let screenHorizontalReserve: CGFloat = 16
 
-    /// Compute the popover height for the current render, clamped
-    /// against `ResizeHandle`'s min/max AND the active screen's
-    /// `visibleFrame.height` minus `screenVerticalReserve`. Falls back
-    /// to the static `ResizeHandle.maxHeight` cap when no screen can
-    /// be resolved (extremely unusual). Pure function — re-evaluated
-    /// on every body render, so a popover re-shown on a smaller
-    /// display picks up the tighter cap automatically.
     static func fittedHeight(_ requested: Double) -> CGFloat {
         let screenCap: CGFloat = {
             guard let screen = NSScreen.main ?? NSScreen.screens.first else {
@@ -143,7 +138,6 @@ struct RootView: View {
         return min(max(CGFloat(requested), ResizeHandle.minHeight), staticCap)
     }
 
-    /// Sibling of `fittedHeight(_:)` for the horizontal axis.
     static func fittedWidth(_ requested: Double) -> CGFloat {
         let screenCap: CGFloat = {
             guard let screen = NSScreen.main ?? NSScreen.screens.first else {
@@ -153,6 +147,14 @@ struct RootView: View {
         }()
         let staticCap = min(ResizeHandle.maxWidth, screenCap)
         return min(max(CGFloat(requested), ResizeHandle.minWidth), staticCap)
+    }
+
+    /// Two-way binding into the persisted-mode raw string.
+    private var modeBinding: Binding<PopoverMode> {
+        Binding(
+            get: { PopoverMode(rawValue: popoverModeRaw) ?? .transcription },
+            set: { popoverModeRaw = $0.rawValue }
+        )
     }
 
     var body: some View {
@@ -175,13 +177,6 @@ struct RootView: View {
                     }
                     .buttonStyle(.borderless)
                     .help(String(localized: "Open Settings (⌘,) — manage cloud-provider API keys and tuning"))
-                    // Quit button (added 2026-05-02). Routes through
-                    // `NSApp.terminate(_:)` so AppKit calls
-                    // `applicationShouldTerminate(_:)`, which delegates
-                    // to the existing `QuitFlow` (project-design §15.11)
-                    // and presents the "Stop & Quit?" confirmation alert
-                    // when a recording is in flight. Idle state quits
-                    // immediately.
                     Button {
                         NSApp.terminate(nil)
                     } label: {
@@ -194,82 +189,33 @@ struct RootView: View {
                     .help(String(localized: "Quit macrec-ui (⌘Q) — confirms before stopping an active recording"))
                     .accessibilityLabel(String(localized: "Quit"))
                 }
+
+                // plan-015 Pattern C — top segmented mode switch.
+                PopoverModeSwitcher(selection: modeBinding)
             }
             .padding(.horizontal, 14)
             .padding(.top, 14)
             .padding(.bottom, 6)
 
-            // ============ MIDDLE BAND ============
-            // Two intrinsically-sized `Form` sections + the elastic
-            // transcript panel. The Form's `.fixedSize(...)` modifier
-            // keeps the LiveTranscriptPanel's `.frame(maxHeight:.infinity)`
-            // as the sole claimer of residual vertical space (§UR-5).
-            VStack(alignment: .leading, spacing: 14) {
-                // -- General section --
-                PopoverSection(
-                    title: "General",
-                    isExpanded: $recordingSettingsExpanded
-                ) {
-                    Form {
-                        GeneralSection()
-                    }
-                    .formStyle(.grouped)
-                    .scrollDisabled(true)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .scrollContentBackground(.hidden)
-                }
+            // ============ MIDDLE BAND (mode-dependent body) ============
+            body(for: modeBinding.wrappedValue)
+                .opacity(clearingFade ? 0 : 1)
+                .animation(.easeInOut(duration: 0.18), value: clearingFade)
 
-                // -- Live Transcription section --
-                PopoverSection(
-                    isExpanded: $transcriptionExpanded,
-                    header: {
-                        LiveTranscriptionSectionHeader(
-                            isExpanded: $transcriptionExpanded
-                        )
-                    }
-                ) {
-                    Form {
-                        LiveTranscriptionSection()
-                    }
-                    .formStyle(.grouped)
-                    .scrollDisabled(true)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .scrollContentBackground(.hidden)
-                }
-                .onChange(of: transcribeProviderRaw) { _, newValue in
-                    // Privacy gate (per-provider acknowledgement per
-                    // plan-007 Task 0.3): present the disclosure modal
-                    // when the user flips into a cloud provider that
-                    // has not been acknowledged yet. Apple Speech /
-                    // WhisperKit are on-device and skip the gate.
-                    let normalised = Self.normalize(newValue)
-                    if Self.isCloudProvider(normalised),
-                       !Self.hasAcknowledged(provider: normalised)
-                    {
-                        showPrivacySheet = true
-                    }
-                }
-                // -- Live transcript streaming panel --
-                LiveTranscriptPanel()
-                    .frame(maxHeight: .infinity)
-
-                // -- Transient live-stats: meter + elapsed clock --
-                if showsLiveStats {
-                    VStack(alignment: .leading, spacing: 6) {
-                        LevelMeterView()
-                        ElapsedTimeView()
-                    }
+            // Transient save-result banner (plan-015 Phase 2).
+            if let outcome = saveResult {
+                saveResultBanner(outcome)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
                     .transition(.opacity)
-                }
-
-                // -- Cost / latency footer --
-                TranscriptionMetricsView()
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 6)
 
             // ============ BOTTOM BAND (pinned, never scrolls) ============
-            PopoverFooter()
+            PopoverStatusBar(
+                onStop: { recordingController?.stop() },
+                onNewSession: { showNewSessionConfirm = true },
+                onSave: { showSaveDialog = true }
+            )
 
             if showsSavedDisclosure {
                 Divider()
@@ -282,7 +228,7 @@ struct RootView: View {
             ResizeHandle(width: $popoverWidth, height: $popoverHeight)
         }
         .frame(
-            width:  Self.fittedWidth(popoverWidth)
+            width: Self.fittedWidth(popoverWidth)
         )
         .frame(
             height: Self.fittedHeight(popoverHeight),
@@ -303,24 +249,333 @@ struct RootView: View {
                 }
             )
         }
-    }
-
-    // MARK: - Derived state
-
-    /// Live stats (level meters + elapsed clock) appear while there is
-    /// an active or paused session.
-    private var showsLiveStats: Bool {
-        guard let state = recordingController?.state else { return false }
-        switch state {
-        case .recording, .paused, .pausing, .resuming, .splitting, .stopping:
-            return true
-        default:
-            return false
+        .sheet(isPresented: $showSaveDialog) {
+            SaveSessionDialog(
+                defaultFolderName: defaultSessionFolderName(),
+                audioFilename: defaultAudioFilename(),
+                onConfirm: { folderName in
+                    showSaveDialog = false
+                    performSessionSave(folderName: folderName)
+                    if pendingClearAfterSave {
+                        pendingClearAfterSave = false
+                        clearSession()
+                    }
+                },
+                onCancel: {
+                    showSaveDialog = false
+                    // Cancelling the Save dialog after a "Save and
+                    // start new" choice MUST abort the chained restart
+                    // — the user is signalling "actually, keep this
+                    // session". Drop the pending flag silently.
+                    pendingClearAfterSave = false
+                }
+            )
+        }
+        .sheet(isPresented: $showNewSessionConfirm) {
+            NewSessionConfirmModal(
+                onSaveAndStart: {
+                    showNewSessionConfirm = false
+                    pendingClearAfterSave = true
+                    showSaveDialog = true
+                },
+                onDiscardAndStart: {
+                    showNewSessionConfirm = false
+                    clearSession()
+                },
+                onCancel: { showNewSessionConfirm = false }
+            )
+        }
+        .sheet(item: $askPrivacyProvider) { provider in
+            AskPrivacyDisclosureSheet(
+                provider: provider,
+                onAcknowledge: {
+                    askPrivacyVM.acknowledge(provider)
+                    askPrivacyProvider = nil
+                    // The child holds the draft (it returned early in
+                    // `submitDraft`). The user re-taps Send / presses
+                    // Return to fire the submit now that the gate is
+                    // closed — kept manual to avoid surprise submits.
+                },
+                onCancel: {
+                    askPrivacyProvider = nil
+                }
+            )
+        }
+        // FR-IRQ-14 / FR-IRQ-15 — Q&A sidecar write on session stop.
+        // Fired whenever the controller observes the `.stopped`
+        // transition; the writer no-ops when there are no entries so
+        // it's safe to run on every stop.
+        .onChange(of: recordingController?.state) { _, newState in
+            guard case .stopped = newState else { return }
+            persistQASidecarIfNeeded()
         }
     }
 
+    // MARK: - Q&A sidecar
+
+    /// FR-IRQ-14 / FR-IRQ-15. Writes `<basename>.questions.jsonl`
+    /// alongside the most-recent completed audio segment. No-ops when
+    /// the user never asked anything. Persistence failures are logged
+    /// but never propagate — the recording-integrity invariant is the
+    /// priority.
+    private func persistQASidecarIfNeeded() {
+        let snapshot = askingStore.snapshotForSidecar()
+        guard !snapshot.isEmpty else { return }
+        guard let audioURL = recordingController?.completedSegments.last
+                ?? recordingController?.options?.output
+        else { return }
+
+        // recording-start wall-clock — use `askedAt - elapsed` for the
+        // FIRST question to derive an anchor, fall back to the entry's
+        // own `askedAt` when nothing better is available.
+        let entries: [QASidecarEntry] = snapshot.map { e in
+            QASidecarEntry(
+                recordingMs: Int(e.recordingTimestampSeconds * 1000),
+                wallClock: e.askedAt,
+                question: e.question,
+                answer: e.answer,
+                model: e.model ?? "(unresolved)",
+                provider: e.provider?.rawValue ?? "(unresolved)",
+                windowStart: e.windowStart,
+                windowEnd: e.windowEnd
+            )
+        }
+
+        if let err = QASessionSidecar.write(audioURL: audioURL, entries: entries) {
+            // Surface as a recoverable, non-fatal error — does NOT walk
+            // the session back into `.failed`.
+            print("QA sidecar write failed: \(err.localizedDescription)")
+        }
+    }
+
+    // MARK: - Session save (plan-015 Phase 2)
+
+    /// Bundle the session (audio + transcript.md + qa.md + sidecars)
+    /// into `~/Recordings/<folderName>/` and surface the result as a
+    /// transient banner. Reveals the new folder in Finder on success.
+    private func performSessionSave(folderName: String) {
+        let segments     = recordingController?.transcriptSegments ?? []
+        let qaSnapshot   = askingStore.snapshotForSidecar()
+        let audioSources = recordingController?.completedSegments ?? []
+        do {
+            let result = try SessionExporter.write(
+                folderName: folderName,
+                transcript: segments,
+                qaHistory: qaSnapshot,
+                audioSources: audioSources
+            )
+            saveResult = .success(result.folder)
+            // Reveal in Finder so the user sees the bundle.
+            NSWorkspace.shared.activateFileViewerSelecting([result.folder])
+            scheduleSaveBannerClear()
+        } catch let error as SessionExporter.ExportError {
+            saveResult = .failure(error.errorDescription ?? String(describing: error))
+            scheduleSaveBannerClear()
+        } catch {
+            saveResult = .failure(error.localizedDescription)
+            scheduleSaveBannerClear()
+        }
+    }
+
+    @ViewBuilder
+    private func saveResultBanner(_ outcome: SaveOutcome) -> some View {
+        switch outcome {
+        case .success(let folder):
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Text(String(localized: "Saved to \(folder.lastPathComponent)"))
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(palette.label)
+                Spacer()
+                Button(action: { NSWorkspace.shared.activateFileViewerSelecting([folder]) }) {
+                    Text(String(localized: "Reveal in Finder"))
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(.borderless)
+                Button(action: { saveResult = nil }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(palette.tertiary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.green.opacity(0.10))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color.green.opacity(0.35), lineWidth: 0.5)
+            )
+        case .failure(let message):
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                Text(message)
+                    .font(.system(size: 12))
+                    .foregroundStyle(palette.label)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button(action: { saveResult = nil }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(palette.tertiary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.red.opacity(0.10))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color.red.opacity(0.35), lineWidth: 0.5)
+            )
+        }
+    }
+
+    private func scheduleSaveBannerClear() {
+        let captured = saveResult
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+            if saveResult == captured { saveResult = nil }
+        }
+    }
+
+    // MARK: - Mode-dependent body
+
+    @ViewBuilder
+    private func body(for mode: PopoverMode) -> some View {
+        switch mode {
+        case .transcription:
+            transcriptionBody
+        case .asking:
+            AskingModeView(
+                store: askingStore,
+                requestPrivacyAck: { provider in
+                    // FR-IRQ-18: gate the submit on a one-time per-provider
+                    // acknowledgement. Return `true` to tell the child the
+                    // parent will present the sheet (child holds the draft).
+                    guard provider.isCloud else { return false }
+                    if askPrivacyVM.hasAcknowledged(provider) { return false }
+                    askPrivacyProvider = provider
+                    return true
+                }
+            )
+                .padding(.horizontal, 4)
+                .padding(.vertical, 6)
+        }
+    }
+
+    private var transcriptionBody: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            // -- General section --
+            PopoverSection(
+                title: "General",
+                isExpanded: $recordingSettingsExpanded
+            ) {
+                Form {
+                    GeneralSection()
+                }
+                .formStyle(.grouped)
+                .scrollDisabled(true)
+                .fixedSize(horizontal: false, vertical: true)
+                .scrollContentBackground(.hidden)
+            }
+
+            // -- Live Transcription section (collapsed by default,
+            //     plan-015 FR-IRQ-44a) --
+            PopoverSection(
+                isExpanded: $transcriptionExpanded,
+                header: {
+                    LiveTranscriptionSectionHeader(
+                        isExpanded: $transcriptionExpanded
+                    )
+                }
+            ) {
+                Form {
+                    LiveTranscriptionSection()
+                }
+                .formStyle(.grouped)
+                .scrollDisabled(true)
+                .fixedSize(horizontal: false, vertical: true)
+                .scrollContentBackground(.hidden)
+            }
+            .onChange(of: transcribeProviderRaw) { _, newValue in
+                let normalised = Self.normalize(newValue)
+                if Self.isCloudProvider(normalised),
+                   !Self.hasAcknowledged(provider: normalised)
+                {
+                    showPrivacySheet = true
+                }
+            }
+
+            // -- Live transcript streaming panel --
+            LiveTranscriptPanel()
+                .frame(maxHeight: .infinity)
+
+            // -- Cost / latency footer --
+            TranscriptionMetricsView()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+    }
+
+    // MARK: - clearSession()
+
+    /// plan-015 FR-IRQ-56 — reset the popover to its pre-record state
+    /// and start a fresh recording. Sequence:
+    ///   1. 180 ms fade-out of the body (visible-deliberate signal).
+    ///   2. Mid-fade: clear Q&A history, re-collapse the engine row,
+    ///      reset mode to Transcription, stop the previous recording if
+    ///      one is still active.
+    ///   3. Kick off a brand-new recording via
+    ///      `RecordingStarter.start(controller:)` — this composes a
+    ///      fresh `RecordingOptions` (re-derived basename / filename
+    ///      defaults) so the elapsed clock resets to 00:00 automatically
+    ///      (`RecordingController.start()` zeroes the elapsed counter
+    ///      on the `.recording` transition).
+    ///   4. Fade back in.
+    private func clearSession() {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            clearingFade = true
+        }
+        // Mutate the model while the panes are faded so the user does
+        // not see the empty state pop in mid-fade.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) {
+            askingStore.clear()
+            transcriptionExpanded = false
+            popoverModeRaw = PopoverMode.transcription.rawValue
+
+            // Bring the recording engine to a clean slate, then re-arm.
+            // If the controller is still in an active state (the user
+            // pressed New Session *while recording* via a future
+            // shortcut), stop it first; otherwise start() would refuse.
+            // Today the New-Session affordance is only reachable from
+            // `.stopped`, but the guard is cheap and future-proofs the
+            // shortcut path (Phase 5 global hotkey).
+            if let controller = recordingController {
+                switch controller.state {
+                case .recording, .paused, .pausing, .resuming, .splitting:
+                    controller.stop()
+                default:
+                    break
+                }
+                RecordingStarter.start(controller: controller)
+            }
+
+            withAnimation(.easeInOut(duration: 0.18)) {
+                clearingFade = false
+            }
+        }
+    }
+
+    // MARK: - Derived helpers
+
     /// Saved-files disclosure appears only when segments have been
-    /// produced. The disclosure view itself also no-ops on empty.
+    /// produced.
     private var showsSavedDisclosure: Bool {
         !(recordingController?.completedSegments.isEmpty ?? true)
     }
@@ -341,12 +596,23 @@ struct RootView: View {
         }
     }
 
-    // MARK: - Privacy / cloud provider helpers
-    // (Preserved verbatim from the legacy RootView so the privacy gate
-    // semantics survive the layout refactor unchanged.)
+    /// Default folder name for a freshly-stopped session — derived from
+    /// the recording's start wall-clock (Phase 2 will sample the actual
+    /// start time off `RecordingController`; Phase 1 uses `now()`).
+    private func defaultSessionFolderName() -> String {
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.dateFormat = "yyyy-MM-dd-HH-mm"
+        return "recording-\(fmt.string(from: Date()))"
+    }
 
-    /// Cloud-touching providers that require the privacy disclosure to
-    /// be acknowledged. `"apple"` and `"whisperkit"` are on-device.
+    /// Default primary-audio filename shown in the Save dialog file
+    /// list. Phase 2 will read the actual filename off
+    /// `RecordingController.completedSegments` / the in-flight session.
+    private func defaultAudioFilename() -> String { "recording-001.m4a" }
+
+    // MARK: - Privacy / cloud provider helpers
+
     private static func isCloudProvider(_ raw: String) -> Bool {
         switch raw.lowercased() {
         case "gemini", "gemini-live", "soniox", "azure", "azure-openai-realtime", "elevenlabs", "apple-cloud":
@@ -356,15 +622,10 @@ struct RootView: View {
         }
     }
 
-    /// Lowercase + trim — defensive normalisation against drifted
-    /// persisted values.
     private static func normalize(_ raw: String) -> String {
         raw.trimmingCharacters(in: .whitespaces).lowercased()
     }
 
-    /// Per-provider acknowledgement check, with a back-compat read of
-    /// the legacy single boolean for the Gemini and Soniox paths so a
-    /// user upgrading does not see the dialog twice.
     private static func hasAcknowledged(provider: String) -> Bool {
         let key = PrivacyDisclosureViewModel.acknowledgedKey(for: provider)
         if UserDefaults.standard.bool(forKey: key) { return true }

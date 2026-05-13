@@ -19,6 +19,7 @@ import SwiftUI
 enum SettingsCategory: String, Identifiable, CaseIterable, Hashable {
     case general
     case permissions
+    case asking
     case whisperkit
     case parakeet
     case gemini
@@ -35,6 +36,7 @@ enum SettingsCategory: String, Identifiable, CaseIterable, Hashable {
         switch self {
         case .general:       return String(localized: "General")
         case .permissions:   return String(localized: "Permissions")
+        case .asking:        return String(localized: "Asking (Q&A)")
         case .whisperkit:    return String(localized: "WhisperKit (on-device)")
         case .parakeet:      return String(localized: "Parakeet (on-device)")
         case .gemini:        return String(localized: "Gemini")
@@ -51,6 +53,7 @@ enum SettingsCategory: String, Identifiable, CaseIterable, Hashable {
         switch self {
         case .general:       return "gearshape"
         case .permissions:   return "checkmark.shield"
+        case .asking:        return "bubble.left.and.text.bubble.right"
         case .whisperkit:    return "cpu"
         case .parakeet:      return "bird"
         case .gemini:        return "sparkles"
@@ -98,6 +101,7 @@ struct SettingsRootView: View {
         switch category {
         case .general:       GeneralSettingsView()
         case .permissions:   PermissionsSettingsView()
+        case .asking:        AskingSettingsView()
         case .whisperkit:    WhisperKitSettingsView()
         case .parakeet:      ParakeetSettingsView()
         case .gemini:        GeminiSettingsView()

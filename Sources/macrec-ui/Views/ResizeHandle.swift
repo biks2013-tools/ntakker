@@ -36,18 +36,20 @@ struct ResizeHandle: View {
     /// `@AppStorage` slot (e.g. `com.macrec.ui.popoverHeight`).
     @Binding var height: Double
 
-    /// Hard clamp range for the height axis. The min keeps the
-    /// bottom-band lifecycle controls visible; the max prevents the
-    /// popover from growing past a reasonable screen height.
-    static let minHeight: Double = 360
-    static let maxHeight: Double = 1100
+    /// Hard clamp range for the height axis. plan-015 (FR-IRQ-61)
+    /// raised the floor to 440 so the new Pattern-C status bar +
+    /// segmented control + minimal body all stay legible, and lowered
+    /// the ceiling to 820 (fits a 13" MBP visibleFrame comfortably).
+    static let minHeight: Double = 440
+    static let maxHeight: Double = 820
 
-    /// Hard clamp range for the width axis. The min preserves the
-    /// metadata-strip layout (permission pill + folder chip + state
-    /// label fits at 360pt+); the max prevents the popover from
-    /// becoming as wide as a small window on a 1080p display.
-    static let minWidth: Double = 360
-    static let maxWidth: Double = 720
+    /// Hard clamp range for the width axis. plan-015 (FR-IRQ-59..61):
+    /// `min` is calibrated so the status bar's `[ New Session ][ Save… ]`
+    /// pair plus the mic + sys indicators plus state pill + clock all
+    /// fit without overflow; `max` keeps the popover from feeling
+    /// "panel"-sized rather than "popover"-sized.
+    static let minWidth: Double = 440
+    static let maxWidth: Double = 760
 
     /// Snapshots of `width` and `height` taken at the start of a drag
     /// so each axis's translation is applied to a stable origin

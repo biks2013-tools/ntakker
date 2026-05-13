@@ -6,6 +6,18 @@
 
 ## Pending items (most critical first)
 
+### PLAN-015-PHASE-2..6 — In-recording Q&A + Pattern C popover redesign
+**Status (2026-05-13).** Phase 1 (pure UI shell) landed. The popover now renders the Pattern-C target-state visual layout: top `Transcription | Asking` segmented switch, default-collapsed Engine & Language section, Asking-mode body with empty-state + bottom-pinned input row, bottom status bar with bouncing mic/sys bars + state pill + clock + action area, post-stop `[ New Session ][ Save… ]` pair, New-Session 3-option confirm modal, Save dialog with folder-name input + path preview + file-list. Resizable in both axes within 440-760 × 440-820 bounds; default width 480 pt. Builds cleanly (`swift build` green).
+
+**Remaining work (per [docs/design/plan-015-in-recording-questions.md](docs/design/plan-015-in-recording-questions.md) roadmap):**
+- **Phase 2 — Save flow → real folder write.** Wire the Save dialog's `onConfirm` to a real `~/Recordings/<folder>/` write (`transcript.md`, `qa.md`, `recording-001.m4a`). Atomic `.tmp` + rename. Collision handling (Replace / Append-timestamp / Cancel). Saved toast with Finder-reveal click. Reuse `RecordingController.completedSegments` for the audio file.
+- **Phase 3 — `TranscriptExporter` module + CLI.** New `Sources/MacrecCore/Export/TranscriptExporter.swift`. Markdown layout per FR-IRQ-29 (interleaved speech + Q&A blockquotes). `macrec export --session <id> --folder <path>` (FR-IRQ-33, FR-IRQ-54). Determinism guarantee.
+- **Phase 4 — Q&A LLM integration.** Lift `AskingSessionStore` into `MacrecCore` as `QASessionHistory`. Wire eight standard providers (reuse `convo-coach`'s LLM client patterns + vendor-canonical env vars). Streaming answers. Privacy disclosure on first cloud invocation (FR-IRQ-18). No-fallback on missing key. Q&A sidecar persistence on Stop (FR-IRQ-14, FR-IRQ-15).
+- **Phase 5 — Global hotkey + floating overlay.** Register `⌥⇧Space` (FR-IRQ-1, FR-IRQ-16). Build the frameless `NSWindow` floating Ask overlay (FR-IRQ-3). Share `QASessionHistory` with the popover (FR-IRQ-38).
+- **Phase 6 — Refinements + acceptance gate.** Engine & Language collapsed-summary row (Engine • Language • Source • ▾) per FR-IRQ-44a. `clearSession()` step 7 (auto-restart recording). Visual-continuity screenshot test (AC-IRQ-Pat-C-4). Latency budgets. 10-question audio-non-blocking stress test (NFR-IRQ-Audio-Non-Blocking).
+
+**Smoke test still to be run by user.** Build is green but I cannot autonomously exercise the menu-bar popover. Please launch (`bash scripts/package-macrec-ui-app.sh && open dist/macrec-ui.app`) and verify: (a) popover opens at ~480 pt wide, (b) `Transcription / Asking` switch renders below the header and `⌘1`/`⌘2` work, (c) bottom status bar shows bouncing mic + sys bars + state pill + clock, (d) Stop transitions to `[ New Session ][ Save… ]`, (e) `Save…` opens the dialog with the right default folder name, (f) `New Session` → 3-option modal → Discard fades + clears the Q&A history.
+
 ### PLAN-014-DONE (RESOLVED 2026-05-09) — AEC stability rewrite (v5) + opt-in default
 **Background.** plan-013 revised + the same-day v4 fix (`PLAN-013-DEFECT-1` below) reduced mic peaks from +10 dBFS to +3.7 dBFS, but did not eliminate the "filtering distortion" the user reported when system audio plays through speakers. Investigation against a fresh sample (`sample/aec-on.{mic,system}.m4a`) found four compounding causes:
 
