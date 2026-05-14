@@ -1,7 +1,9 @@
 // macrec-ui/Settings/SettingsRootView.swift —
-// Sidebar-style preferences root, attached to the SwiftUI `Settings { … }`
-// scene in MacrecUIApp. Opened via ⌘, or via the gear button in the
-// popover (which calls `EnvironmentValues.openSettings`).
+// Sidebar-style preferences root. Hosted by `SettingsWindowController`'s
+// `NSWindow`, presented MODALLY via `NSApp.runModal(for:)` (plan-016).
+// Opened via ⌘, (routed through `CommandGroup(replacing: .appSettings)`
+// in `MacrecUIApp`) or via the gear button in the popover (which
+// invokes the `\.showSettings` environment closure).
 //
 // Scope locked by user direction (2026-04-29): Settings only owns the
 // cloud-provider API keys + per-provider tuning knobs. The popover

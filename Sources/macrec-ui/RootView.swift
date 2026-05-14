@@ -40,6 +40,13 @@ struct RootView: View {
     @Environment(\.recordingController) private var recordingController
     @Environment(\.palette) private var palette
 
+    /// Closure installed by `PopoverController` that brings up the
+    /// modal Settings window owned by `AppDelegate.settingsWindowController`.
+    /// The gear button in `PopoverHeader` (and its Cmd-, shortcut)
+    /// route through here. May be `nil` in SwiftUI previews — the
+    /// gear button auto-disables in that case so previews still build.
+    @Environment(\.showSettings) private var showSettings
+
     /// In-memory Asking-mode history. UI-local in Phase 1; promoted to
     /// `MacrecCore.QASessionHistory` in Phase 4 so the floating overlay
     /// (Phase 5) can share the same source of truth.
@@ -170,12 +177,24 @@ struct RootView: View {
 
                 PopoverHeader(stateLabel: stateLabel) {
                     AppearanceSwitcher()
-                    SettingsLink {
+                    // plan-016 (2026-05-14): Settings is now presented
+                    // MODALLY via `SettingsWindowController.show()` so
+                    // the popover is non-interactive while Settings is
+                    // up. The previous `SettingsLink` opened a
+                    // non-modal SwiftUI `Settings { … }` scene that
+                    // left every popover control live. The recording
+                    // engine itself is unaffected — only UI events for
+                    // other windows are gated by `NSApp.runModal`.
+                    Button {
+                        showSettings?()
+                    } label: {
                         Image(systemName: "gearshape")
                             .imageScale(.medium)
                             .foregroundStyle(palette.secondary)
                     }
                     .buttonStyle(.borderless)
+                    .keyboardShortcut(",", modifiers: .command)
+                    .disabled(showSettings == nil)
                     .help(String(localized: "Open Settings (⌘,) — manage cloud-provider API keys and tuning"))
                     Button {
                         NSApp.terminate(nil)

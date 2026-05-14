@@ -100,6 +100,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// is built (it captures the controller).
     private var quitFlow: QuitFlow!
 
+    /// Modal Settings window controller. Replaces the previous SwiftUI
+    /// `Settings { … }` scene path so that bringing up Settings blocks
+    /// user interaction with the popover for the duration. The
+    /// recording engine is unaffected — only UI events for other
+    /// windows are gated by `NSApp.runModal(for:)`. Exposed via the
+    /// `\.showSettings` SwiftUI environment value installed by
+    /// `PopoverController` and via the `CommandGroup(replacing:
+    /// .appSettings)` override in `MacrecUIApp` so Cmd-, also routes
+    /// here instead of into the empty SwiftUI Settings scene.
+    private(set) var settingsWindowController: SettingsWindowController!
+
     // MARK: - Loggers
     //
     // Per project-design §15.13, every UI component receives a Logger
@@ -113,6 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let controllerLogger = LoggerFactory.make("macrec.ui.controller")
     private let loggingMenuLogger = LoggerFactory.make("macrec.ui.loggingMenu")
     private let quitFlowLogger = LoggerFactory.make("macrec.ui.quitFlow")
+    private let settingsWindowLogger = LoggerFactory.make("macrec.ui.settingsWindow")
 
     // MARK: - Logging configuration constants
     //
@@ -205,16 +217,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         logger.debug("QuitFlow constructed")
 
+        // 4b. Build the modal Settings window controller. Replaces the
+        //     previous SwiftUI `Settings { … }` scene path so that
+        //     opening Settings blocks user interaction with the popover
+        //     for the duration of the modal session. See
+        //     `Settings/SettingsWindowController.swift` for the
+        //     rationale and dismissal-path handling.
+        settingsWindowController = SettingsWindowController(
+            logger: settingsWindowLogger
+        )
+        logger.debug("SettingsWindowController constructed")
+
         // 5. Build the popover (hosts `RootView` via NSHostingController).
         //    The controller is injected into the SwiftUI environment so
         //    `RootView` (and Phase E's sub-views) can read it via
         //    `@Environment(\.recordingController)`. The popover applies
         //    the environment modifier internally so its hosting
         //    controller can stay parameterized on the concrete
-        //    `RootView` type.
+        //    `RootView` type. The `showSettings` closure routes the
+        //    gear button (and the popover-scoped Cmd-, shortcut) into
+        //    the modal Settings window controller.
         popoverController = PopoverController(
             rootView: RootView(),
             recordingController: recordingController,
+            showSettings: { [weak self] in
+                self?.settingsWindowController.show()
+            },
             logger: popoverLogger
         )
 

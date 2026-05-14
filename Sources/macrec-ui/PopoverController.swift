@@ -88,6 +88,7 @@ final class PopoverController {
     init(
         rootView: RootView,
         recordingController: RecordingController,
+        showSettings: @escaping ShowSettingsAction,
         logger: Logger
     ) {
         self.logger = logger
@@ -130,6 +131,7 @@ final class PopoverController {
                 rootView
                     .environment(\.recordingController, recordingController)
                     .environment(\.popoverBehavior, behaviorSetter)
+                    .environment(\.showSettings, showSettings)
             }
         )
         let hosting = NSHostingController(rootView: composed)

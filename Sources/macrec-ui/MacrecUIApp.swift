@@ -27,37 +27,53 @@
 // calls `NSApp.setActivationPolicy(.accessory)` defensively — this is
 // the investigator's recommended belt-and-braces pattern.
 
+import AppKit
 import SwiftUI
 
 @main
 struct MacrecUIApp: App {
     /// AppKit shell. SwiftUI instantiates this once at launch and
     /// retains it for the lifetime of the process; it owns the status
-    /// item, the popover, and the `RecordingController` (Phase D).
+    /// item, the popover, the `RecordingController` (Phase D), and
+    /// (plan-016) the modal `SettingsWindowController`.
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
         // Per investigation Topic 1 Option 1B: `Settings` is the only
         // `Scene` that does not produce a visible window at launch on
-        // macOS. The popover (Phase D) remains the primary UI; the
-        // Settings scene now hosts plan-007's per-provider configuration
-        // panel (`SettingsRootView`) so the user has a stable, native
-        // place to manage cloud-provider API keys and tuning. ⌘, opens
-        // it automatically; the popover's gear button calls
-        // `EnvironmentValues.openSettings` to open it programmatically.
-        // Wrap `SettingsRootView` in `AppearanceHostingRoot` so the
-        // `Settings { }` window honors the persisted `AppearanceMode`
-        // (light / dark / system) the same way the popover does. The
-        // wrapper internally applies `.preferredColorScheme(_:)` and
-        // injects `\.palette` — see project-design §UR-4.4 / §UR-6 and
-        // plan-008 Unit F. We do not apply `.preferredColorScheme(_:)`
-        // on the `Settings` scene directly because the `App`'s scene
-        // builder cannot host `@AppStorage` reactivity without a
-        // wrapping `View`; routing through `AppearanceHostingRoot`
-        // keeps a single source of truth for both host sites.
+        // macOS, so declaring it (with an empty body) keeps the
+        // SwiftUI App lifecycle alive while producing zero standalone
+        // windows.
+        //
+        // **plan-016 (2026-05-14)** — Settings is no longer hosted in
+        // this scene. The old `Settings { AppearanceHostingRoot { … } }`
+        // declaration opened a non-modal `NSWindow` that left the
+        // popover fully interactable. Settings now lives in
+        // `SettingsWindowController` (an AppKit `NSWindow` run via
+        // `NSApp.runModal(for:)`), and this scene is intentionally
+        // empty. We override the auto-installed "Settings…" menu
+        // item / Cmd-, shortcut via `CommandGroup(replacing:
+        // .appSettings)` below so both paths route into the modal
+        // controller instead of opening the empty SwiftUI window.
         Settings {
-            AppearanceHostingRoot {
-                SettingsRootView()
+            EmptyView()
+        }
+        .commands {
+            // Replace the SwiftUI-installed Preferences menu item
+            // (which would otherwise open the empty Settings scene
+            // above) with a custom Button bound to the modal
+            // SettingsWindowController held by the AppDelegate.
+            // Keeps Cmd-, working from any key window — for the
+            // popover, the gear Button additionally re-declares the
+            // shortcut so it also fires when the popover (not a
+            // standard NSWindow) is the active surface.
+            CommandGroup(replacing: .appSettings) {
+                Button(String(localized: "Settings…")) {
+                    (NSApp.delegate as? AppDelegate)?
+                        .settingsWindowController
+                        .show()
+                }
+                .keyboardShortcut(",", modifiers: .command)
             }
         }
     }

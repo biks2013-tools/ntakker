@@ -51,6 +51,23 @@ private struct PopoverBehaviorKey: EnvironmentKey {
     static let defaultValue: PopoverBehaviorSetter? = nil
 }
 
+// MARK: - Show-Settings environment key
+//
+// Closure the popover's gear button invokes to bring up the modal
+// Settings window owned by `SettingsWindowController` (see
+// `Settings/SettingsWindowController.swift`). Replaces the previous
+// `SettingsLink` path, which opened a non-modal SwiftUI `Settings { … }`
+// scene that left the popover fully interactive — the exact behavior
+// this dialog needs to prevent.
+//
+// `@MainActor` because `NSApp.runModal(for:)` is main-thread-only.
+
+public typealias ShowSettingsAction = @MainActor () -> Void
+
+private struct ShowSettingsKey: EnvironmentKey {
+    static let defaultValue: ShowSettingsAction? = nil
+}
+
 extension EnvironmentValues {
     /// The currently-active `RecordingController`, if one has been
     /// installed by the app shell. Views read via:
@@ -67,5 +84,13 @@ extension EnvironmentValues {
     var popoverBehavior: PopoverBehaviorSetter? {
         get { self[PopoverBehaviorKey.self] }
         set { self[PopoverBehaviorKey.self] = newValue }
+    }
+
+    /// Closure the popover's gear button calls to present the modal
+    /// Settings window. Installed by `PopoverController` from
+    /// `AppDelegate.settingsWindowController.show`.
+    var showSettings: ShowSettingsAction? {
+        get { self[ShowSettingsKey.self] }
+        set { self[ShowSettingsKey.self] = newValue }
     }
 }
