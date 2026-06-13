@@ -1,0 +1,1173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>macrec-ui · Popover Redesign (current state, 2026-05-13)</title>
+
+<!--
+  =====================================================================
+  REGENERATION NOTE — 2026-05-13
+  =====================================================================
+  This mockup was refreshed to reflect the actual macrec-ui popover as
+  it exists on master at SHA 9806e6a. The previous revision predated
+  plan-010..plan-015 and was visibly drifted. Specifically:
+
+  ADDED in this refresh (now in the Swift UI, was missing from mockup):
+    * Top mode switcher (Transcription | Asking, plan-015 FR-IRQ-43) —
+      a segmented control beneath the header row, ⌘1 / ⌘2 shortcuts.
+    * Trailing header chrome: appearance switcher (System/Light/Dark),
+      Settings gear, Quit power button (plan-008 Unit E / Unit G).
+    * General section is now COLLAPSIBLE (chevron in the header).
+    * "Mic echo cancellation" toggle row in General (plan-013 / 014).
+      Default off, opt-in via plan-014.
+    * Live Transcription section header is COLLAPSIBLE and carries a
+      master enable NSSwitch directly in the header (UR-ADR-7).
+    * Transcribe-provider picker now lists ten options:
+      Apple Speech, Apple Cloud, WhisperKit, Parakeet, Gemini,
+      Soniox, Azure OpenAI (batch), Azure OpenAI Realtime,
+      ElevenLabs Scribe v2, None (plan-005..012).
+    * Source picker now offers four options including "Both" which
+      triggers the dual-lane SourceSplitTranscriptView (plan-012 C6).
+    * Live transcript panel (LiveTranscriptPanel) — scrolling area
+      with "Transcript" header, clear-trash button, status badge,
+      and per-segment language + speaker chips (plan-005..012).
+    * Bottom status bar (PopoverStatusBar, plan-015 FR-IRQ-40..42, 48)
+      replaces the old "Ready · Start Recording" footer. It hosts:
+        – 7-bar bouncing meters for `mic` (green) and `sys` (accent),
+        – vertical hairline separators,
+        – state pill with pulsing dot,
+        – mm:ss elapsed clock,
+        – context-sensitive action area:
+            · idle/failed → Start (legacy ControlBar fallback)
+            · recording  → red Stop button (record-gradient capsule)
+            · stopped    → [+ New Session] [📁 Save…] pair
+    * Saved-files disclosure ("Saved files (N)") above the resize
+      handle when completedSegments is non-empty.
+    * Resize handle (drag-to-resize popover; default 480×600,
+      bounds 440-760 × 440-820).
+    * Cost/latency footer (TranscriptionMetricsView) under the
+      transcript pane — `Xs · N chunks · err · ovf` + RTT + cost.
+    * Permission pill in the metadata strip is now interactive (taps
+      expand the per-permission rows beneath the header).
+    * Save-to folder is now a CHIP in the metadata strip
+      (UR-ADR-9), no longer a row in General.
+
+  ASKING MODE (new mode body, plan-015 Phase 4):
+    * Q&A history scroll (Q/A bubbles, provider + model badge,
+      streaming indicator, inline error path).
+    * Pinned-bottom input row: voice-input affordance + multi-line
+      text field + send button. Variant B shows this mode.
+
+  REMOVED from the previous mockup (no longer in the Swift UI):
+    * "Save to" as a General row → moved to the metadata strip chip.
+    * The custom inline "Engine · Soniox · on/off" mini-toggle next
+      to the section header → replaced by the master NSSwitch in
+      the section header itself (engine choice moved into the
+      Transcribe picker row).
+    * "Ready · Start Recording" footer → replaced by the new
+      PopoverStatusBar (see above).
+    * `recording-anchor` in the simulated menu bar still appears
+      (the status item still exists), but the popover anchor arrow
+      now points at the actual menu-bar status item, not the
+      Spotlight icon.
+
+  CSS variables and primitive classes (.popover, .header, .group,
+  .row, .popup, .switch, .key-input, .btn, .record-btn, .perm-pill,
+  .status-chip) are preserved verbatim; new primitives were added
+  only where the Swift UI introduced shapes the old mockup did not
+  cover (mode switcher, status bar, transcript pane, bouncing
+  bars, Q&A bubbles, send button).
+
+  Default popover width raised 360 → 460 to match the SwiftUI
+  default (plan-015 FR-IRQ-59 raised it to 480 actual; the mockup
+  uses 460 to fit two popovers side-by-side at typical viewports).
+  =====================================================================
+-->
+
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow-x: hidden;
+  }
+
+  /* ---------- Desktop background (Sequoia-ish aurora) ---------- */
+  body {
+    min-height: 100vh;
+    background:
+      radial-gradient(ellipse 60% 50% at 18% 22%, rgba(150, 200, 255, 0.85), transparent 60%),
+      radial-gradient(ellipse 55% 45% at 82% 18%, rgba(200, 150, 220, 0.75), transparent 60%),
+      radial-gradient(ellipse 60% 55% at 50% 85%, rgba(255, 200, 160, 0.55), transparent 60%),
+      radial-gradient(ellipse 70% 60% at 90% 75%, rgba(120, 160, 220, 0.6), transparent 60%),
+      linear-gradient(180deg, #3F6BB1 0%, #5380C2 28%, #6B8FCC 55%, #B79A88 100%);
+    background-attachment: fixed;
+  }
+
+  /* ---------- Menu bar ---------- */
+  .menubar {
+    height: 26px;
+    background: rgba(255,255,255,0.32);
+    backdrop-filter: blur(40px) saturate(180%);
+    -webkit-backdrop-filter: blur(40px) saturate(180%);
+    box-shadow: inset 0 -0.5px 0 rgba(0,0,0,0.06);
+    display: flex;
+    align-items: center;
+    padding: 0 14px;
+    gap: 18px;
+    font-size: 13.5px;
+    color: #1a1a1a;
+    position: sticky;
+    top: 0;
+    z-index: 50;
+  }
+  .menubar .apple-logo { width: 14px; height: 14px; display: inline-block; }
+  .menubar .app { font-weight: 600; }
+  .menubar .item { font-weight: 400; opacity: 0.92; }
+  .menubar .right { margin-left: auto; display: flex; align-items: center; gap: 14px; font-size: 12.5px; }
+  .menubar .icon { width: 16px; height: 16px; opacity: 0.85; display: inline-flex; align-items: center; }
+  .menubar .recording-anchor {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 1px 7px; border-radius: 5px;
+    background: rgba(0,0,0,0.06);
+    box-shadow: inset 0 0 0 0.5px rgba(0,0,0,0.08);
+    position: relative;
+  }
+  .menubar .recording-anchor .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: linear-gradient(180deg, #FF6258, #FF2D20);
+    box-shadow: 0 0 6px rgba(255,45,32,0.55);
+  }
+
+  /* ---------- Layout ---------- */
+  .stage {
+    padding: 60px 24px 80px;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 44px;
+  }
+
+  .variant-block {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 460px;
+  }
+
+  .variant-tag {
+    color: rgba(255,255,255,0.78);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.18);
+  }
+  .variant-name {
+    color: white;
+    font-size: 19px;
+    font-weight: 600;
+    margin-bottom: 4px;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.22);
+    letter-spacing: -0.01em;
+  }
+  .variant-desc {
+    color: rgba(255,255,255,0.78);
+    font-size: 12.5px;
+    margin-bottom: 22px;
+    text-shadow: 0 1px 1px rgba(0,0,0,0.15);
+    text-align: center;
+    max-width: 420px;
+    line-height: 1.4;
+  }
+
+  /* ---------- Popover frame (shared) ---------- */
+  .popover {
+    width: 460px;
+    border-radius: 14px;
+    position: relative;
+    padding: 14px;
+    box-shadow:
+      0 0 0 0.5px rgba(0,0,0,0.22),
+      0 1px 0 rgba(255,255,255,0.6) inset,
+      0 22px 60px rgba(0,0,0,0.32),
+      0 6px 16px rgba(0,0,0,0.18);
+  }
+  .popover::before {
+    content: '';
+    position: absolute;
+    top: -7px;
+    left: 50%;
+    transform: translateX(-50%) rotate(45deg);
+    width: 14px;
+    height: 14px;
+    border-top-left-radius: 3px;
+    z-index: -1;
+  }
+
+  /* ---------- LIGHT variant ---------- */
+  .light {
+    background: rgba(244, 244, 246, 0.78);
+    backdrop-filter: blur(60px) saturate(180%);
+    -webkit-backdrop-filter: blur(60px) saturate(180%);
+    color: #1c1c1e;
+    --label: rgba(0,0,0,0.86);
+    --value: rgba(0,0,0,0.92);
+    --secondary: rgba(0,0,0,0.55);
+    --tertiary: rgba(0,0,0,0.4);
+    --separator: rgba(0,0,0,0.08);
+    --group-bg: rgba(255,255,255,0.55);
+    --group-stroke: rgba(0,0,0,0.06);
+    --control-bg: #ffffff;
+    --control-stroke: rgba(0,0,0,0.12);
+    --control-shadow: 0 0.5px 1px rgba(0,0,0,0.06);
+    --field-bg: #ffffff;
+    --chip-bg: rgba(0,0,0,0.05);
+    --accent: #007AFF;
+    --accent-soft: rgba(0,122,255,0.10);
+    --record-grad: linear-gradient(180deg, #FF6258 0%, #FF2D20 100%);
+    --record-shadow: 0 1px 0 rgba(255,255,255,0.4) inset, 0 2px 6px rgba(255,45,32,0.32), 0 8px 18px rgba(255,45,32,0.18);
+    --success-bg: rgba(48,209,88,0.18);
+    --success-fg: #0A6E2C;
+    --success-dot: #30D158;
+    --bar-mic: #30D158;
+    --bar-sys: #007AFF;
+  }
+  .light::before {
+    background: rgba(244, 244, 246, 0.78);
+    box-shadow: -0.5px -0.5px 0 0 rgba(0,0,0,0.18);
+  }
+
+  /* ---------- DARK variant ---------- */
+  .dark {
+    background: rgba(40, 40, 42, 0.74);
+    backdrop-filter: blur(60px) saturate(180%);
+    -webkit-backdrop-filter: blur(60px) saturate(180%);
+    color: #F4F4F4;
+    --label: rgba(255,255,255,0.92);
+    --value: rgba(255,255,255,0.96);
+    --secondary: rgba(255,255,255,0.55);
+    --tertiary: rgba(255,255,255,0.38);
+    --separator: rgba(255,255,255,0.09);
+    --group-bg: rgba(255,255,255,0.06);
+    --group-stroke: rgba(255,255,255,0.08);
+    --control-bg: rgba(255,255,255,0.12);
+    --control-stroke: rgba(255,255,255,0.14);
+    --control-shadow: 0 0.5px 0 rgba(255,255,255,0.06) inset;
+    --field-bg: rgba(0,0,0,0.28);
+    --chip-bg: rgba(255,255,255,0.08);
+    --accent: #0A84FF;
+    --accent-soft: rgba(10,132,255,0.18);
+    --record-grad: linear-gradient(180deg, #FF6B61 0%, #FF3B30 100%);
+    --record-shadow: 0 1px 0 rgba(255,255,255,0.25) inset, 0 2px 6px rgba(255,45,32,0.4), 0 10px 22px rgba(255,45,32,0.22);
+    --success-bg: rgba(48,209,88,0.22);
+    --success-fg: #6CE89A;
+    --success-dot: #30D158;
+    --bar-mic: #30D158;
+    --bar-sys: #0A84FF;
+  }
+  .dark::before {
+    background: rgba(40, 40, 42, 0.74);
+    box-shadow: -0.5px -0.5px 0 0 rgba(255,255,255,0.16);
+  }
+
+  /* ---------- Header (filename + meta + trailing chrome) ---------- */
+  .header {
+    padding: 4px 4px 4px;
+    margin-bottom: 4px;
+  }
+  .header-input {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 100%;
+    background: transparent;
+    border: none;
+    padding: 1px 0 2px;
+    font-family: inherit;
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    color: var(--value);
+    border-radius: 4px;
+    margin: 0 -2px;
+    padding-left: 2px;
+    padding-right: 2px;
+  }
+  .header-input:hover { background: var(--chip-bg); }
+  .header-input:focus { outline: none; box-shadow: 0 0 0 3px rgba(10,132,255,0.35); background: var(--field-bg); }
+
+  .header-meta {
+    margin-top: 6px;
+    font-size: 11.5px;
+    color: var(--secondary);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: nowrap;
+  }
+  .header-meta .sep { opacity: 0.45; }
+  .header-meta .perm-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--success-bg);
+    color: var(--success-fg);
+    padding: 2px 8px 2px 6px;
+    border-radius: 100px;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+  .header-meta .perm-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success-dot); }
+  .header-meta .save-to {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 8px; border-radius: 5px; background: var(--chip-bg);
+    color: var(--value); font-size: 11.5px;
+  }
+  .header-meta .save-to .folder-ico { color: var(--accent); }
+  .header-meta .save-to .change { color: var(--accent); font-weight: 500; }
+  .header-meta .state-label { color: var(--secondary); }
+  .header-meta .spacer { margin-left: auto; }
+  .header-meta .trailing-chrome { display: inline-flex; align-items: center; gap: 10px; color: var(--secondary); }
+  .header-meta .trailing-chrome .glyph {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 18px; height: 18px; cursor: pointer; color: var(--secondary);
+  }
+
+  /* ---------- Mode switcher (Transcription | Asking) ---------- */
+  .mode-switcher {
+    margin-top: 8px;
+    background: var(--chip-bg);
+    border-radius: 9px;
+    padding: 3px;
+    display: flex;
+    gap: 4px;
+  }
+  .mode-switcher .seg {
+    flex: 1;
+    text-align: center;
+    font-size: 12px;
+    padding: 5px 0;
+    border-radius: 7px;
+    color: var(--label);
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .mode-switcher .seg.active {
+    background: var(--control-bg);
+    color: var(--accent);
+    font-weight: 600;
+    box-shadow: 0 0 0 0.5px var(--control-stroke), 0 1px 1px rgba(0,0,0,0.06);
+  }
+
+  /* ---------- Section group ---------- */
+  .section + .section { margin-top: 12px; }
+  .section { margin-top: 12px; }
+
+  .section-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 8px 6px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+  }
+  .section-title .chev {
+    display: inline-block; width: 10px; margin-right: 4px;
+    color: var(--secondary);
+  }
+  .section-title.with-toggle { padding-bottom: 6px; }
+
+  .group {
+    background: var(--group-bg);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 0 0 0.5px var(--group-stroke);
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    min-height: 36px;
+    gap: 10px;
+  }
+  .row + .row, .row + .row-sub, .row-sub + .row {
+    border-top: 0.5px solid var(--separator);
+  }
+  .row .label {
+    font-size: 13px;
+    color: var(--label);
+    flex-shrink: 0;
+  }
+  .row .control {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--value);
+    font-size: 13px;
+    min-width: 0;
+  }
+
+  /* NSPopUpButton-like select */
+  .popup {
+    appearance: none;
+    -webkit-appearance: none;
+    border: none;
+    font-family: inherit;
+    font-size: 13px;
+    color: var(--value);
+    background-color: var(--control-bg);
+    box-shadow: 0 0 0 0.5px var(--control-stroke), var(--control-shadow);
+    padding: 3px 22px 3px 8px;
+    border-radius: 5px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='10' viewBox='0 0 8 10'%3E%3Cpath fill='%23999' d='M4 0L0 4h8zM4 10L0 6h8z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 6px center;
+    background-size: 8px 10px;
+    line-height: 18px;
+    cursor: default;
+    max-width: 280px;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  .dark .popup {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='10' viewBox='0 0 8 10'%3E%3Cpath fill='%23bbb' d='M4 0L0 4h8zM4 10L0 6h8z'/%3E%3C/svg%3E");
+  }
+  .popup .missing-dot {
+    /* sibling badge — rendered next to popup in markup */
+  }
+  .missing-dot {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: #FF3B30; margin-left: 4px; vertical-align: middle;
+  }
+
+  /* Toggle (NSSwitch) */
+  .switch {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 36px; height: 22px;
+    background: var(--control-bg);
+    box-shadow: inset 0 0 0 0.5px var(--control-stroke);
+    border-radius: 100px;
+    position: relative;
+    cursor: pointer;
+    transition: background 0.18s ease;
+    flex-shrink: 0;
+  }
+  .switch::after {
+    content: '';
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 18px; height: 18px;
+    background: white;
+    border-radius: 50%;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.25);
+    transition: transform 0.18s ease;
+  }
+  .switch.on {
+    background: #34C759;
+    box-shadow: inset 0 0 0 0.5px rgba(0,0,0,0.05);
+  }
+  .switch.on::after { transform: translateX(14px); }
+  .switch.mini { width: 28px; height: 16px; }
+  .switch.mini::after { width: 12px; height: 12px; }
+  .switch.mini.on::after { transform: translateX(12px); }
+
+  /* API key sub-row */
+  .row-sub {
+    padding: 10px 12px 12px;
+  }
+  .row-sub .sub-head {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 6px;
+  }
+  .row-sub .sub-label {
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--secondary);
+  }
+  .row-sub .status-chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11px; font-weight: 500; color: var(--success-fg);
+  }
+  .row-sub .status-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success-dot); }
+
+  .key-input-row { display: flex; gap: 5px; }
+  .key-input {
+    flex: 1; min-width: 0;
+    background: var(--field-bg);
+    border: none;
+    box-shadow: inset 0 0 0 0.5px var(--control-stroke);
+    border-radius: 5px;
+    padding: 4px 8px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    font-size: 11.5px;
+    letter-spacing: 0.05em;
+    color: var(--value);
+  }
+  .key-input::placeholder { color: var(--tertiary); letter-spacing: 0; font-family: inherit; }
+  .key-input:focus { outline: none; box-shadow: inset 0 0 0 0.5px var(--control-stroke), 0 0 0 3px rgba(10,132,255,0.35); }
+
+  .btn {
+    appearance: none;
+    -webkit-appearance: none;
+    border: none;
+    background: var(--control-bg);
+    box-shadow: 0 0 0 0.5px var(--control-stroke), var(--control-shadow);
+    color: var(--value);
+    font-family: inherit;
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: 5px;
+    cursor: pointer;
+  }
+  .btn:hover { filter: brightness(0.97); }
+  .btn:disabled { opacity: 0.5; cursor: default; }
+
+  /* ---------- Live transcript panel ---------- */
+  .transcript-panel {
+    margin-top: 12px;
+    background: var(--group-bg);
+    border-radius: 10px;
+    box-shadow: 0 0 0 0.5px var(--group-stroke);
+    padding: 10px 12px;
+  }
+  .transcript-panel-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .transcript-panel-head .title {
+    font-size: 11px; color: var(--secondary); font-weight: 500;
+  }
+  .transcript-panel-head .actions {
+    display: inline-flex; align-items: center; gap: 8px;
+    color: var(--secondary);
+  }
+  .transcript-panel-head .actions .icon-btn { cursor: pointer; }
+  .transcript-panel-head .status-badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 1px 7px; border-radius: 100px;
+    background: var(--accent-soft); color: var(--accent);
+    font-size: 10px; font-weight: 600;
+  }
+  .transcript-panel-head .status-badge .dot {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+    box-shadow: 0 0 6px var(--accent);
+  }
+  .transcript-body {
+    background: var(--field-bg);
+    border-radius: 8px;
+    box-shadow: inset 0 0 0 0.5px var(--separator);
+    padding: 8px 10px;
+    min-height: 80px;
+    max-height: 160px;
+    overflow: auto;
+    font-size: 11.5px;
+    color: var(--value);
+    line-height: 1.4;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .segment { display: flex; align-items: flex-start; gap: 6px; }
+  .chip-mini {
+    display: inline-block;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 9px;
+    color: var(--secondary);
+    background: var(--chip-bg);
+    border-radius: 3px;
+    padding: 1px 4px;
+    line-height: 1.2;
+  }
+  .segment.partial { font-style: italic; color: var(--secondary); }
+
+  /* ---------- Cost/latency footer ---------- */
+  .metrics-row {
+    margin-top: 6px;
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 9px; color: var(--tertiary);
+    padding: 0 4px;
+  }
+
+  /* ---------- Status bar (bottom band) ---------- */
+  .status-bar {
+    margin-top: 12px;
+    border-top: 0.5px solid var(--separator);
+    padding: 8px 0 2px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .bars {
+    display: inline-flex; align-items: flex-end; gap: 2px; height: 14px;
+  }
+  .bars .bar {
+    width: 3px; border-radius: 1.5px;
+    background: var(--bar-mic);
+  }
+  .bars.sys .bar { background: var(--bar-sys); }
+  .bars-label {
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 10px; color: var(--tertiary); margin-left: 2px;
+  }
+  .hairline {
+    width: 0.5px; height: 18px; background: var(--separator);
+  }
+  .state-pill {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11px; color: var(--secondary); font-weight: 500;
+  }
+  .state-pill .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: #FF2D20; box-shadow: 0 0 6px rgba(255,45,32,0.55);
+  }
+  .state-pill.idle .dot { background: var(--tertiary); box-shadow: none; }
+  .clock {
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 11px; color: var(--secondary);
+    font-variant-numeric: tabular-nums;
+  }
+  .status-bar .action-area { margin-left: auto; display: inline-flex; gap: 6px; }
+
+  .stop-btn {
+    appearance: none; border: none; cursor: pointer;
+    background: var(--record-grad); color: white;
+    font-family: inherit; font-size: 12px; font-weight: 600;
+    padding: 5px 12px; border-radius: 100px;
+    display: inline-flex; align-items: center; gap: 5px;
+    box-shadow: var(--record-shadow);
+  }
+  .stop-btn .glyph {
+    width: 8px; height: 8px; background: white; border-radius: 2px;
+  }
+  .new-session-btn {
+    appearance: none; cursor: pointer;
+    background: transparent; color: var(--accent);
+    font-family: inherit; font-size: 12px; font-weight: 500;
+    padding: 4px 10px; border-radius: 100px;
+    border: 1px solid var(--accent);
+    display: inline-flex; align-items: center; gap: 4px;
+  }
+  .save-btn {
+    appearance: none; border: none; cursor: pointer;
+    color: white;
+    font-family: inherit; font-size: 12px; font-weight: 600;
+    padding: 5px 12px; border-radius: 100px;
+    background: linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 85%, transparent));
+    display: inline-flex; align-items: center; gap: 4px;
+    box-shadow: 0 1px 0 rgba(255,255,255,0.18) inset, 0 2px 6px rgba(0,90,255,0.25);
+  }
+
+  /* ---------- Saved-files disclosure ---------- */
+  .saved-disclosure {
+    margin-top: 8px;
+    border-top: 0.5px solid var(--separator);
+    padding: 6px 0 0;
+    font-size: 12px;
+    color: var(--label);
+  }
+  .saved-disclosure .head {
+    display: flex; align-items: center; gap: 5px;
+    color: var(--label); font-size: 12.5px;
+  }
+  .saved-disclosure .file-row {
+    display: flex; align-items: center; gap: 5px;
+    font-size: 11px; color: var(--secondary);
+    padding: 2px 4px 2px 18px;
+  }
+
+  /* ---------- Resize handle ---------- */
+  .resize-handle {
+    margin-top: 6px;
+    height: 12px; display: flex; justify-content: center; align-items: center;
+    color: var(--tertiary);
+  }
+  .resize-handle::before {
+    content: '';
+    width: 36px; height: 4px; border-radius: 2px;
+    background: var(--separator);
+  }
+
+  /* ---------- Asking mode body ---------- */
+  .asking-body {
+    margin-top: 10px;
+    background: var(--group-bg);
+    border-radius: 10px;
+    box-shadow: 0 0 0 0.5px var(--group-stroke);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+    min-height: 280px;
+  }
+  .qa-scroll {
+    padding: 10px 12px;
+    overflow: auto;
+    display: flex; flex-direction: column; gap: 10px;
+    flex: 1;
+  }
+  .qa-bubble {
+    padding: 10px;
+    border-radius: 10px;
+    background: var(--accent-soft);
+    box-shadow: 0 0 0 0.5px var(--group-stroke);
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .qa-line-header {
+    display: inline-flex; align-items: baseline; gap: 6px;
+    font-size: 10px; color: var(--secondary);
+  }
+  .qa-line-header .marker {
+    font-weight: 700; font-size: 12px; color: var(--accent);
+  }
+  .qa-question {
+    font-size: 13px; color: var(--label); padding-left: 2px;
+  }
+  .qa-answer {
+    font-size: 13px; color: var(--value); padding-left: 2px;
+    white-space: pre-wrap;
+  }
+  .qa-streaming-tag { color: var(--secondary); font-size: 10px; font-weight: 500; }
+
+  .input-row {
+    border-top: 0.5px solid var(--separator);
+    background: var(--field-bg);
+    padding: 8px 12px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .input-row .mic-glyph { color: var(--tertiary); }
+  .input-row .field {
+    flex: 1;
+    appearance: none; border: none; outline: none;
+    background: transparent;
+    color: var(--value);
+    font-family: inherit; font-size: 13px;
+    padding: 4px 0;
+  }
+  .input-row .send-btn {
+    appearance: none; border: none; cursor: pointer;
+    width: 26px; height: 26px; border-radius: 50%;
+    background: var(--accent); color: white;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700;
+  }
+
+  /* ---------- Footnote ---------- */
+  .footnote {
+    margin: 32px auto 0;
+    text-align: center;
+    color: rgba(255,255,255,0.7);
+    font-size: 11.5px;
+    text-shadow: 0 1px 1px rgba(0,0,0,0.15);
+    max-width: 700px;
+    padding: 0 24px;
+  }
+  .footnote code {
+    background: rgba(0,0,0,0.2); padding: 1px 5px;
+    border-radius: 3px; color: white;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+  }
+
+  /* ---------- Helpers ---------- */
+  .ico { display: inline-flex; align-items: center; justify-content: center; }
+</style>
+</head>
+<body>
+
+<!-- ============== MENU BAR ============== -->
+<div class="menubar">
+  <span class="apple-logo">
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
+      <path d="M10.6 7.4c0-1.6 1.3-2.4 1.4-2.5-.7-1.1-1.9-1.2-2.3-1.2-1-.1-1.9.6-2.4.6s-1.3-.6-2.1-.6c-1.1 0-2.1.6-2.6 1.6-1.1 1.9-.3 4.8.8 6.4.5.8 1.2 1.6 2 1.6.8 0 1.1-.5 2.1-.5s1.2.5 2.1.5c.9 0 1.4-.8 2-1.6.6-.9.8-1.7.9-1.8-.1-.1-1.7-.6-1.7-2.5zM9 2.7c.4-.5.7-1.2.6-1.9-.6 0-1.3.4-1.7.9-.4.4-.7 1.1-.6 1.8.7.1 1.4-.3 1.7-.8z"/>
+    </svg>
+  </span>
+  <span class="app">macrec-ui</span>
+  <span class="item">File</span>
+  <span class="item">Edit</span>
+  <span class="item">View</span>
+  <span class="item">Window</span>
+  <span class="item">Help</span>
+  <span class="right">
+    <span class="icon" title="Spotlight">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="6" cy="6" r="4"/><path d="M9 9l3 3" stroke-linecap="round"/></svg>
+    </span>
+    <span class="icon" title="Control Center">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1" y="1" width="5" height="5" rx="1"/><rect x="8" y="1" width="5" height="5" rx="1"/><rect x="1" y="8" width="5" height="5" rx="1"/><rect x="8" y="8" width="5" height="5" rx="1"/></svg>
+    </span>
+    <span class="recording-anchor" title="macrec-ui">
+      <span class="dot"></span>
+      <span style="font-weight:600; font-size: 11.5px;">REC</span>
+    </span>
+    <span style="font-variant-numeric: tabular-nums;">Wed 13 May · 21:14</span>
+  </span>
+</div>
+
+<!-- ============== STAGE ============== -->
+<div class="stage">
+
+  <!-- ===== VARIANT A: LIGHT · TRANSCRIPTION MODE (recording active) ===== -->
+  <div class="variant-block">
+    <div class="variant-tag">Variant A · Transcription</div>
+    <div class="variant-name">Light · Recording, streaming transcript</div>
+    <div class="variant-desc">Pattern-C popover, plan-015. General + Live Transcription sections (collapsible) above the live transcript pane; bottom status bar shows mic + sys bouncing meters, recording state pill, elapsed clock, and a single red Stop.</div>
+
+    <div class="popover light">
+      <!-- HEADER: filename + metadata strip + trailing chrome -->
+      <div class="header">
+        <input class="header-input" value="recording-2026-05-13-21-12" />
+        <div class="header-meta">
+          <span class="perm-pill"><span class="dot"></span>All permissions granted</span>
+          <span class="sep">·</span>
+          <span class="save-to">
+            <span class="folder-ico ico">
+              <svg width="11" height="11" viewBox="0 0 13 13" fill="currentColor"><path d="M1 3.2A1.2 1.2 0 0 1 2.2 2h2.4l1 1.2h5.2A1.2 1.2 0 0 1 12 4.4v5.4A1.2 1.2 0 0 1 10.8 11H2.2A1.2 1.2 0 0 1 1 9.8z"/></svg>
+            </span>
+            <span>Recordings</span>
+            <span class="change">Choose…</span>
+          </span>
+          <span class="sep">·</span>
+          <span class="state-label">Recording</span>
+          <span class="spacer"></span>
+          <span class="trailing-chrome">
+            <span class="glyph" title="Appearance: System">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><path d="M8 2v12" stroke-linecap="round"/></svg>
+            </span>
+            <span class="glyph" title="Settings (⌘,)">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.4"/><path d="M8 1.6v1.8M8 12.6v1.8M14.4 8h-1.8M3.4 8H1.6M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3M12.5 12.5l-1.3-1.3M4.8 4.8L3.5 3.5"/></svg>
+            </span>
+            <span class="glyph" title="Quit (⌘Q)">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2v6" stroke-linecap="round"/><path d="M4.8 4.5a4.5 4.5 0 1 0 6.4 0" stroke-linecap="round"/></svg>
+            </span>
+          </span>
+        </div>
+
+        <!-- Mode switcher: Transcription | Asking -->
+        <div class="mode-switcher" role="tablist" aria-label="Popover mode">
+          <div class="seg active" role="tab" aria-selected="true">Transcription</div>
+          <div class="seg" role="tab" aria-selected="false">Asking</div>
+        </div>
+      </div>
+
+      <!-- SECTION: General (collapsible) -->
+      <div class="section">
+        <div class="section-title">
+          <span><span class="chev">▾</span>GENERAL</span>
+        </div>
+        <div class="group">
+          <div class="row">
+            <span class="label">Format</span>
+            <div class="control">
+              <select class="popup"><option>m4a — AAC</option><option>wav</option><option>caf</option></select>
+            </div>
+          </div>
+          <div class="row">
+            <span class="label">Layout</span>
+            <div class="control">
+              <select class="popup"><option>Mixed (single file)</option><option>Split (system + mic)</option><option>Stereo split</option></select>
+            </div>
+          </div>
+          <div class="row">
+            <span class="label">Microphone</span>
+            <div class="control">
+              <select class="popup"><option>Default Input — MacBook Pro Mic</option><option>External USB Mic</option></select>
+            </div>
+          </div>
+          <div class="row">
+            <span class="label">Mic echo cancellation</span>
+            <div class="control">
+              <span class="switch" role="switch" aria-checked="false" title="Plan-014: off by default. Turn on to subtract speaker→mic bleed via software NLMS."></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SECTION: Live Transcription (collapsible + master switch in header) -->
+      <div class="section">
+        <div class="section-title with-toggle">
+          <span><span class="chev">▾</span>LIVE TRANSCRIPTION</span>
+          <span class="switch mini on" role="switch" aria-checked="true" title="Master enable for live transcription (UR-ADR-7)"></span>
+        </div>
+        <div class="group">
+          <div class="row">
+            <span class="label">Transcribe</span>
+            <div class="control">
+              <select class="popup">
+                <option>Apple Speech (on-device)</option>
+                <option>Apple Cloud (cloud, streaming)</option>
+                <option>WhisperKit (on-device, multilingual)</option>
+                <option>Parakeet (on-device, multilingual)</option>
+                <option selected>Soniox (cloud, multilingual)</option>
+                <option>Gemini (cloud)</option>
+                <option>Azure OpenAI (cloud, batch)</option>
+                <option>Azure OpenAI Realtime (cloud, streaming)</option>
+                <option>ElevenLabs Scribe v2 (cloud)</option>
+                <option>None</option>
+              </select>
+            </div>
+          </div>
+          <div class="row">
+            <span class="label">Source</span>
+            <div class="control">
+              <select class="popup"><option>System</option><option>Microphone</option><option selected>Mixed</option><option>Both (source-split)</option></select>
+            </div>
+          </div>
+          <div class="row">
+            <span class="label">Transcript format</span>
+            <div class="control">
+              <select class="popup"><option selected>jsonl</option><option>srt</option><option>vtt</option><option>txt</option></select>
+            </div>
+          </div>
+          <div class="row">
+            <span class="label">Language</span>
+            <div class="control">
+              <select class="popup"><option>Greek (Greece) — el-GR</option><option>English (US) — en-US</option><option>System default — Locale.current</option></select>
+            </div>
+          </div>
+          <div class="row-sub">
+            <div class="sub-head">
+              <span class="sub-label">Soniox API Key</span>
+              <span class="status-chip"><span class="dot"></span>Configured</span>
+            </div>
+            <div class="key-input-row">
+              <input class="key-input" type="password" value="••••••••••••••••••••••••••" />
+              <button class="btn">Replace…</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Live transcript panel -->
+      <div class="transcript-panel">
+        <div class="transcript-panel-head">
+          <span class="title">Transcript</span>
+          <span class="actions">
+            <span class="icon-btn" title="Clear transcript">
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 4h10M5 4V2.6h6V4M5.5 4l.6 9.6h3.8L10.5 4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </span>
+            <span class="status-badge"><span class="dot"></span>Streaming · Soniox</span>
+          </span>
+        </div>
+        <div class="transcript-body">
+          <div class="segment">
+            <span class="chip-mini">EL</span>
+            <span class="chip-mini">S1</span>
+            <span>Καλώς ήρθατε στη συνάντηση — ας ξεκινήσουμε με τα στοιχεία του Q1.</span>
+          </div>
+          <div class="segment">
+            <span class="chip-mini">EN</span>
+            <span class="chip-mini">S2</span>
+            <span>Sure — the headline number is up sixteen percent year over year, mostly from retention.</span>
+          </div>
+          <div class="segment">
+            <span class="chip-mini">EN</span>
+            <span class="chip-mini">S1</span>
+            <span>Got it. Can you break that out by region?</span>
+          </div>
+          <div class="segment partial">
+            <span class="chip-mini">EN</span>
+            <span class="chip-mini">S2</span>
+            <span>So in EMEA we're seeing roughly nine</span>
+          </div>
+        </div>
+        <div class="metrics-row">
+          <span>34.2 s · 14 chunks · 0 errors · 0 overflow</span>
+          <span>rtt: 240 ms</span>
+          <span>est. $0.0285</span>
+        </div>
+      </div>
+
+      <!-- Status bar (bottom band) -->
+      <div class="status-bar">
+        <span class="bars mic" aria-label="Microphone level">
+          <span class="bar" style="height: 7px;"></span>
+          <span class="bar" style="height: 11px;"></span>
+          <span class="bar" style="height: 6px;"></span>
+          <span class="bar" style="height: 14px;"></span>
+          <span class="bar" style="height: 9px;"></span>
+          <span class="bar" style="height: 12px;"></span>
+          <span class="bar" style="height: 5px;"></span>
+        </span>
+        <span class="bars-label">mic</span>
+
+        <span class="hairline"></span>
+
+        <span class="bars sys" aria-label="System audio level">
+          <span class="bar" style="height: 4px;"></span>
+          <span class="bar" style="height: 8px;"></span>
+          <span class="bar" style="height: 12px;"></span>
+          <span class="bar" style="height: 9px;"></span>
+          <span class="bar" style="height: 14px;"></span>
+          <span class="bar" style="height: 10px;"></span>
+          <span class="bar" style="height: 6px;"></span>
+        </span>
+        <span class="bars-label">sys</span>
+
+        <span class="hairline"></span>
+
+        <span class="state-pill" aria-label="Recording">
+          <span class="dot"></span>Recording
+        </span>
+        <span class="clock">00:34</span>
+
+        <span class="action-area">
+          <button class="stop-btn"><span class="glyph"></span>Stop</button>
+        </span>
+      </div>
+
+      <!-- Resize handle -->
+      <div class="resize-handle" aria-hidden="true"></div>
+    </div>
+  </div>
+
+  <!-- ===== VARIANT B: DARK · ASKING MODE (post-stop, Q&A active) ===== -->
+  <div class="variant-block">
+    <div class="variant-tag">Variant B · Asking</div>
+    <div class="variant-name">Dark · Asking mode, post-stop session</div>
+    <div class="variant-desc">Mode switcher flipped to Asking. The body becomes a scrolling Q&amp;A history above a pinned input row. Status bar shows Stopped state with the [+ New Session] [📁 Save…] pair (plan-015 FR-IRQ-48).</div>
+
+    <div class="popover dark">
+      <div class="header">
+        <input class="header-input" value="recording-2026-05-13-21-12" />
+        <div class="header-meta">
+          <span class="perm-pill"><span class="dot"></span>All permissions granted</span>
+          <span class="sep">·</span>
+          <span class="save-to">
+            <span class="folder-ico ico">
+              <svg width="11" height="11" viewBox="0 0 13 13" fill="currentColor"><path d="M1 3.2A1.2 1.2 0 0 1 2.2 2h2.4l1 1.2h5.2A1.2 1.2 0 0 1 12 4.4v5.4A1.2 1.2 0 0 1 10.8 11H2.2A1.2 1.2 0 0 1 1 9.8z"/></svg>
+            </span>
+            <span>Recordings</span>
+            <span class="change">Choose…</span>
+          </span>
+          <span class="sep">·</span>
+          <span class="state-label">Stopped</span>
+          <span class="spacer"></span>
+          <span class="trailing-chrome">
+            <span class="glyph" title="Appearance: Dark">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M12.3 9.3A5 5 0 0 1 6.7 3.7a.6.6 0 0 0-.8-.8 6.2 6.2 0 1 0 7.2 7.2.6.6 0 0 0-.8-.8z"/></svg>
+            </span>
+            <span class="glyph" title="Settings (⌘,)">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.4"/><path d="M8 1.6v1.8M8 12.6v1.8M14.4 8h-1.8M3.4 8H1.6M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3M12.5 12.5l-1.3-1.3M4.8 4.8L3.5 3.5"/></svg>
+            </span>
+            <span class="glyph" title="Quit (⌘Q)">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2v6" stroke-linecap="round"/><path d="M4.8 4.5a4.5 4.5 0 1 0 6.4 0" stroke-linecap="round"/></svg>
+            </span>
+          </span>
+        </div>
+
+        <div class="mode-switcher">
+          <div class="seg">Transcription</div>
+          <div class="seg active">Asking</div>
+        </div>
+      </div>
+
+      <!-- Asking-mode body: Q&A history + pinned input row -->
+      <div class="asking-body">
+        <div class="qa-scroll">
+          <div class="qa-bubble">
+            <div class="qa-line-header">
+              <span class="marker">Q</span>
+              <span>0:12 in recording</span>
+              <span>· Azure OpenAI · gpt-4o</span>
+            </div>
+            <div class="qa-question">Summarise what we just heard about Q1 EMEA performance in one sentence.</div>
+            <div class="qa-line-header">
+              <span class="marker">A</span>
+            </div>
+            <div class="qa-answer">EMEA grew about nine percent in Q1, driven primarily by retention rather than new acquisition.</div>
+          </div>
+
+          <div class="qa-bubble">
+            <div class="qa-line-header">
+              <span class="marker">Q</span>
+              <span>0:48 in recording</span>
+              <span>· Azure OpenAI · gpt-4o</span>
+            </div>
+            <div class="qa-question">What follow-up actions did anyone commit to?</div>
+            <div class="qa-line-header">
+              <span class="marker">A</span>
+              <span class="qa-streaming-tag">streaming…</span>
+            </div>
+            <div class="qa-answer">Maria offered to circulate the regional breakdown by Friday; Andreas asked the team to flag any churn signals from Tier-1 accounts before the next sync</div>
+          </div>
+        </div>
+
+        <div class="input-row">
+          <span class="mic-glyph ico" title="Voice input — coming soon">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="6" y="2.5" width="4" height="7" rx="2"/><path d="M3.5 8a4.5 4.5 0 0 0 9 0M8 12.5v1.6"/></svg>
+          </span>
+          <input class="field" type="text" placeholder="Ask a question about this recording…" />
+          <button class="send-btn" aria-label="Send (Return)">↑</button>
+        </div>
+      </div>
+
+      <!-- Status bar (bottom band) — Stopped state with [New Session] [Save…] -->
+      <div class="status-bar">
+        <span class="bars mic">
+          <span class="bar" style="height: 3px;"></span>
+          <span class="bar" style="height: 3px;"></span>
+          <span class="bar" style="height: 3px;"></span>
+          <span class="bar" style="height: 3px;"></span>
+          <span class="bar" style="height: 3px;"></span>
+          <span class="bar" style="height: 3px;"></span>
+          <span class="bar" style="height: 3px;"></span>
+        </span>
+        <span class="bars-label">mic</span>
+
+        <span class="hairline"></span>
+
+        <span class="bars sys">
+          <span class="bar" style="height: 3px;"></span>
+          <span class="bar" style="height: 3px;"></span>
+          <span class="bar" style="height: 3px;"></span>
+          <span class="bar" style="height: 3px;"></span>
+          <span class="bar" style="height: 3px;"></span>
+          <span class="bar" style="height: 3px;"></span>
+          <span class="bar" style="height: 3px;"></span>
+        </span>
+        <span class="bars-label">sys</span>
+
+        <span class="hairline"></span>
+
+        <span class="state-pill idle"><span class="dot"></span>Stopped</span>
+        <span class="clock">01:18</span>
+
+        <span class="action-area">
+          <button class="new-session-btn"><span>+</span>New Session</button>
+          <button class="save-btn">
+            <svg width="11" height="11" viewBox="0 0 13 13" fill="currentColor"><path d="M1 3.2A1.2 1.2 0 0 1 2.2 2h2.4l1 1.2h5.2A1.2 1.2 0 0 1 12 4.4v5.4A1.2 1.2 0 0 1 10.8 11H2.2A1.2 1.2 0 0 1 1 9.8z"/></svg>
+            Save…
+          </button>
+        </span>
+      </div>
+
+      <!-- Saved-files disclosure (visible because completedSegments != []) -->
+      <div class="saved-disclosure">
+        <div class="head">
+          <span style="display:inline-block; transform: rotate(0deg);">▾</span>
+          <span>Saved files (1)</span>
+        </div>
+        <div class="file-row">
+          <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M3 1.2h6.5L13 4.7v10A1.2 1.2 0 0 1 11.8 16H3a1.2 1.2 0 0 1-1.2-1.2V2.4A1.2 1.2 0 0 1 3 1.2zM9 1.6V5h3.6"/></svg>
+          <span>recording-2026-05-13-21-12.m4a</span>
+        </div>
+      </div>
+
+      <div class="resize-handle" aria-hidden="true"></div>
+    </div>
+  </div>
+
+</div>
+
+<div class="footnote">
+  Mockup at 1× macOS scale, refreshed 2026-05-13 to track master. Both popovers are 460 pt wide (the Swift default is 480 pt; 460 keeps two popovers visible side-by-side at typical viewports). Light variant shows <b>Transcription mode</b> mid-recording with the live transcript pane streaming; dark variant shows <b>Asking mode</b> post-stop with the <code>[+ New Session][📁 Save…]</code> action pair. See the regeneration note at the top of this file for the full drift inventory.
+</div>
+
+</body>
+</html>

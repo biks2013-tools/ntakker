@@ -1,0 +1,25 @@
+.build/
+.swiftpm/
+Packages/
+dist/
+*.xcodeproj
+*.xcworkspace
+DerivedData/
+.DS_Store
+*.swp
+xcuserdata/
+IDEWorkspaceChecks.plist
+/Tests/NtakkerCoreTests/Output/
+
+# Local e2e test artifacts (transcript + audio captured by
+# `test_scripts/e2e-transcription-*.sh`). Regenerated on every run;
+# never useful to track.
+/ntakker-cli-e2e.jsonl
+/ntakker-cli-e2e.m4a
+/ntakker-cli-e2e.*.jsonl
+/ntakker-cli-e2e.*.m4a
+
+# Git worktrees created by the using-git-worktrees skill
+.worktrees/
+
+node_modules/
