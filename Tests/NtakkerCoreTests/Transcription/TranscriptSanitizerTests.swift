@@ -45,5 +45,21 @@ struct TranscriptSanitizerTests {
         #expect(TranscriptSanitizer.clean("¿Qué tal?") == "¿Qué tal?")
         #expect(TranscriptSanitizer.clean("- ... [Speaker 2] yes") == "[Speaker 2] yes")
     }
+
+    @Test("TR-7: short replies survive a voiced chunk, not a quiet one")
+    func plausibleRepliesDependOnLevel() {
+        for word in ["Yeah.", "ok", "Thank you!", "okay"] {
+            #expect(TranscriptSanitizer.clean(word, chunkPeak: 0.3) == word, "\(word) on a voiced chunk")
+            #expect(TranscriptSanitizer.clean(word, chunkPeak: 0.02) == "", "\(word) on a quiet chunk")
+            #expect(TranscriptSanitizer.clean(word) == "", "\(word) with unknown level")
+        }
+    }
+
+    @Test("TR-7: pure hallucinations are dropped at any level")
+    func pureHallucinationsAlwaysDropped() {
+        for phrase in ["Thanks for watching!", "you", "um", "Subtitles by the Amara.org community"] {
+            #expect(TranscriptSanitizer.clean(phrase, chunkPeak: 0.8) == "", "\(phrase)")
+        }
+    }
 }
 

@@ -475,7 +475,10 @@ public actor TranscriptionManager: TranscriptionDispatcher {
                 source: source,
                 options: options
             )
-            let cleaned = TranscriptSanitizer.clean(raw)
+            // TR-7: pass the chunk level so a clearly voiced "yeah" /
+            // "ok" survives while the same word on a near-silent chunk is
+            // still treated as a hallucination.
+            let cleaned = TranscriptSanitizer.clean(raw, chunkPeak: TranscriptSanitizer.peak(samples))
             metrics.chunksSent += 1
             metrics.billableSeconds += durationSec
             metrics.lastRttMs = Int(Date().timeIntervalSince(started) * 1_000)
