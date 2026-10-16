@@ -19,11 +19,12 @@ Approved: 2026-10-16 ("yes please", after plan-019 was proposed as the step befo
 
 ### Azure realtime reconnect
 
-- [ ] **T3 (TR-13)** On every reconnect, including the planned 58-minute one, `AzureOpenAIRealtimeSession` replays the full ring of already-committed audio, which produces duplicate finals.
+- [x] **T3 (TR-13)** On every reconnect, including the planned 58-minute one, `AzureOpenAIRealtimeSession` replays the full ring of already-committed audio, which produces duplicate finals.
   - Count the samples sent on the current connection.
   - Take the committed boundary from `speech_stopped.audio_end_ms`, or from the send count at `input_audio_buffer.committed` when no `speech_stopped` arrived.
   - Replay only the uncommitted tail plus audio that was never sent.
   - Raise the ring to 15 s.
+  - Done: the replay-tail calculation is unit-tested (`AzureRealtimeReplayTailTests`). The wiring is build-verified only, because the session forces `wss` and has no transport seam.
 
 ### convo-coach transcript input
 

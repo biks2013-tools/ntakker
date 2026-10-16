@@ -7,7 +7,7 @@
 //
 //   * The WS task + receive-loop child task.
 //   * The 16 → 24 kHz resampler.
-//   * The 5 s `AudioRingBuffer<Int16>` for replay-on-reconnect.
+//   * The 15 s `AudioRingBuffer<Int16>` for replay-on-reconnect (only the uncommitted tail is replayed, TR-13).
 //   * The accumulating partial-text dictionary keyed by `item_id`.
 //   * The reconnect-with-replay state machine (close 1006/1001/1011 → up to 3 attempts).
 //   * The 58-min pre-emptive reconnect timer for the 60-min Azure cap.
@@ -51,8 +51,22 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
     private var preemptiveReconnectTask: Task<Void, Never>?
 
     private let resampler = AudioResampler16to24()
-    /// 5 s @ 24 kHz mono Int16 = 120,000 samples.
-    private var ringBuffer = AudioRingBuffer<Int16>(capacity: 120_000, fill: 0)
+    /// 15 s @ 24 kHz mono Int16 = 360,000 samples (~720 KB). Holds the
+    /// audio sent on the current socket (plus anything not yet sent),
+    /// so a reconnect can replay the part Azure never committed (TR-13).
+    private var ringBuffer = AudioRingBuffer<Int16>(capacity: 360_000, fill: 0)
+
+    /// TR-13: 24 kHz samples sent on the current socket.
+    private var samplesSentOnConnection = 0
+    /// TR-13: samples of the current socket's stream covered by an
+    /// `input_audio_buffer.committed` item.
+    private var committedSamplesOnConnection = 0
+    /// TR-13: end of the last `speech_stopped` (server VAD), in samples
+    /// of the current socket's stream; consumed by the next commit.
+    private var lastSpeechStoppedSample: Int?
+    /// TR-13: samples at the tail of the ring that were never sent
+    /// (appended while the socket was unconfigured).
+    private var unsentSamplesInRing = 0
 
     /// Partial text accumulator keyed by `item_id`. Cleared per item
     /// once `transcriptionCompleted` arrives.
@@ -157,13 +171,17 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
         // F10: never send audio before the current session is
         // configured — the chunk stays in the ring and is flushed (in
         // order) right after the config envelope goes out.
-        guard isConfigured else { return }
+        guard isConfigured else {
+            unsentSamplesInRing += int16Samples.count
+            return
+        }
 
         // Send to the WS as a JSON envelope carrying base64 audio.
         let base64 = pcm16Bytes.base64EncodedString()
         let envelope = RealtimeWireTypes.InputAudioBufferAppend(audio: base64)
         await sendJSON(envelope)
         hasUncommittedAudio = true
+        samplesSentOnConnection += int16Samples.count
     }
 
     public func finish() async {
@@ -237,6 +255,11 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
         // on this one — don't let `finish()` wait for them.
         pendingItemIds.removeAll()
         hasUncommittedAudio = false
+        // TR-13: the new socket's audio stream (and its VAD timestamps)
+        // starts from zero.
+        samplesSentOnConnection = 0
+        committedSamplesOnConnection = 0
+        lastSpeechStoppedSample = nil
         task.resume()
 
         // Start the receive loop in a child task so the actor can
@@ -304,7 +327,12 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
             reconnectAttempts = 0
             let toFlush = pendingReplay + ringBuffer.drain()
             pendingReplay = []
+            unsentSamplesInRing = 0
             if !toFlush.isEmpty {
+                // TR-13: keep the ring equal to "audio sent on this
+                // socket" so a later reconnect can find the uncommitted
+                // tail, replayed part included.
+                ringBuffer.append(toFlush)
                 await sendAudioChunks(toFlush)
             }
 
@@ -316,12 +344,22 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
 
         case .speechStopped(let payload):
             logger.debug("azure-realtime: speech_stopped item=\(payload.itemId ?? "?")")
+            if let endMs = payload.audioEndMS {
+                lastSpeechStoppedSample = endMs * 24
+            }
 
         case .bufferCommitted(let payload):
             logger.debug("azure-realtime: input_audio_buffer.committed item=\(payload.itemId ?? "?")")
             hasUncommittedAudio = false
             awaitingFinalCommit = false
             if let itemId = payload.itemId { pendingItemIds.insert(itemId) }
+            // TR-13: a VAD commit covers audio up to `speech_stopped`;
+            // a manual commit (finish) covers everything sent so far.
+            committedSamplesOnConnection = max(
+                committedSamplesOnConnection,
+                lastSpeechStoppedSample ?? samplesSentOnConnection
+            )
+            lastSpeechStoppedSample = nil
 
         case .transcriptionDelta(let payload):
             // Accumulate per-item; emit a `.partial` snapshot.
@@ -525,7 +563,17 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
         // session (the replayed 5 s used to be exactly the audio most
         // likely to be rejected).
         if pendingReplay.isEmpty {
-            pendingReplay = ringBuffer.drain()
+            // TR-13: replay only what Azure never committed — the
+            // already-committed audio is transcribed (or in flight) and
+            // replaying it produced duplicate finals on every reconnect,
+            // including the planned 58-min one.
+            pendingReplay = Self.uncommittedTail(
+                ring: ringBuffer.drain(),
+                sentOnConnection: samplesSentOnConnection,
+                committedOnConnection: committedSamplesOnConnection,
+                unsentInRing: unsentSamplesInRing
+            )
+            unsentSamplesInRing = 0
         }
 
         var attemptReason = reason
@@ -587,6 +635,20 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
     /// F10: send a block of 24 kHz Int16 samples as base64
     /// `input_audio_buffer.append` envelopes in 100 ms chunks (2,400
     /// samples each). Used for the post-configure replay flush.
+    /// TR-13: the suffix of `ring` that still needs to reach Azure after
+    /// a reconnect. The ring holds the audio sent on the current socket
+    /// (capped) followed by `unsentInRing` never-sent samples.
+    static func uncommittedTail(
+        ring: [Int16],
+        sentOnConnection: Int,
+        committedOnConnection: Int,
+        unsentInRing: Int
+    ) -> [Int16] {
+        let uncommittedSent = max(0, sentOnConnection - committedOnConnection)
+        let keep = min(ring.count, uncommittedSent + max(0, unsentInRing))
+        return Array(ring.suffix(keep))
+    }
+
     private func sendAudioChunks(_ samples: [Int16]) async {
         let chunkSize = 2_400
         var offset = 0
@@ -599,6 +661,7 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
             )
             await sendJSON(envelope)
             hasUncommittedAudio = true
+            samplesSentOnConnection += chunk.count
             offset = end
         }
     }
