@@ -19,7 +19,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { helpText, parseCliArgs } from './args.js';
+import { helpText, isStdinPiped, parseCliArgs } from './args.js';
 import { loadConfig } from './config.js';
 import {
     ConfigError,
@@ -455,7 +455,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     let useStdin = false;
     if (cliArgs.transcript !== undefined) {
         transcriptPath = cliArgs.transcript;
-    } else if (process.stdin.isTTY === false) {
+    } else if (isStdinPiped(process.stdin.isTTY)) {
         useStdin = true;
     } else {
         const recordingsDir = resolveRecordingsDir(config, cliArgs);

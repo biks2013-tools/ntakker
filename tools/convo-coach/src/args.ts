@@ -127,6 +127,18 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
 }
 
 /**
+ * True when stdin is piped / redirected (not an interactive terminal).
+ *
+ * Node sets `process.stdin.isTTY` to `true` only for a TTY; for pipes and
+ * files the property is `undefined` (never `false`), so a strict
+ * `=== false` check never matches and stdin mode was unreachable
+ * (EVAL-2026-10-16 CC-1).
+ */
+export function isStdinPiped(stdinIsTTY: boolean | undefined): boolean {
+    return stdinIsTTY !== true;
+}
+
+/**
  * Help text — mirrors the `<command>` block + parameter table of
  * docs/tools/convo-coach.md. Single source of truth for end-user usage.
  */
