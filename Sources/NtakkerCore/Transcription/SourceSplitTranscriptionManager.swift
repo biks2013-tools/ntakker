@@ -103,9 +103,17 @@ public actor SourceSplitTranscriptionManager: TranscriptionDispatcher {
         }
     }
 
+    /// Stops both children concurrently (EVAL-2026-10-16 TR-8). Each
+    /// child has its own drain budget; awaiting them one after the other
+    /// could take twice that, overrunning the session's outer teardown
+    /// budget and abandoning the microphone child's final drain and
+    /// sidecar close.
     public func stop() async {
-        await systemManager.stop()
-        await microphoneManager.stop()
+        let system = systemManager
+        let microphone = microphoneManager
+        async let systemStopped: Void = system.stop()
+        async let microphoneStopped: Void = microphone.stop()
+        _ = await (systemStopped, microphoneStopped)
     }
 
     public func rotateSidecar(toAudioURL: URL, format: TranscriptFormat) async throws {
