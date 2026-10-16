@@ -102,8 +102,11 @@ public enum Daemonizer {
     ///      continues. Prevents reacquiring a tty.
     ///   5. `chdir(options.workingDirectory.path)` — release the
     ///      caller's CWD.
-    ///   6. `umask(0)` — permissive umask; `PidFile.write` chmods
-    ///      0600 explicitly when it lands.
+    ///   6. `umask(0o077)` — owner-only. Recordings and transcript
+    ///      sidecars are private conversations, and their writers do
+    ///      not pass explicit modes, so the classic daemon `umask(0)`
+    ///      created them 0666 (EVAL-2026-10-16 INF-4). `PidFile.write`
+    ///      still chmods 0600 explicitly.
     ///   7. Redirect `stdin` ← `/dev/null` and `stdout`/`stderr` →
     ///      log fd via `dup2`.
     ///   8. Close the original log fd (we still have two duped
@@ -180,8 +183,8 @@ public enum Daemonizer {
             _ = chdir("/")
         }
 
-        // ---- Step 6: umask. ------------------------------------------
-        umask(0)
+        // ---- Step 6: umask (owner-only; see step 6 in the doc above).
+        umask(0o077)
 
         // ---- Step 7: redirect stdin/stdout/stderr. -------------------
         // stdin ← /dev/null (read-only).
