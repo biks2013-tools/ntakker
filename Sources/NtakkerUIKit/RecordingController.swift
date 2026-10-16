@@ -111,6 +111,18 @@ public final class RecordingController {
     /// bounded for long recordings.
     public private(set) var transcriptSegments: [TranscriptSegment] = []
 
+    /// Every transcript segment of the current session, uncapped
+    /// (EVAL-2026-10-16 UI-6). Ask "Full" / "15 min" and Save's
+    /// in-memory fallback read this; the live panel keeps reading the
+    /// capped `transcriptSegments`. Not cleared by
+    /// `clearTranscriptSegments()` (that only clears the panel); reset
+    /// when a new recording starts and by `resetToIdle()`. A session's
+    /// text is small (an hour is roughly 1–2 k segments).
+    public private(set) var sessionTranscript: [TranscriptSegment] = []
+
+    /// Position of each segment id in `sessionTranscript`.
+    @ObservationIgnored private var sessionTranscriptIndex: [UUID: Int] = [:]
+
     /// Aggregated transcription metrics from the manager. Updated on
     /// every `metricsTick` event.
     public private(set) var transcriptionMetrics: TranscriptionMetrics = TranscriptionMetrics()
@@ -272,6 +284,7 @@ public final class RecordingController {
         }
         completedSegments = []
         transcriptSegments = []
+        resetSessionTranscript()
         latestError = nil
         lastTranscriptionError = nil
         segmentElapsed = 0
@@ -323,6 +336,7 @@ public final class RecordingController {
         // Reset transcription state. `transcriptionStatus` will flip
         // to `.active` on the first event the manager forwards.
         transcriptSegments = []
+        resetSessionTranscript()
         transcriptionMetrics = TranscriptionMetrics()
         pendingDisclosure = nil
         lastTranscriptionError = nil
@@ -625,6 +639,7 @@ public final class RecordingController {
             transcriptSegments.append(segment)
         }
         enforceSegmentCap()
+        recordInSessionTranscript(segment)
     }
 
     /// Replace an existing entry that already carries the same `id`.
@@ -636,6 +651,7 @@ public final class RecordingController {
         if let existing = transcriptSegments.firstIndex(where: { $0.id == segment.id }) {
             transcriptSegments[existing] = segment
         }
+        recordInSessionTranscript(segment)
     }
 
     /// Plan-005 Phase H: replace the entry carrying `segment.id` with
@@ -651,6 +667,22 @@ public final class RecordingController {
             transcriptSegments.append(segment)
             enforceSegmentCap()
         }
+        recordInSessionTranscript(segment)
+    }
+
+    /// UI-6: insert or replace `segment` in the uncapped session list.
+    private func recordInSessionTranscript(_ segment: TranscriptSegment) {
+        if let existing = sessionTranscriptIndex[segment.id] {
+            sessionTranscript[existing] = segment
+        } else {
+            sessionTranscriptIndex[segment.id] = sessionTranscript.count
+            sessionTranscript.append(segment)
+        }
+    }
+
+    private func resetSessionTranscript() {
+        sessionTranscript = []
+        sessionTranscriptIndex = [:]
     }
 
     /// Drop the oldest segments until `transcriptSegments.count` no

@@ -387,7 +387,7 @@ struct RootView: View {
     private func performSessionSave(folderName: String, afterSave: (() -> Void)? = nil) {
         guard !isSavingSession else { return }
         isSavingSession = true
-        let segments     = recordingController?.transcriptSegments ?? []
+        let segments     = recordingController?.sessionTranscript ?? []
         let qaSnapshot   = askingStore.snapshotForSidecar()
         let audioSources = recordingController?.completedSegments ?? []
         Task {

@@ -506,7 +506,8 @@ struct AskingModeView: View {
         }
 
         let elapsed = recordingController?.totalElapsed ?? 0
-        let segments = recordingController?.transcriptSegments ?? []
+        // UI-6: the full session, not the panel's 100-segment window.
+        let segments = recordingController?.sessionTranscript ?? []
         _ = store.submit(
             question: trimmed,
             atSeconds: elapsed,

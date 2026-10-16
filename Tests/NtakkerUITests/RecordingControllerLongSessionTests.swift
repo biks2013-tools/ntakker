@@ -185,4 +185,22 @@ struct RecordingControllerLongSessionTests {
         #expect(c.transcriptSegments.last?.text == "late-final")
         #expect(c.transcriptSegments.count == RecordingController.maxLiveTranscriptSegments)
     }
+
+    @Test("UI-6: sessionTranscript keeps every final past the panel cap")
+    func sessionTranscriptIsUncapped() {
+        let c = RecordingController(logger: .init(label: "test.long.session"))
+        let n = RecordingController.maxLiveTranscriptSegments + 150
+        let ids = driveUtterances(c, count: n)
+
+        #expect(c.transcriptSegments.count == RecordingController.maxLiveTranscriptSegments)
+        #expect(c.sessionTranscript.count == n)
+        #expect(c.sessionTranscript.map(\.id) == ids, "chronological, one row per utterance")
+        #expect(c.sessionTranscript.allSatisfy { $0.text.hasSuffix("-final") })
+
+        // Clearing the panel does not touch the session record.
+        c.clearTranscriptSegments()
+        #expect(c.transcriptSegments.isEmpty)
+        #expect(c.sessionTranscript.count == n)
+    }
 }
+
