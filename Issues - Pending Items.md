@@ -7,6 +7,12 @@
 ## Pending items (most critical first)
 
 ### EVAL-2026-10-16 — Quality / speed / resource-efficiency scan: 74 new findings registered
+**RESOLUTION UPDATE (2026-10-17) — plan-021 aligner rewrite landed** ([docs/plans/plan-021-eval-2026-10-16-aligner-rewrite.md](docs/plans/plan-021-eval-2026-10-16-aligner-rewrite.md)):
+- **Fixed:** CAP-1, CAP-2, C1, C5 and the flush tail padding. Both baseline `HostClockAlignerStress` failures are fixed.
+- **New, fixed:** the M4A recorder's `requestMediaDataWhenReady` busy loop. It cost about 100 % CPU in every default-format recording, against about 3 % for WAV; after the fix, 4.2 %.
+- **Plain `swift test` now completes in about 17 s.** The `--skip NtakkerCoreTests.RecordingSessionTests` workaround is no longer needed.
+- **Remaining pre-existing failures (11):** Gemini REST ×5, gemini-live, partNN sidecar naming, Shell-env keys, SonioxConfigBuilder V1 policy, AudioDownsampler:144, UIErrorPresenter:220.
+
 **RESOLUTION UPDATE (2026-10-16) — plan-020 transcript-correctness wave landed** ([docs/plans/plan-020-eval-2026-10-16-transcript-correctness.md](docs/plans/plan-020-eval-2026-10-16-transcript-correctness.md)):
 - Fixed, one commit each: INF-1, INF-2 (Soniox reconnect), TR-13 (Azure replay), CC-2, CC-3 (convo-coach), UI-1 (Save bundles every part's and source's sidecars), UI-6 (uncapped session transcript for Ask and Save), TR-6, TR-7 (sanitizer), TR-5 (dual-locale reconciliation), TR-4 (Apple Cloud rotation).
 - **New bug found and fixed:** `JSONLTranscriptReader` dropped every segment that had been rewritten via tombstone-and-append (the tombstone shares the id), so Save lost every grown batch segment.

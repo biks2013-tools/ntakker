@@ -23,10 +23,21 @@ Approved: 2026-10-16. The user said "yes please" to the proposed order: plan-019
   - `lastDriftSec`: the absolute difference between the two sources' current snap deviations (the residual misalignment, at most 5 ms per track).
 - [x] **T1b (new, found while chasing the `RecordingSessionTests` spin)** `M4ARecorder` used `requestMediaDataWhenReady`. AVFoundation re-invokes that callback for as long as the input is ready, and with a push producer the pending queue is empty between 100 ms frames, so the callback busy-looped on every writer queue. Measured with a real `ntakker-cli` recording: **M4A (the default format) used about 100 % CPU against about 3 % for WAV.** Fix: push model with an inline drain plus a coalesced 10 ms retry when the input is not ready. After the fix: 4.2 % CPU, and a valid 8.2 s AAC file.
 - [x] **T2** Turn the stress-test expectations into the baseline. The two failing stress tests should pass; tighten the asymmetric-stop assertion now that stalls are detected; add tests for an in-stream hole, a never-started source, and flush padding.
-- [ ] **T3** Re-run `RecordingSessionTests` (it used to spin forever), and the full suite without `--skip` if it now terminates. Remove the memory note and the doc caveat about the hang.
+- [x] **T3** Re-run `RecordingSessionTests` (it used to spin forever), and the full suite without `--skip` if it now terminates. Remove the memory note and the doc caveat about the hang.
 
 ## Verification
 
 - `swift build` clean.
 - `HostClockAligner*` suites green.
 - Full suite shows no new failures; the two stress failures leave the baseline list.
+
+## Wave result (2026-10-17)
+
+- **Plain `swift test` now finishes, in about 17 s.** The "hang" had three causes:
+  1. The aligner's quadratic rebuild under a stall (T1).
+  2. The M4A `requestMediaDataWhenReady` busy loop (T1b), which was also burning about 100 % CPU in every real M4A recording.
+  3. Two `RecordingSessionTests` with no stop condition on a host whose runner holds the TCC grants. Fixed by giving them a 1 s `maxDuration`.
+- Aligner: 15/15 tests, stable over 6 consecutive runs. Both baseline stress failures are fixed.
+- Full suite: 485 + 214 Swift Testing tests and 70 XCTest. The only failures are the 11 still-open pre-existing ones (Gemini REST ×5, gemini-live, partNN, Shell env, SonioxConfigBuilder V1, AudioDownsampler:144, UIErrorPresenter:220).
+- Real-recording check: an 8 s M4A from `ntakker-cli` runs at 4.2 % CPU and produces a valid AAC file.
+

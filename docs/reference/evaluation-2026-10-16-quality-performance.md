@@ -13,8 +13,8 @@
 | # | ID | Sev | Where | Problem | Effort |
 |---|----|-----|-------|---------|--------|
 | 1 | **CC-1** | Critical | `tools/convo-coach/src/index.ts:458` | `process.stdin.isTTY === false` — Node leaves `isTTY` **undefined** for pipes, so live (stdin) mode is never selected; `tail -f … \| convo-coach` silently coaches on the newest file instead. Reproduced. Fix: `!process.stdin.isTTY` + piped-input integration test. | S |
-| 2 | **CAP-1** | High | `Aligning/HostClockAligner.swift:458-462` | `headPTS` only re-anchored when the buffer is empty; with 1024-frame buffers vs 4800-frame windows leftover is almost never empty, so a gap (dropped buffer, SCStream restart, PTS jump) is collapsed, never silence-filled → that track is **permanently early** for the rest of the recording. Probable cause of the 2 failing `HostClockAlignerStress` gap-fill tests. Place samples by PTS (as `SoftwareAECProcessor.feedReference` does). | M |
-| 3 | **CAP-2** | High | `HostClockAligner.swift:536-566` | If one source stalls, `sourceReady` stays false → nothing emitted, the other source's buffer grows unbounded and is fully copied per append (~180 MB/s memcpy after 10 s). Add a max-skew (300–500 ms) → silence-fill the stalled side, cap backlog. | M |
+| 2 | **CAP-1** | ~~High~~ *fixed (plan-021 T1)* | `Aligning/HostClockAligner.swift:458-462` | `headPTS` only re-anchored when the buffer is empty; with 1024-frame buffers vs 4800-frame windows leftover is almost never empty, so a gap (dropped buffer, SCStream restart, PTS jump) is collapsed, never silence-filled → that track is **permanently early** for the rest of the recording. Probable cause of the 2 failing `HostClockAlignerStress` gap-fill tests. Place samples by PTS (as `SoftwareAECProcessor.feedReference` does). | M |
+| 3 | **CAP-2** | ~~High~~ *fixed (plan-021 T1)* | `HostClockAligner.swift:536-566` | If one source stalls, `sourceReady` stays false → nothing emitted, the other source's buffer grows unbounded and is fully copied per append (~180 MB/s memcpy after 10 s). Add a max-skew (300–500 ms) → silence-fill the stalled side, cap backlog. | M |
 | 4 | **TR-1** | High | `Providers/ParakeetTranscriptionProvider.swift:113-119`, `WhisperKitTranscriptionProvider.swift:129` | `maxInFlightPerSource = 2` lets two concurrent inferences run on one non-thread-safe engine (FluidAudio `AsrManager` mutates inout decoder state across awaits). Guaranteed at cold start. Serialize on-device inference. | S |
 | 5 | **TR-3** | High | `Azure/Realtime/AzureOpenAIRealtimeSession.swift:153-159` | `finish()` closes immediately: no `input_audio_buffer.commit`, no wait for pending `transcription.completed` → last utterance lost on every stop. | S |
 | 6 | **UI-1** | High | `Views/Asking/SessionExporter.swift:61-90`, `SessionCoordinator.swift:604-631` | Save looks for `<stem>.part01.transcript.jsonl` (doesn't exist — only audio is renamed), ignores later parts and `.system/.microphone` sidecars → `transcript.md` falls back to the 100-segment in-memory list; part-1 sidecar left behind. | M |
@@ -40,7 +40,7 @@
 | 1 | **CAP-3** | `Capture/SoftwareAECProcessor.swift:584-649` | NLMS does 4 full passes over 4096 taps per sample ×2 channels ≈ **1.6 G MAC/s** + ~384k vDSP calls/s while AEC is on | Running-sum `refPower` (drop `svesq`), fuse leak+update (`vDSP_vsmsma`/block leakage), process mono once (CAP-6). Long-term: frequency-domain block filter (~1/50 cost). Also move the NLMS pass out of the lock (CAP-11, 2–4 ms stalls of the SCStream thread). | M / L |
 | 2 | **TR-2** | `TranscriptionManager.swift:38-44` + on-device providers | ~2 s chunks padded to 15 s (Parakeet) / 30 s (Whisper) → **7.5–15× wasted encoder compute**, ~1,800 encoder passes/h/source; words cut at chunk edges | Per-provider chunk policy (10–15 s on-device, cut at silence) — big CPU/ANE/battery win and better accuracy. | M |
 | 3 | **TR-11** (+F28/F29) | `RecordingSession.swift:1091-1143, 1201-1210` | WhisperKit large-v3 (626 MB) / Parakeet (~600 MB) reloaded + ANE warm-up on **every** recording, twice in source-split mode; first seconds lost while loading | Process-wide model cache actor with idle eviction (~10 min) + warm-up at pipeline start. | M |
-| 4 | **C1 + CAP-1/2** | `HostClockAligner.swift:353, 425-461, 719-761` | Every ingest/emit rebuilds full buffers with scalar loops (~300 allocs/s, 4–5 MB/s steady; unbounded under stall) | One ring-buffer rewrite with PTS placement + max-skew. Fix the stress-test baseline first (plan-017 T17 rationale). | M |
+| 4 | **C1 + CAP-1/2** *(fixed, plan-021)* | `HostClockAligner.swift:353, 425-461, 719-761` | Every ingest/emit rebuilds full buffers with scalar loops (~300 allocs/s, 4–5 MB/s steady; unbounded under stall) | One ring-buffer rewrite with PTS placement + max-skew. Fix the stress-test baseline first (plan-017 T17 rationale). | M |
 | 5 | **CAP-4** | `SCKitSystemAudioSource.swift:608` | `minimumFrameInterval = 1/CMTimeScale.max` ≈ 0 → "as fast as display refresh": likely 60–120 discarded 2×2 video frames/s with compositor/IOSurface cost | `CMTime(value: 1, timescale: 1)` (or larger). Verify `.screen` callback count in Instruments. | S |
 | 6 | **CAP-6** | `AVMicrophoneSource.swift:334` | Mono mic upmixed to stereo at capture → 2× mic memory/copies through AEC, aligner, summer; AEC runs 2 identical filters | Capture native channel count; upmix only at encoder. Halves AEC cost. | M |
 | 7 | **M1/M2/UI-5** | `LevelMeterPublisher.swift:149-178`, `PopoverStatusBar.swift:261-316` | 30 Hz observable writes always (108k/h) even with popover closed; two 30 Hz `TimelineView`s animating `sin(t·9)` regardless of audio; linear RMS → silence ≈ speech visually | dBFS mapping, dedup unchanged values, pause when popover hidden, data-driven leaf view (removes the TimelineViews). | S–M |
@@ -66,6 +66,15 @@
 - **CAP-18** — mic `wasDisconnectedNotification` not observed in core → silent mic stall (feeds CAP-2). **UI-9** — cost estimate shown for free on-device providers. **UI-6** — Ask "Full"/"15 min" and Save transcript only see the 100-segment UI list.
 
 ---
+
+## 3b. Found while fixing (2026-10-17)
+
+- **M4A busy loop (High, fixed in plan-021 T1b).** `M4ARecorder` used `requestMediaDataWhenReady`. With a push producer the callback returned immediately whenever nothing was pending, and AVFoundation called it again at once.
+  - Measured with `ntakker-cli`: an M4A recording (the default format) ran at about 100 % CPU, against about 3 % for WAV.
+  - After the fix: 4.2 % CPU.
+- **`JSONLTranscriptReader` tombstone bug (High, fixed in plan-020 T6a).** The reader dropped every segment rewritten via tombstone-and-append, so Save lost every grown batch-provider segment.
+- **`RecordingSessionTests` hang.** Besides the aligner and the M4A loop, two tests had no stop condition when the runner holds the TCC grants. Fixed in plan-021 T3.
+- **C5 (2026-06-12) fixed:** `lastDriftSec` now reports the residual track skew.
 
 ## 4. Suggested attack order
 

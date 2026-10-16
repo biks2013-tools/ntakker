@@ -182,7 +182,7 @@
 | `ntakker-cli.capture.system`           | serial Dispatch   | `.userInteractive`| `SCKitSystemAudioSource`         | Receives `SCStream` audio buffers; drops `.screen` buffers        |
 | `ntakker-cli.capture.system.video`     | serial Dispatch   | `.utility`        | `SCKitSystemAudioSource`         | Receives & discards `.screen` SCStream output (kept tiny)         |
 | `ntakker-cli.capture.mic`              | serial Dispatch   | `.userInteractive`| `AVMicrophoneSource`             | `AVCaptureAudioDataOutput` delegate queue                         |
-| `ntakker-cli.aligner`                  | serial Dispatch   | `.userInitiated`  | `HostClockAligner`               | Drains per-source ring buffers in lockstep                        |
+| `ntakker-cli.aligner`                  | serial Dispatch   | `.userInitiated`  | `HostClockAligner`               | Places per-source chunks by PTS; emits 100 ms windows (plan-021) |
 | `ntakker-cli.recorder.main`            | serial Dispatch   | `.userInitiated`  | M4A/WAV/CAF Recorder (mixed/SS)  | Wraps every `append`, `markAsFinished`, `endSession`              |
 | `ntakker-cli.recorder.mic`             | serial Dispatch   | `.userInitiated`  | Recorder for split.mic           | As above (split layout only)                                      |
 | `ntakker-cli.recorder.system`          | serial Dispatch   | `.userInitiated`  | Recorder for split.system        | As above (split layout only)                                      |
@@ -870,29 +870,38 @@ public enum BufferSummer {
 }
 ```
 
-**Aligner algorithm (verbatim recipe from `docs/research/scstream-audio-only.md`
-§4.3 + the Nonstrict gap-handling reference):**
+**Aligner algorithm (rewritten 2026-10-16, plan-021; replaces the original
+§4.3 recipe, whose flat-buffer implementation collapsed in-stream holes and
+blocked on a stalled source: EVAL-2026-10-16 CAP-1 / CAP-2 / C1 / C5):**
 
-1. Capture queue calls `accept(_:)` → enqueue onto per-source ring buffer
-   on the `ntakker-cli.aligner` serial queue.
-2. On each enqueue, attempt `tryDrain()`:
-   - For each source S in {system, mic}:
-     - Let `ptsS = head(S).pts`. Compute `gapS = ptsS - nextExpectedAudioTime[S]`.
-     - If `gapS > 1 sample period`, prepend a synthetic silence buffer of
-       duration `gapS` via `SilenceBufferFactory`. Update
-       `nextExpectedAudioTime[S] = ptsS`.
-   - If both heads have data covering an overlapping time slice ≥ one
-     buffer width, slice each side to that interval, emit
-     `AlignedFrame(pts:, duration:, systemBuffer:, micBuffer:)`, advance
-     `nextExpectedAudioTime[S] = pts + duration` for each source, drop
-     consumed bytes from the heads.
-3. PTS normalization at ingress: every incoming buffer's timing info is
-   converted to timescale `48_000` (per Phase F risk register R-1 / `docs/design/plan-001-recording-tool.md` §6).
+1. **Timeline.** `accept(_:)` hops onto the `ntakker-cli.aligner` serial
+   queue. Every PTS is converted to an absolute sample index at the target
+   rate (48 kHz). Windows of `windowFrames` (100 ms) start at the first
+   ingested buffer's index. A `cursor` marks the next window; nothing before
+   it is emitted again.
+2. **Placement.** Each source keeps a queue of chunks (one per buffer,
+   samples copied once). A chunk is placed at its PTS:
+   - within 5 ms of the previous chunk's end: snapped (contiguous, absorbs
+     jitter);
+   - further ahead: a hole, emitted as silence and counted once as a
+     gap-fill;
+   - behind: the overlap is trimmed.
 
-**`drain()` semantics:** Stop accepting new captures (latch a `stopped` flag).
-Slice and emit any remaining matched portion. Drop residual non-matched
-data (by definition, if only one side has data left after sources have
-stopped, no aligned pair exists).
+   Samples before `cursor` are dropped on arrival.
+3. **Emission.** A window `[ws, we)` is emitted when each source either
+   covers `we`, or lags the other source by more than 400 ms (stalled or
+   absent). A stalled source is silence-filled for the window and counted
+   as a gap-fill. Each source's chunk overlaps are copied straight into the
+   output block buffer; consumed chunks are popped (amortised O(1)). The
+   output PTS is the window start (timescale = sample rate).
+4. **Drift metric.** `stats.lastDriftSec` is the absolute difference between
+   the two sources' current snap deviations, i.e. the residual misalignment
+   between the tracks (≤ 5 ms per track, within NFR-4's 20 ms).
+
+**`drain()` / `flush()` semantics:** stop accepting new captures, emit every
+complete window, then emit the remaining partial windows padded with silence,
+so the tail is kept instead of dropped. Padding windows are not counted as
+gap-fills.
 
 ---
 
