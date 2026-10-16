@@ -122,7 +122,7 @@ public enum AskConfigResolver {
         switch provider {
         case .openai:
             let key = try required(env, "OPENAI_API_KEY")
-            let base = URL(string: nonEmpty(env["OPENAI_BASE_URL"]) ?? "https://api.openai.com/v1")!
+            let base = try url(env, "OPENAI_BASE_URL", default: "https://api.openai.com/v1")
             let model = nonEmpty(env["NTAKKER_ASK_MODEL"]) ?? "gpt-4o-mini"
             return AskConfig(
                 provider: provider, model: model, endpoint: base,
@@ -131,7 +131,7 @@ public enum AskConfigResolver {
 
         case .anthropic:
             let key = try required(env, "ANTHROPIC_API_KEY")
-            let base = URL(string: nonEmpty(env["ANTHROPIC_BASE_URL"]) ?? "https://api.anthropic.com/v1")!
+            let base = try url(env, "ANTHROPIC_BASE_URL", default: "https://api.anthropic.com/v1")
             let model = nonEmpty(env["NTAKKER_ASK_MODEL"]) ?? "claude-haiku-4-5-20251001"
             return AskConfig(
                 provider: provider, model: model, endpoint: base,
@@ -146,7 +146,7 @@ public enum AskConfigResolver {
                     sourcesChecked: canonicalSources
                 )
             }
-            let base = URL(string: nonEmpty(env["GOOGLE_BASE_URL"]) ?? "https://generativelanguage.googleapis.com/v1beta")!
+            let base = try url(env, "GOOGLE_BASE_URL", default: "https://generativelanguage.googleapis.com/v1beta")
             let model = nonEmpty(env["NTAKKER_ASK_MODEL"]) ?? "gemini-2.5-flash"
             return AskConfig(
                 provider: provider, model: model, endpoint: base,
@@ -208,7 +208,7 @@ public enum AskConfigResolver {
             )
 
         case .ollama:
-            let base = URL(string: nonEmpty(env["OLLAMA_HOST"]) ?? "http://127.0.0.1:11434")!
+            let base = try url(env, "OLLAMA_HOST", default: "http://127.0.0.1:11434")
             guard let model = nonEmpty(env["NTAKKER_ASK_MODEL"]) else {
                 throw NtakkerError.missingRequiredConfig(
                     key: "NTAKKER_ASK_MODEL",
@@ -270,6 +270,22 @@ public enum AskConfigResolver {
             throw NtakkerError.missingRequiredConfig(key: key, sourcesChecked: canonicalSources)
         }
         return v
+    }
+
+    /// Parse an endpoint override. A malformed value used to crash the
+    /// app through a force-unwrap (EVAL-2026-10-16 INF-7); it now raises
+    /// `invalidConfigValue`. Requires an absolute URL (scheme + host) —
+    /// `URL(string:)` alone accepts relative strings such as "abc".
+    private static func url(_ env: [String: String], _ key: String, default fallback: String) throws -> URL {
+        let raw = nonEmpty(env[key]) ?? fallback
+        guard let parsed = URL(string: raw), parsed.scheme != nil, parsed.host != nil else {
+            throw NtakkerError.invalidConfigValue(
+                key: key,
+                value: raw,
+                expected: "absolute URL (e.g. \(fallback))"
+            )
+        }
+        return parsed
     }
 
     private static func nonEmpty(_ raw: String?) -> String? {

@@ -15,7 +15,7 @@
 - [x] **T7 (CAP-7)** WAV/CAF recorders latch the first write error and surface it from `append`/`finalize`.
 - [x] **T8 (CAP-8)** M4A finalize drains pending buffers before `markAsFinished()`.
 - [x] **T9 (CAP-10)** SCStream `restartStream` in-progress latch.
-- [ ] **T10 (INF-7)** AskConfig: no force-unwrapped env URLs → `invalidConfigValue`.
+- [x] **T10 (INF-7)** AskConfig: no force-unwrapped env URLs → `invalidConfigValue`.
 - [ ] **T11 (TR-8)** SourceSplit `stop()` stops both children in parallel.
 - [ ] **T12 (TR-9)** `TranscriptionManager.awaitValue` deadline via continuation race (not `withTaskGroup`).
 - [ ] **T13 (TR-17)** Sidecar writers never truncate an existing file.
