@@ -31,6 +31,7 @@
 
 import Foundation
 import Logging
+import struct os.OSAllocatedUnfairLock
 
 /// Per-mode sidecar persistence policy.
 ///
@@ -98,16 +99,35 @@ public actor TranscriptSidecarWriter {
         // error rather than a "broken state on the very first write".
         try Self.ensureParentDirectory(of: outputPath)
 
+        // TR-17 (EVAL 2026-10-16): the per-format writers open with
+        // `createFile`, which truncates. That is intended for a stale
+        // sidecar from an earlier recording (the audio path is already
+        // guarded by --overwrite), but a second writer on a file that
+        // is still open in this process — the F24 bug class — silently
+        // destroys the live transcript. Claim the path first.
+        let key = Self.registryKey(outputPath)
+        guard Self.claim(key) else {
+            throw TranscriptSidecarWriterError.alreadyOpen(path: outputPath)
+        }
+        self.registryKey = key
+
         do {
             self.formatWriter = try Self.makeFormatWriter(for: format,
                                                           url: outputPath)
         } catch {
+            Self.release(key)
             throw TranscriptSidecarWriterError.cannotOpenForWriting(
                 path: outputPath,
                 underlying: error
             )
         }
         self.state = .open
+    }
+
+    deinit {
+        // A writer dropped without close() must not keep its path
+        // claimed for the life of the process (menu-bar app).
+        Self.release(registryKey)
     }
 
     /// Append one event to the sidecar. Best-effort: if the underlying
@@ -189,6 +209,7 @@ public actor TranscriptSidecarWriter {
             )
         }
         state = .closed
+        Self.release(registryKey)
     }
 
     /// Diagnostic: returns whether the writer has accepted/rejected
@@ -208,6 +229,23 @@ public actor TranscriptSidecarWriter {
     }
 
     private let outputPath: URL
+    private let registryKey: String
+
+    /// Standardised paths of every sidecar currently open in this
+    /// process (TR-17).
+    private static let openPaths = OSAllocatedUnfairLock<Set<String>>(initialState: [])
+
+    private static func registryKey(_ url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    private static func claim(_ key: String) -> Bool {
+        openPaths.withLock { $0.insert(key).inserted }
+    }
+
+    private static func release(_ key: String) {
+        _ = openPaths.withLock { $0.remove(key) }
+    }
     private let format: TranscriptFormat
     private let policy: SidecarPolicy
     private let formatWriter: any TranscriptFormatWriter
@@ -265,8 +303,14 @@ public enum TranscriptSidecarWriterError: Error, CustomStringConvertible {
     /// denials from quota exhaustion etc.
     case cannotOpenForWriting(path: URL, underlying: Error)
 
+    /// Another writer in this process still has the file open; opening
+    /// it again would truncate the live transcript (TR-17).
+    case alreadyOpen(path: URL)
+
     public var description: String {
         switch self {
+        case let .alreadyOpen(path):
+            return "transcript sidecar \(path.path) is already open by another writer in this process"
         case let .cannotCreateFile(path):
             return "cannot create transcript sidecar at \(path.path)"
         case let .cannotOpenForWriting(path, underlying):
