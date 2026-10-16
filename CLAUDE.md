@@ -266,12 +266,12 @@ Documentation: [docs/tools/ntakker-cli.md](docs/tools/ntakker-cli.md)
 
 ### ntakker
 
-macOS menu-bar status item app that drives the same `NtakkerCore` engine as the CLI under a separate bundle id (`com.local.ntakker`) for independent TCC grants. Popover surface exposes start / pause / resume / stop / split, format / layout / folder / mic selectors, permission status, per-source level meters, opt-in live transcription with inline panel, and the opt-in mic echo-cancellation toggle (plan-014).
+macOS menu-bar status item app that drives the same `NtakkerCore` engine as the CLI under a separate bundle id (`com.local.ntakker`) for independent TCC grants. Popover surface exposes start / stop (pause / resume / split exist in `ControlBar` but are not currently reachable from the popover — EVAL-2026-10-16 UI-2), format / layout / folder / mic selectors, permission status, per-source level meters, opt-in live transcription with inline panel, and the opt-in mic echo-cancellation toggle (plan-014).
 
 Documentation: [docs/tools/ntakker.md](docs/tools/ntakker.md)
 
 ### convo-coach
 
-TypeScript CLI that reads a `ntakker-cli` transcript sidecar and streams live conversational coaching advice from any of the eight standard LLM providers (OpenAI, Anthropic, Google Gemini, Azure OpenAI, Azure AI Inference, Ollama, LiteLLM, MLX-LM) via the Vercel AI SDK, writing every response to a dated `.advice-*.md` sidecar. Defaults to `azure-openai` when neither `--provider` nor `COACH_PROVIDER` is set (Project Memory Exception 003); four operational parameters fall back to documented defaults (Exception 004).
+TypeScript CLI that reads a `ntakker-cli` transcript sidecar and streams live conversational coaching advice from any of the eight standard LLM providers (OpenAI, Anthropic, Google Gemini, Azure OpenAI, Azure AI Inference, Ollama, LiteLLM, MLX-LM) via LangChain (`@langchain/*`), writing every response to a dated `.advice-*.md` sidecar. Defaults to `azure-openai` when neither `--provider` nor `COACH_PROVIDER` is set (Project Memory Exception 003); four operational parameters fall back to documented defaults (Exception 004).
 
 Documentation: [docs/tools/convo-coach.md](docs/tools/convo-coach.md)

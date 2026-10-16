@@ -10,7 +10,7 @@ Approved: 2026-10-16 ("yes please"); one commit per task.
 - [x] **T2 (INF-3)** Verify whether `timeoutIntervalForResource = 300` kills the Soniox WebSocket at 5 minutes. Fix only if it reproduces.
   - Result: not reproduced. `test_scripts/ws-resource-timeout-probe.swift` keeps an upgraded socket open well past a 3 s resource timeout, with continuous traffic and with a 6 s idle gap. No code change.
 - [x] **T3 (F17)** `SonioxStreamingSession.finish()` sleeps the full 2 s grace period on every stop. Wait for the server's `{"finished": true}` frame (or the end of the inbound stream), with the grace period as the cap. Add a test that `finish()` returns well before the cap once `finished` arrives.
-- [ ] **T4 (doc drift)**
+- [x] **T4 (doc drift)**
   - CLAUDE.md and `docs/tools/convo-coach.md` say "Vercel AI SDK"; the implementation is LangChain (`@langchain/*`).
   - CLAUDE.md says the popover exposes pause / resume / split; those controls exist in `ControlBar` but are not reachable (UI-2).
   - plan-017 T13 / T14 are unticked although the code landed (T14's F4 round-trip is still open per the evaluation).
@@ -20,3 +20,11 @@ Approved: 2026-10-16 ("yes please"); one commit per task.
 
 - `swift build` clean.
 - New tests pass; full suite run with `--skip NtakkerCoreTests.RecordingSessionTests` shows no failures beyond the plan-018 baseline list.
+
+## Wave result (2026-10-16)
+
+- T1, T3: fixed with tests. The UI-4 test fails on the old `.bufferingNewest(16)` policy and passes on `.unbounded`.
+- T2: INF-3 not reproduced; probe kept in `test_scripts/`.
+- T4: doc drift fixed. Only the two corrected CLAUDE.md lines were committed; the user's uncommitted CLAUDE.md edits stay unstaged.
+- Test runs: `NtakkerUITests` and the Soniox suites show only the baseline failures (`UIErrorPresenterTests:220`, `SonioxConfigBuilderTests` V1 policy).
+

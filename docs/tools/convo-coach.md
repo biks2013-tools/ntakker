@@ -7,7 +7,7 @@
         written to a sidecar file `<transcript-basename>.advice-<YYYYMMDD-HHMMSS>.md`
         placed next to the source transcript. All eight standard LLM providers (OpenAI,
         Anthropic, Google Gemini, Azure OpenAI, Azure AI Inference / Foundry, Ollama,
-        LiteLLM, MLX-LM) are supported out of the box via the Vercel AI SDK.
+        LiteLLM, MLX-LM) are supported out of the box via LangChain (`@langchain/*`).
     </objective>
     <command>
         convo-coach [--transcript &lt;path&gt;] [--last &lt;duration&gt;] [--since &lt;timestamp&gt;]
@@ -94,11 +94,11 @@
         | `AZURE_OPENAI_DEPLOYMENT` | Deployment name. Required (passed as model identifier to the SDK). |
         | `AZURE_OPENAI_API_VERSION`| Optional. **Leave unset** for new deployments — the SDK then uses its `v1` default which routes to Azure's GA endpoint `https://<resource>.openai.azure.com/openai/v1/...` (no dated api-version required, supports current models such as `gpt-5.x`). Set to a dated preview version like `2025-04-01-preview` only if you need the legacy deployment-based URL pattern for older deployments. |
 
-        Note: the `@ai-sdk/azure` package reads `AZURE_RESOURCE_NAME` and `AZURE_API_KEY`
-        automatically. `convo-coach` reads `AZURE_OPENAI_API_KEY` and `AZURE_OPENAI_ENDPOINT`
-        from its own four-tier chain, derives `resourceName` by stripping the URL scheme and
-        `.openai.azure.com` suffix, and passes both values explicitly to the SDK — so the
-        vendor-canonical names take full effect regardless of SDK auto-detection.
+        Note: `convo-coach` reads `AZURE_OPENAI_API_KEY` and `AZURE_OPENAI_ENDPOINT` from its
+        own four-tier chain and passes them explicitly to LangChain. With
+        `AZURE_OPENAI_API_VERSION` unset it uses `ChatOpenAI` against `<endpoint>/openai/v1`;
+        with it set it uses `AzureChatOpenAI`, deriving the resource name by stripping the URL
+        scheme and the `.openai.azure.com` suffix.
 
         Migration tip — if you previously had `AZURE_OPENAI_API_VERSION=2024-12-01-preview`
         (or any 2024-vintage value) exported in your shell and you hit `API version not

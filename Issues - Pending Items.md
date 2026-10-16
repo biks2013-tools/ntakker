@@ -7,6 +7,8 @@
 ## Pending items (most critical first)
 
 ### EVAL-2026-10-16 — Quality / speed / resource-efficiency scan: 74 new findings registered
+**RESOLUTION UPDATE (2026-10-16) — plan-019 landed** ([docs/plans/plan-019-eval-2026-10-16-leftovers-and-doc-drift.md](docs/plans/plan-019-eval-2026-10-16-leftovers-and-doc-drift.md)): UI-4 (coordinator events stream now unbounded; regression test fails on the old policy), INF-3 (not reproduced — `test_scripts/ws-resource-timeout-probe.swift`), F17 (Soniox `finish()` returns on the server's `finished` frame, 2 s cap), and the doc drift below (Vercel → LangChain in CLAUDE.md and `docs/tools/convo-coach.md`; CLAUDE.md popover controls corrected; plan-017 T13/T14 ticked). UI-2 itself (unreachable pause/resume/split) stays open.
+
 **RESOLUTION UPDATE (2026-10-16) — plan-018 wave 1 landed** ([docs/plans/plan-018-eval-2026-10-16-quick-fixes.md](docs/plans/plan-018-eval-2026-10-16-quick-fixes.md)): CC-1, TR-1, TR-3, INF-4, CAP-4, CAP-5 (not reproduced — downgraded), CAP-7, CAP-8, CAP-10, INF-7, TR-8, TR-9, TR-17 (as an open-path registry), H2 — one commit each; zero new test failures vs `bf69be5`. **Newly documented test-suite facts:** `RecordingSessionTests` spins forever in `HostClockAligner.appendSamples` (pre-existing; makes plain `swift test` look hung — use `--skip NtakkerCoreTests.RecordingSessionTests`); `AudioDownsamplerTests:144` and `UIErrorPresenterTests:220` are pre-existing failures missing from the plan-017 baseline list. Manual check pending: popover Save (T14). Remaining findings stay open per the report.
 
 **Status (2026-10-16).** Read-only re-scan at commit `bf69be5`. Full report: [docs/reference/evaluation-2026-10-16-quality-performance.md](docs/reference/evaluation-2026-10-16-quality-performance.md) (CAP-1…18, TR-1…20, INF-1…15, UI-1…9, CC-1…12 + status of every open EVAL-2026-06-12 finding). Nothing fixed yet.
@@ -22,7 +24,7 @@
 
 **Top efficiency wins:** AEC NLMS ≈1.6 G MAC/s (CAP-3/6/11); on-device STT 7.5–15× wasted compute from 2 s chunks padded to 15/30 s (TR-2) + model reloaded every recording (TR-11); SCStream video frames at display rate (CAP-4); aligner rewrite (C1); level meters at 30 Hz with popover closed (M1/M2/UI-5); Save on main actor (H2 → `moveItem`).
 
-**Doc drift found:** plan-017 T13/T14 unticked although landed; CLAUDE.md/`docs/tools/convo-coach.md` still say "Vercel AI SDK"; CLAUDE.md advertises popover pause/resume/split which are unreachable (UI-2).
+**Doc drift found (fixed 2026-10-16, plan-019 T4):** plan-017 T13/T14 unticked although landed; CLAUDE.md/`docs/tools/convo-coach.md` still say "Vercel AI SDK"; CLAUDE.md advertises popover pause/resume/split which are unreachable (UI-2).
 
 ### EVAL-2026-06-12 — Application-wide functionality/performance evaluation: 94 findings registered
 **RESOLUTION UPDATE (2026-06-13) — plan-017 waves 1–3 (attack-order items 1, 2, 3).** 16 of 18 planned fixes landed; build green; `convo-coach` 166/166 tests green; changed Swift suites green (TranscriptionManager incl. new F24 regression test, Soniox/SourceSplit, SoftwareAECProcessor, BufferSummer, M4ARecorder/WAVRecorder — 46 tests across the focused runs). See [docs/design/plan-017-eval-fixes-waves-1-3.md](docs/design/plan-017-eval-fixes-waves-1-3.md).

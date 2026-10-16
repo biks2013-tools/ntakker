@@ -68,10 +68,10 @@ No task below may add a NEW failure beyond this baseline. (The two Soniox tests 
 
 ## Wave 3 — Hot-path performance
 
-- [ ] **T13 (H3+H4)** Remove `LEVELMETER_RT` instrumentation (racy static counters on audio queues, warning-level hot-path logs); downgrade per-event transcript logs to `.trace`/`.debug`.
+- [x] **T13 (H3+H4)** Remove `LEVELMETER_RT` instrumentation (racy static counters on audio queues, warning-level hot-path logs); downgrade per-event transcript logs to `.trace`/`.debug`.
   Files: `Sources/NtakkerUIKit/LevelMeterTap.swift`, `RecordingController.swift`, `SessionCoordinator.swift`.
 
-- [ ] **T14 (F32+F4)** One vDSP-backed `PCMConvert` utility (Float32↔Int16, single documented convention); replace the 5 scalar implementations; eliminate the Int16→Float→Int16 round-trip in `TranscriptionManager.ingestFrame`.
+- [x] **T14 (F32+F4)** One vDSP-backed `PCMConvert` utility (Float32↔Int16, single documented convention); replace the 5 scalar implementations; eliminate the Int16→Float→Int16 round-trip in `TranscriptionManager.ingestFrame`. *(Ticked 2026-10-16 per EVAL-2026-10-16 §5: PCMConvert landed; the F4 round-trip is only partly removed and stays open.)*
   Files: `TranscriptionManager.swift`, `Live/Soniox/SonioxStreamingSession.swift`, `Providers/SpeechAnalyzerAdapter.swift`, `AudioWAVEncoder.swift`, `Providers/AppleCloudTranscriptionProvider.swift`, new `Transcription/PCMConvert.swift`.
 
 - [x] **T15 (C2)** `SoftwareAECProcessor`: reuse the output scratch buffer (move-out/move-back so it stays uniquely referenced → in-place writes, no per-buffer 2-D allocation). C8 done via vDSP strided gather (`vDSP_vadd` into a zeroed channel) — `cblas_scopy` avoided (deprecated on macOS 13.3+ without a build flag).
