@@ -12,9 +12,11 @@
 //     `_isFinalizing`. The aligner's serial queue calls into
 //     `append(_:)` which trampolines onto `writerQueue` synchronously
 //     (just to enqueue) and returns immediately.
-//   * `requestMediaDataWhenReady` runs its callback on `writerQueue` —
-//     so the drain loop is naturally serialized with `append(_:)`'s
-//     enqueue path.
+//   * Buffers are pushed: `enqueue` drains inline on `writerQueue`
+//     and, if the input was not ready, schedules a short coalesced
+//     retry on the same queue (`scheduleRetryIfNeeded`). The recorder
+//     does NOT use `requestMediaDataWhenReady` — with a push producer
+//     its callback busy-loops (2026-10-17).
 //   * `start()` and `finalize(timeout:)` are async — they await
 //     internal `withCheckedContinuation` bridges to the dispatch world.
 //
@@ -64,6 +66,8 @@ public final class M4ARecorder: Recorder, @unchecked Sendable {
         let writer: AVAssetWriter
         let input: AVAssetWriterInput
         var pending: [CMSampleBuffer] = []
+        /// A delayed re-drain is queued (input was not ready).
+        var retryScheduled = false
         /// Set to a non-nil value once `append` returns false or the
         /// writer's status flips out of `.writing`. Surfaced from the
         /// next `append` / `finalize`.
@@ -134,7 +138,7 @@ public final class M4ARecorder: Recorder, @unchecked Sendable {
 
     public func append(_ frame: AlignedFrame) throws {
         // We surface any encoder failure that was captured asynchronously
-        // by the requestMediaDataWhenReady drain loop. This is checked
+        // by the drain path. This is checked
         // synchronously up front so the orchestrator can react fast.
         var firstFailure: Error?
         writerQueue.sync {
@@ -317,7 +321,6 @@ public final class M4ARecorder: Recorder, @unchecked Sendable {
         case .mixed, .stereoSplit:
             let unit = try buildWriter(at: options.output, sessionStart: sessionStart, label: "single")
             singleWriter = unit
-            installDrainHandler(on: unit, target: .single)
 
         case .split:
             // Validate + materialize sibling paths.
@@ -330,8 +333,6 @@ public final class M4ARecorder: Recorder, @unchecked Sendable {
             let micUnit = try buildWriter(at: micURL, sessionStart: sessionStart, label: "mic")
             systemWriter = sysUnit
             micWriter = micUnit
-            installDrainHandler(on: sysUnit, target: .systemSide)
-            installDrainHandler(on: micUnit, target: .micSide)
         }
 
         state = .running
@@ -696,11 +697,31 @@ public final class M4ARecorder: Recorder, @unchecked Sendable {
         if _lastAppendedEndPTS.map({ CMTimeCompare(bufferEnd, $0) > 0 }) ?? true {
             _lastAppendedEndPTS = bufferEnd
         }
-        // No need to poke the input — its requestMediaDataWhenReady
-        // callback will pull as soon as it's hungry. When it's already
-        // ready (the common live-capture case) we still drain inline so
-        // that buffers don't queue up unnecessarily.
+        // Push model: drain inline (the common live-capture case — the
+        // input is ready), and retry shortly if it was not.
         drain(unit: unit)
+        scheduleRetryIfNeeded(unit: unit)
+    }
+
+    /// Re-drain `unit` after a short delay while buffers are pending and
+    /// the input was not ready. Coalesced: at most one retry in flight.
+    ///
+    /// This replaces `requestMediaDataWhenReady`, which AVFoundation
+    /// re-invokes for as long as the input is ready. With a push-style
+    /// producer the pending queue is empty between 100 ms frames, so the
+    /// callback returned immediately and was called again — a busy loop
+    /// that pinned one core per writer for the whole recording (measured
+    /// 2026-10-17: ~100 % CPU for an M4A recording vs ~3 % for WAV).
+    private func scheduleRetryIfNeeded(unit: WriterUnit) {
+        guard !unit.pending.isEmpty, unit.failure == nil, !unit.retryScheduled else { return }
+        unit.retryScheduled = true
+        writerQueue.asyncAfter(deadline: .now() + .milliseconds(10)) { [weak self, weak unit] in
+            guard let self, let unit else { return }
+            unit.retryScheduled = false
+            guard self.state == .running else { return }
+            self.drain(unit: unit)
+            self.scheduleRetryIfNeeded(unit: unit)
+        }
     }
 
     /// PTS + duration. Audio buffers built in this project carry a
@@ -732,10 +753,9 @@ public final class M4ARecorder: Recorder, @unchecked Sendable {
     }
 
     /// Finalize-time drain: append every still-pending buffer before
-    /// `markAsFinished()`. Runs on `writerQueue`, which is exactly where
-    /// `requestMediaDataWhenReady` would deliver its callback — so it
-    /// cannot wait for that callback and polls `isReadyForMoreMediaData`
-    /// instead, bounded by `timeout`.
+    /// `markAsFinished()`. Runs on `writerQueue` (where the retry path
+    /// also runs), so it polls `isReadyForMoreMediaData`, bounded by
+    /// `timeout`.
     private func flushPending(unit: WriterUnit, timeout: TimeInterval) {
         let deadline = Date().addingTimeInterval(timeout)
         while !unit.pending.isEmpty, unit.failure == nil, unit.writer.status == .writing {
@@ -766,16 +786,6 @@ public final class M4ARecorder: Recorder, @unchecked Sendable {
                 // Stop draining; subsequent appends will surface the failure.
                 return
             }
-        }
-    }
-
-    private func installDrainHandler(on unit: WriterUnit, target: WriterTarget) {
-        // The handler runs on writerQueue. Per Apple's docs this can be
-        // invoked many times across the input's lifetime; we simply
-        // attempt to drain whatever's pending.
-        unit.input.requestMediaDataWhenReady(on: writerQueue) { [weak self, weak unit] in
-            guard let self, let unit else { return }
-            self.drain(unit: unit)
         }
     }
 

@@ -21,6 +21,7 @@ Approved: 2026-10-16. The user said "yes please" to the proposed order: plan-019
   - Data older than the emission cursor is dropped; the aligner never goes back in time.
   - `flush()` emits the remaining partial windows padded with silence. These padding windows are not counted as gap-fills.
   - `lastDriftSec`: the absolute difference between the two sources' current snap deviations (the residual misalignment, at most 5 ms per track).
+- [x] **T1b (new, found while chasing the `RecordingSessionTests` spin)** `M4ARecorder` used `requestMediaDataWhenReady`. AVFoundation re-invokes that callback for as long as the input is ready, and with a push producer the pending queue is empty between 100 ms frames, so the callback busy-looped on every writer queue. Measured with a real `ntakker-cli` recording: **M4A (the default format) used about 100 % CPU against about 3 % for WAV.** Fix: push model with an inline drain plus a coalesced 10 ms retry when the input is not ready. After the fix: 4.2 % CPU, and a valid 8.2 s AAC file.
 - [ ] **T2** Turn the stress-test expectations into the baseline. The two failing stress tests should pass; tighten the asymmetric-stop assertion now that stalls are detected; add tests for an in-stream hole, a never-started source, and flush padding.
 - [ ] **T3** Re-run `RecordingSessionTests` (it used to spin forever), and the full suite without `--skip` if it now terminates. Remove the memory note and the doc caveat about the hang.
 
