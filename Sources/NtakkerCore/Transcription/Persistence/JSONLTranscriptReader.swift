@@ -18,13 +18,14 @@
 // Update semantics (see `JSONLTranscriptWriter.updateSegment(_:)`):
 //
 //   * Short-grow updates rewrite the existing line in place (no
-//     tombstone). The reader's two-pass logic correctly takes the only
-//     line that exists for that id.
+//     tombstone); the only line for that id is taken.
 //   * Long-grow updates tombstone the old slot and append a new line
-//     at end-of-file. The reader's two-pass logic walks once to gather
-//     tombstoned ids, then walks again skipping any line whose id was
-//     tombstoned and selecting the LAST valid entry per id (i.e. the
-//     appended one) as the canonical segment.
+//     at end-of-file. The tombstone carries the SAME id as the appended
+//     line, so the reader skips tombstone lines and keeps the LAST valid
+//     entry per id (the appended one). An earlier version excluded every
+//     tombstoned id outright, which dropped each segment that had grown
+//     past its slot from Save's `transcript.md` (found 2026-10-16 while
+//     fixing EVAL-2026-10-16 UI-1).
 
 import Foundation
 
@@ -64,23 +65,12 @@ public enum JSONLTranscriptReader {
 
         let decoder = JSONDecoder()
 
-        // First pass: collect tombstoned ids so we can drop their
-        // earlier line on the second pass.
-        var tombstoned = Set<UUID>()
-        text.enumerateLines { line, _ in
-            guard let lineData = line.data(using: .utf8),
-                  let wire = try? decoder.decode(WireLine.self, from: lineData),
-                  wire._tombstone == true,
-                  let idStr = wire.id,
-                  let id = UUID(uuidString: idStr)
-            else { return }
-            tombstoned.insert(id)
-        }
-
-        // Second pass: take the LAST valid (non-tombstoned) entry per
-        // id. Order in the file matches the order segments were
-        // appended; preserving that order in the result keeps
-        // chronological semantics for the renderer.
+        // Take the LAST valid entry per id; tombstone lines are skipped.
+        // A long-grow tombstone carries the same id as the line appended
+        // after it, so the appended (newest) rendering wins. Order in the
+        // file matches the order segments were appended; preserving that
+        // order in the result keeps chronological semantics for the
+        // renderer.
         var byId: [UUID: TranscriptSegment] = [:]
         var order: [UUID] = []
         text.enumerateLines { line, _ in
@@ -89,7 +79,6 @@ public enum JSONLTranscriptReader {
                   wire._tombstone != true,
                   let idStr = wire.id,
                   let id = UUID(uuidString: idStr),
-                  !tombstoned.contains(id),
                   let timestampStr = wire.timestamp,
                   let timestamp = isoFormatter.date(from: timestampStr),
                   let sourceStr = wire.source,
