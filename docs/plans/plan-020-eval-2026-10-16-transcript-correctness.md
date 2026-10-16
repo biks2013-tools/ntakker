@@ -15,7 +15,7 @@ Approved: 2026-10-16 ("yes please", after plan-019 was proposed as the step befo
   - Before reconnecting, drop the aggregator's non-final tokens and flush its committed finals.
   - Raise the ring to 30 s.
   - Tests use a mock transport factory.
-- [ ] **T2 (INF-2)** If `finish()` runs while a reconnect attempt is connecting or replaying, the attempt still installs the fresh socket, receive loop and keepalive, and they leak. Re-check `isFinished` after the replay and after the keepalive starts, and close or stop whatever was opened. Add a test.
+- [x] **T2 (INF-2)** If `finish()` runs while a reconnect attempt is connecting or replaying, the attempt still installs the fresh socket, receive loop and keepalive, and they leak. Re-check `isFinished` after the replay and after the keepalive starts, and close or stop whatever was opened. Add a test.
 
 ### Azure realtime reconnect
 

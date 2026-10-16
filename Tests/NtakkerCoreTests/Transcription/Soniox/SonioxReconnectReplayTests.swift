@@ -119,4 +119,62 @@ final class SonioxReconnectReplayTests: XCTestCase {
         let events = await aggregator.prepareForReconnect()
         XCTAssertTrue(events.isEmpty)
     }
+
+    // MARK: - INF-2
+
+    /// Wraps a mock so `connect` takes `delay` — opens the window in
+    /// which `finish()` can race a reconnect attempt.
+    private actor SlowConnectTransport: WebSocketTransport {
+        let inner: MockWebSocketTransport
+        let delay: Duration
+        init(inner: MockWebSocketTransport, delay: Duration) {
+            self.inner = inner
+            self.delay = delay
+        }
+        func connect(url: URL, headers: [String: String]) async throws {
+            try? await Task.sleep(for: delay)
+            try await inner.connect(url: url, headers: headers)
+        }
+        func send(text: String) async throws { try await inner.send(text: text) }
+        func send(data: Data) async throws { try await inner.send(data: data) }
+        func receive() async throws -> WebSocketTransportMessage? { try await inner.receive() }
+        func close(code: WebSocketTransportCloseCode, reason: String?) async {
+            await inner.close(code: code, reason: reason)
+        }
+        nonisolated func messages() -> AsyncThrowingStream<WebSocketTransportMessage, Error> {
+            inner.messages()
+        }
+    }
+
+    func testFinishDuringReconnectClosesTheFreshTransport() async throws {
+        let first = MockWebSocketTransport()
+        let freshInner = MockWebSocketTransport()
+        let fresh = SlowConnectTransport(inner: freshInner, delay: .milliseconds(300))
+        await first.enqueueIncomingError(SimulatedDrop())
+
+        let session = makeSession(
+            transport: first,
+            factory: { fresh },
+            keepalive: SonioxKeepaliveTimer(interval: .milliseconds(30))
+        )
+        try await session.start()
+        await session.ingest(chunk(0.1))
+
+        // The drop fires immediately; finish while the fresh connect is
+        // still sleeping.
+        try await Task.sleep(for: .milliseconds(100))
+        await session.finish()
+
+        // Let the slow connect + replay complete.
+        try await Task.sleep(for: .milliseconds(500))
+        let closes = await freshInner.closeCallCount
+        XCTAssertGreaterThanOrEqual(closes, 1, "the fresh transport must be closed, not installed")
+
+        let keepalivesBefore = await freshInner.sentTextFrames.filter { $0.contains("keepalive") }.count
+        try await Task.sleep(for: .milliseconds(150))
+        let keepalivesAfter = await freshInner.sentTextFrames.filter { $0.contains("keepalive") }.count
+        XCTAssertEqual(keepalivesBefore, 0)
+        XCTAssertEqual(keepalivesAfter, 0, "no keepalive loop may run on a finished session")
+    }
 }
+

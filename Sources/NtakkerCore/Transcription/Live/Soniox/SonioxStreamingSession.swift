@@ -399,11 +399,23 @@ public actor SonioxStreamingSession: StreamingTranscriptionSession {
                     try await fresh.send(data: skip == 0 ? chunk.data : Data(chunk.data.dropFirst(skip)))
                     sentUpTo = chunk.offset + chunk.data.count
                 }
+                // INF-2: `finish()` may have run during the awaits above.
+                // It closed the OLD transport only, so installing the
+                // fresh one now would leak a socket, a receive loop and
+                // a keepalive loop for the rest of the process.
+                guard !isFinished else {
+                    await fresh.close(code: .normal, reason: "ntakker-cli session ended during reconnect")
+                    return
+                }
                 transport = fresh
                 startReceiveLoop()
                 isReconnecting = false
                 reconnectAttempts = 0
                 await keepalive.start(transport: fresh)
+                if isFinished {
+                    // finish() interleaved with the keepalive start.
+                    await keepalive.stop()
+                }
                 logger?.info("soniox: reconnected after transport drop (replayed \(sentUpTo - replayFrom) bytes)")
                 return
             } catch {
