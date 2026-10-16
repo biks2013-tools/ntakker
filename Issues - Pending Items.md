@@ -6,6 +6,22 @@
 
 ## Pending items (most critical first)
 
+### EVAL-2026-10-16 — Quality / speed / resource-efficiency scan: 74 new findings registered
+**Status (2026-10-16).** Read-only re-scan at commit `bf69be5`. Full report: [docs/reference/evaluation-2026-10-16-quality-performance.md](docs/reference/evaluation-2026-10-16-quality-performance.md) (CAP-1…18, TR-1…20, INF-1…15, UI-1…9, CC-1…12 + status of every open EVAL-2026-06-12 finding). Nothing fixed yet.
+
+**Most critical:**
+1. **CC-1** — convo-coach live (stdin) mode unreachable: `process.stdin.isTTY === false` never matches pipes (`undefined`) (`tools/convo-coach/src/index.ts:458`).
+2. **CAP-1 / CAP-2** — `HostClockAligner` ignores incoming PTS when leftover exists (gaps never silence-filled → permanent track offset) and stalls/grows unbounded when one source stalls (`Aligning/HostClockAligner.swift:458-462, 536-566`). Likely root cause of the 2 failing `HostClockAlignerStress` tests.
+3. **TR-1** — concurrent inference on non-thread-safe Parakeet/WhisperKit engines (`maxInFlightPerSource = 2`).
+4. **TR-3** — Azure realtime `finish()` drops the last utterance (no commit / no wait).
+5. **UI-1** — Session Save loses transcript for multi-part / source-split sessions (`SessionExporter.swift:61-90`).
+6. **INF-1 / INF-2 / INF-3** — Soniox reconnect duplicates and loses audio; finish/reconnect race leaks a socket + keepalive; possible forced 5-min WebSocket drop.
+7. **INF-4** — daemon `umask(0)` → recordings/transcripts world-writable in `--detach` mode.
+
+**Top efficiency wins:** AEC NLMS ≈1.6 G MAC/s (CAP-3/6/11); on-device STT 7.5–15× wasted compute from 2 s chunks padded to 15/30 s (TR-2) + model reloaded every recording (TR-11); SCStream video frames at display rate (CAP-4); aligner rewrite (C1); level meters at 30 Hz with popover closed (M1/M2/UI-5); Save on main actor (H2 → `moveItem`).
+
+**Doc drift found:** plan-017 T13/T14 unticked although landed; CLAUDE.md/`docs/tools/convo-coach.md` still say "Vercel AI SDK"; CLAUDE.md advertises popover pause/resume/split which are unreachable (UI-2).
+
 ### EVAL-2026-06-12 — Application-wide functionality/performance evaluation: 94 findings registered
 **RESOLUTION UPDATE (2026-06-13) — plan-017 waves 1–3 (attack-order items 1, 2, 3).** 16 of 18 planned fixes landed; build green; `convo-coach` 166/166 tests green; changed Swift suites green (TranscriptionManager incl. new F24 regression test, Soniox/SourceSplit, SoftwareAECProcessor, BufferSummer, M4ARecorder/WAVRecorder — 46 tests across the focused runs). See [docs/design/plan-017-eval-fixes-waves-1-3.md](docs/design/plan-017-eval-fixes-waves-1-3.md).
 - **Wave 1 — data loss (DONE):** F24 (per-source sidecar tag threaded through `rotateSidecar` + new regression test), C4 (strong dispatcher capture in the live tap), F21 (Apple Cloud force-finish re-arms while a final is in flight), F20 (`AppleSpeechSession.finish()` awaits result forwarders), F19 (late-attached streaming session finished + open tasks cancelled on stop), F18 (`TranscriptionManager.stop()` drain races every await against one deadline; sidecar close always runs), H1 (synchronous `.starting` transition closes the double-click start race).
