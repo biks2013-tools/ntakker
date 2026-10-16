@@ -19,7 +19,7 @@
 - [x] **T11 (TR-8)** SourceSplit `stop()` stops both children in parallel.
 - [x] **T12 (TR-9)** `TranscriptionManager.awaitValue` deadline via continuation race (not `withTaskGroup`).
 - [x] **T13 (TR-17)** Sidecar writers never truncate a file that is still open in this process. **Scope refined:** truncating a *stale* sidecar from an earlier recording is correct (the audio path is already guarded by `--overwrite`), so the guard is a process-wide open-path registry in `TranscriptSidecarWriter` (second open → `alreadyOpen`), not "never truncate".
-- [ ] **T14 (H2)** Session Save: `moveItem` (fallback copy across volumes) off the main actor.
+- [x] **T14 (H2)** Session Save: `moveItem` (fallback copy across volumes) off the main actor.
 
 ## Acceptance
 `swift build` green after each task; touched suites green; no new failures vs plan-017 baseline; checkbox ticked + finding noted in the Issues register at the end of the wave.

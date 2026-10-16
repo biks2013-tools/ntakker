@@ -22,7 +22,7 @@ import SwiftUI
 /// One Q&A exchange — the model used by `AskingModeView`'s in-memory
 /// history. Promoted to `NtakkerCore` if/when the floating overlay
 /// (plan-015 Phase 5) needs to share the same state.
-struct QAEntry: Identifiable, Equatable {
+struct QAEntry: Identifiable, Equatable, Sendable {
     let id: UUID = .init()
     let recordingTimestampSeconds: TimeInterval
     let question: String

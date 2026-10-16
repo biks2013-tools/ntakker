@@ -110,6 +110,8 @@ struct RootView: View {
     /// chains into `clearSession()` per FR-IRQ-55 "Save and start new".
     /// Cleared after the cycle completes or the dialog is cancelled.
     @State private var pendingClearAfterSave: Bool = false
+    /// H2: a Save is moving files in the background; ignore re-entry.
+    @State private var isSavingSession: Bool = false
 
     /// plan-015 Phase 4 (FR-IRQ-18) — Q&A privacy gate state.
     /// Provider awaiting acknowledgement; non-nil presents the sheet.
@@ -260,10 +262,14 @@ struct RootView: View {
                 audioFilename: defaultAudioFilename(),
                 onConfirm: { folderName in
                     showSaveDialog = false
-                    performSessionSave(folderName: folderName)
-                    if pendingClearAfterSave {
-                        pendingClearAfterSave = false
-                        clearSession()
+                    let clearAfter = pendingClearAfterSave
+                    pendingClearAfterSave = false
+                    // H2: the save now runs off the main actor, so the
+                    // chained "start new" must wait for it — clearing
+                    // first would start a recording that the save's
+                    // `resetToIdle()` then knocks back to idle.
+                    performSessionSave(folderName: folderName) {
+                        if clearAfter { clearSession() }
                     }
                 },
                 onCancel: {
@@ -372,35 +378,52 @@ struct RootView: View {
     /// Bundle the session (audio + transcript.md + qa.md + sidecars)
     /// into `~/Recordings/<folderName>/` and surface the result as a
     /// transient banner. Reveals the new folder in Finder on success.
-    private func performSessionSave(folderName: String) {
+    /// EVAL-2026-10-16 H2: the export (JSONL parsing + moving possibly
+    /// hundreds of MB of audio) used to run synchronously on the main
+    /// actor and beachball the popover. It now runs on a background
+    /// task; UI state is updated back on the main actor, then
+    /// `afterSave` runs (success or failure, matching the previous
+    /// synchronous ordering).
+    private func performSessionSave(folderName: String, afterSave: (() -> Void)? = nil) {
+        guard !isSavingSession else { return }
+        isSavingSession = true
         let segments     = recordingController?.transcriptSegments ?? []
         let qaSnapshot   = askingStore.snapshotForSidecar()
         let audioSources = recordingController?.completedSegments ?? []
-        do {
-            let result = try SessionExporter.write(
-                folderName: folderName,
-                transcript: segments,
-                qaHistory: qaSnapshot,
-                audioSources: audioSources
-            )
-            saveResult = .success(result.folder)
-            // Reveal in Finder so the user sees the bundle.
-            NSWorkspace.shared.activateFileViewerSelecting([result.folder])
-            scheduleSaveBannerClear()
-            // FR-IRQ-48 follow-up: once the session is safely on disk,
-            // clear the in-popover transcript + Q&A panels and walk the
-            // controller back to `.idle` so the bottom action area
-            // re-renders the Start button instead of the post-stop
-            // `[ New Session ][ Save… ]` pair. The on-disk bundle is
-            // the persistent record — the popover starts fresh.
-            askingStore.clear()
-            recordingController?.resetToIdle()
-        } catch let error as SessionExporter.ExportError {
-            saveResult = .failure(error.errorDescription ?? String(describing: error))
-            scheduleSaveBannerClear()
-        } catch {
-            saveResult = .failure(error.localizedDescription)
-            scheduleSaveBannerClear()
+        Task {
+            let outcome = await Task.detached(priority: .userInitiated) {
+                Result {
+                    try SessionExporter.write(
+                        folderName: folderName,
+                        transcript: segments,
+                        qaHistory: qaSnapshot,
+                        audioSources: audioSources
+                    )
+                }
+            }.value
+            isSavingSession = false
+            switch outcome {
+            case .success(let result):
+                saveResult = .success(result.folder)
+                // Reveal in Finder so the user sees the bundle.
+                NSWorkspace.shared.activateFileViewerSelecting([result.folder])
+                scheduleSaveBannerClear()
+                // FR-IRQ-48 follow-up: once the session is safely on disk,
+                // clear the in-popover transcript + Q&A panels and walk the
+                // controller back to `.idle` so the bottom action area
+                // re-renders the Start button instead of the post-stop
+                // `[ New Session ][ Save… ]` pair. The on-disk bundle is
+                // the persistent record — the popover starts fresh.
+                askingStore.clear()
+                recordingController?.resetToIdle()
+            case .failure(let error as SessionExporter.ExportError):
+                saveResult = .failure(error.errorDescription ?? String(describing: error))
+                scheduleSaveBannerClear()
+            case .failure(let error):
+                saveResult = .failure(error.localizedDescription)
+                scheduleSaveBannerClear()
+            }
+            afterSave?()
         }
     }
 

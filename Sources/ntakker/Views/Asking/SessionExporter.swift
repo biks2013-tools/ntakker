@@ -31,7 +31,9 @@ import Foundation
 import NtakkerCore
 import os
 
-@MainActor
+/// Not main-actor bound: `RootView.performSessionSave` runs `write` on
+/// a background task (EVAL-2026-10-16 H2). Everything here is file I/O
+/// over value-type inputs.
 enum SessionExporter {
 
     /// Subsystem-tagged logger so Console.app can reliably filter on
@@ -123,7 +125,7 @@ enum SessionExporter {
     }
 
     /// Result of a successful bundle write.
-    struct WriteResult {
+    struct WriteResult: Sendable {
         let folder: URL
         let transcriptFile: URL?
         let qaFile: URL?
@@ -249,10 +251,11 @@ enum SessionExporter {
 
         log.notice("bundle=\(folder.path, privacy: .public) transcriptSegments=\(transcript.count, privacy: .public) qaEntries=\(qaHistory.count, privacy: .public) audioSourcesAbstract=\(audioSources.count, privacy: .public) audioFilesResolved=\(resolvedAudioFiles.count, privacy: .public)")
 
-        // Move audio files (preserving original filenames). Each move
-        // is "copy then delete original" so the source is only
-        // unlinked after the copy returns successfully — preserving the
-        // recording-integrity invariant in the failure path. The
+        // Move audio files (preserving original filenames). H2: a
+        // `moveItem` is a rename on the same volume (instant, versus
+        // copying ~690 MB per hour of WAV); across volumes Foundation
+        // copies and removes the source only after the copy succeeds,
+        // so the recording-integrity invariant still holds. The
         // sidecar lookup uses the BARE URL from `audioSources` so the
         // `<stem>.transcript.jsonl` (stem-based, no extension prefix)
         // family lands in the bundle even when the audio itself is a
@@ -264,22 +267,14 @@ enum SessionExporter {
                 if FileManager.default.fileExists(atPath: dest.path) {
                     try FileManager.default.removeItem(at: dest)
                 }
-                try FileManager.default.copyItem(at: source, to: dest)
+                try FileManager.default.moveItem(at: source, to: dest)
                 movedAudio.append(dest)
-                // Audio copy succeeded — drop the original. If this
-                // throws, the bundle still has the audio; we just leak
-                // the source file (logged but non-fatal).
-                do {
-                    try FileManager.default.removeItem(at: source)
-                } catch {
-                    log.error("original audio \(source.path, privacy: .public) could not be removed after move: \(error.localizedDescription, privacy: .public)")
-                }
             } catch {
                 // Don't abort the whole save on a single file failure
                 // — the user gets a partial bundle which is better
-                // than nothing. Source stays in place when the copy
+                // than nothing. Source stays in place when the move
                 // throws, so nothing is lost.
-                log.error("copy \(source.path, privacy: .public) → \(dest.path, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+                log.error("move \(source.path, privacy: .public) → \(dest.path, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
             }
         }
 
@@ -402,17 +397,10 @@ enum SessionExporter {
                 if fm.fileExists(atPath: dst.path) {
                     try fm.removeItem(at: dst)
                 }
-                try fm.copyItem(at: src, to: dst)
+                try fm.moveItem(at: src, to: dst)
                 log.info("moved sidecar \(name, privacy: .public) → \(destFolder.path, privacy: .public)")
-                // Copy landed — remove the original so the source
-                // folder is left clean.
-                do {
-                    try fm.removeItem(at: src)
-                } catch {
-                    log.error("sidecar original \(name, privacy: .public) could not be removed after move: \(error.localizedDescription, privacy: .public)")
-                }
             } catch {
-                log.error("sidecar copy \(name, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+                log.error("sidecar move \(name, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
             }
         }
     }
