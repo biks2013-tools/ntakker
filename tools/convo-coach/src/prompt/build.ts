@@ -102,14 +102,16 @@ function formatTimestamp(date: Date): string {
 
 /**
  * Format a single transcript record as one line of the `[Transcript]`
- * block: `[HH:MM:SS] [<channel>](<lang>): <text>` — the channel and
- * language tags are only emitted when present.
+ * block: `[HH:MM:SS] [<channel>] [<speaker>] (<lang>): <text>` — the
+ * channel, speaker (diarization label) and language tags are only
+ * emitted when present.
  */
 function formatRecord(record: NormalisedRecord): string {
     const ts = `[${formatTimestamp(record.timestamp)}]`;
     const channel = record.channel !== undefined ? ` [${record.channel}]` : '';
+    const speaker = record.speaker !== undefined ? ` [${record.speaker}]` : '';
     const lang = record.language !== undefined ? ` (${record.language})` : '';
-    return `${ts}${channel}${lang}: ${record.text}`;
+    return `${ts}${channel}${speaker}${lang}: ${record.text}`;
 }
 
 /**

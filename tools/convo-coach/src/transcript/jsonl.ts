@@ -5,7 +5,10 @@
 // The ntakker-cli wire schema (see docs/tools/ntakker-cli.md and CC-DSGN-7) is one JSON
 // object per line. Required field is `text`. Timestamp comes preferentially
 // from `ts` (epoch ms), falling back to `t` then `timestamp` (ISO-8601 string).
-// Channel/language/final/speaker are all optional.
+// Channel/language/final/speaker are all optional. ntakker writes
+// `source: "mic" | "system" | "mixed"` instead of `channel`; `mic` maps to
+// channel A (the user) and `system` to channel B (the remote side), the
+// convention the default system prompt uses (EVAL-2026-10-16 CC-2).
 //
 // Tolerance policy (per task spec + plan-011 §U4):
 //   * Blank lines are skipped silently.
@@ -97,7 +100,7 @@ export function parseJsonl(content: string): NormalisedRecord[] {
             continue;
         }
 
-        const channel = extractChannel(obj['channel']);
+        const channel = extractChannel(obj['channel']) ?? channelFromSource(obj['source']);
         const language = typeof obj['lang'] === 'string'
             ? (obj['lang'] as string)
             : (typeof obj['language'] === 'string' ? (obj['language'] as string) : undefined);
@@ -184,5 +187,16 @@ function extractTimestamp(obj: Record<string, unknown>): Date | null {
 
 function extractChannel(v: unknown): 'A' | 'B' | undefined {
     if (v === 'A' || v === 'B') return v;
+    return undefined;
+}
+
+/**
+ * Map ntakker's `source` field to a channel: the microphone is the user
+ * (A), system audio is the remote side (B). `mixed` (and anything else)
+ * carries no channel.
+ */
+export function channelFromSource(v: unknown): 'A' | 'B' | undefined {
+    if (v === 'mic' || v === 'microphone') return 'A';
+    if (v === 'system') return 'B';
     return undefined;
 }

@@ -28,7 +28,7 @@ Approved: 2026-10-16 ("yes please", after plan-019 was proposed as the step befo
 
 ### convo-coach transcript input
 
-- [ ] **T4 (CC-2)** The JSONL parser only reads `channel: "A" | "B"`. ntakker writes `source: system | mic | mixed` plus `speaker`.
+- [x] **T4 (CC-2)** The JSONL parser only reads `channel: "A" | "B"`. ntakker writes `source: system | mic | mixed` plus `speaker`.
   - Map `mic` to A (the user) and `system` to B (the remote side), matching the default system prompt.
   - Render `speaker` in the prompt line.
   - Add tests.

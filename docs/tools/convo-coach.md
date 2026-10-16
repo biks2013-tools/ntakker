@@ -44,6 +44,14 @@
            tool scans `NTAKKER_RECORDINGS_DIR` (default `~/Recordings`) for the most-recently
            modified `ntakker-cli` sidecar and uses it.
 
+        ### Channels and speakers
+
+        ntakker sidecars carry `source` (`mic`, `system` or `mixed`) and, with
+        diarization, `speaker`. `mic` lines are tagged `[A]` (the user) and `system`
+        lines `[B]` (the remote side); `mixed` lines carry no channel tag. A speaker
+        label is shown after the channel, e.g. `[B] [Speaker 2] (en): …`. An explicit
+        `channel: "A" | "B"` field, when present, wins over `source`.
+
         ---
 
         ## Configuration
