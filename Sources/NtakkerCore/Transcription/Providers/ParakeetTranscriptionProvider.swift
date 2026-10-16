@@ -64,6 +64,10 @@ public actor ParakeetTranscriptionProvider: TranscriptionProvider {
     /// machine).
     private var loadTask: Task<AsrManager, Error>?
 
+    /// Serialises engine calls — `AsrManager` is not re-entrant
+    /// (EVAL-2026-10-16 TR-1; see `InferenceGate`).
+    private let inferenceGate = InferenceGate()
+
     public init(
         modelName: String = ParakeetTranscriptionProvider.defaultModelName,
         language: String? = nil,
@@ -110,6 +114,7 @@ public actor ParakeetTranscriptionProvider: TranscriptionProvider {
         // workable spelling is to let the compiler infer the enum type
         // from `AsrManager.transcribe(_:source:)`'s parameter type at
         // the call site — a tiny if/else avoids the unutterable type.
+        await inferenceGate.acquire()
         do {
             let result: ASRResult
             if source == .microphone {
@@ -117,10 +122,12 @@ public actor ParakeetTranscriptionProvider: TranscriptionProvider {
             } else {
                 result = try await manager.transcribe(samples, source: .system)
             }
+            await inferenceGate.release()
             let text = result.text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
             logger.debug("Parakeet chunk: in=\(samples.count) outLen=\(text.count) source=\(source)")
             return text
         } catch {
+            await inferenceGate.release()
             logger.error("Parakeet transcribe failed: \(error.localizedDescription)")
             throw NtakkerError.transcriptionProviderUnavailable(
                 reason: "Parakeet transcribe error: \(error.localizedDescription)"

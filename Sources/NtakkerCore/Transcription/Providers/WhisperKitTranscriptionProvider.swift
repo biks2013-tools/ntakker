@@ -84,6 +84,10 @@ public actor WhisperKitTranscriptionProvider: TranscriptionProvider {
     /// model on a fresh machine).
     private var loadTask: Task<WhisperKit, Error>?
 
+    /// Serialises engine calls — `WhisperKit` is not re-entrant
+    /// (EVAL-2026-10-16 TR-1; see `InferenceGate`).
+    private let inferenceGate = InferenceGate()
+
     public init(
         // `actor` types can't reference `Self` in default-argument
         // expressions (Swift covariant-Self limitation), hence the
@@ -125,11 +129,13 @@ public actor WhisperKitTranscriptionProvider: TranscriptionProvider {
         }
 
         let decode = decodingOptions(from: options)
+        await inferenceGate.acquire()
         do {
             let results = try await pipe.transcribe(
                 audioArray: samples,
                 decodeOptions: decode
             )
+            await inferenceGate.release()
             let combined = results
                 .map { $0.text }
                 .joined(separator: " ")
@@ -139,6 +145,7 @@ public actor WhisperKitTranscriptionProvider: TranscriptionProvider {
             )
             return combined
         } catch {
+            await inferenceGate.release()
             logger.error("WhisperKit transcribe failed: \(error.localizedDescription)")
             throw NtakkerError.transcriptionProviderUnavailable(
                 reason: "WhisperKit transcribe error: \(error.localizedDescription)"

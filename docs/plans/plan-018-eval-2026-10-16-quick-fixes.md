@@ -7,7 +7,7 @@
 ## Tasks
 
 - [x] **T1 (CC-1)** convo-coach stdin mode unreachable — `tools/convo-coach/src/index.ts:458` `isTTY === false` → `!process.stdin.isTTY`; add piped-input test.
-- [ ] **T2 (TR-1)** Serialize inference in `ParakeetTranscriptionProvider` / `WhisperKitTranscriptionProvider` (engines are not re-entrant).
+- [x] **T2 (TR-1)** Serialize inference in `ParakeetTranscriptionProvider` / `WhisperKitTranscriptionProvider` (engines are not re-entrant).
 - [ ] **T3 (TR-3)** Azure realtime `finish()`: send `input_audio_buffer.commit`, wait (≤2 s) for outstanding transcriptions, then close.
 - [ ] **T4 (INF-4)** Daemonizer `umask(0)` → `umask(0o077)`.
 - [ ] **T5 (CAP-4)** SCStream `minimumFrameInterval` → 1 s so the throw-away video output stops running at display rate.
