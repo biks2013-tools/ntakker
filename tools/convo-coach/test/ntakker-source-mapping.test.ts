@@ -44,3 +44,24 @@ test('prompt lines carry the channel and speaker tags', () => {
     const built = buildPrompt({ records: recs, systemPrompt: DEFAULT_SYSTEM_PROMPT });
     assert.match(built.user, /\[B\] \[Speaker 2\] \(en\): Sure\./);
 });
+
+// EVAL-2026-10-16 CC-3: ntakker rewrites a growing segment under the same
+// id; a stream that sees both versions must keep only the latest.
+test('parseJsonl keeps the later line when an id repeats', () => {
+    const content = [
+        line({ id: 'seg-1', timestamp: '2026-10-16T10:00:00Z', source: 'mic', text: 'Can you' }),
+        line({ id: 'seg-2', timestamp: '2026-10-16T10:00:03Z', source: 'system', text: 'Yes.' }),
+        line({ _tombstone: true, id: 'seg-1' }),
+        line({ id: 'seg-1', timestamp: '2026-10-16T10:00:00Z', source: 'mic', text: 'Can you share the numbers?' }),
+    ].join('\n');
+    const recs = parseJsonl(content);
+    assert.deepEqual(recs.map((r) => r.text), ['Can you share the numbers?', 'Yes.']);
+});
+
+test('records without an id are never merged', () => {
+    const content = [
+        line({ ts: 1_000, text: 'a' }),
+        line({ ts: 2_000, text: 'a' }),
+    ].join('\n');
+    assert.equal(parseJsonl(content).length, 2);
+});

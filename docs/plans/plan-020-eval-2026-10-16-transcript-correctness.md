@@ -32,7 +32,7 @@ Approved: 2026-10-16 ("yes please", after plan-019 was proposed as the step befo
   - Map `mic` to A (the user) and `system` to B (the remote side), matching the default system prompt.
   - Render `speaker` in the prompt line.
   - Add tests.
-- [ ] **T5 (CC-3)** ntakker rewrites segments by id: a short in-place rewrite, or a tombstone plus an append. A `tail -f` stream sees the appended version as a second record.
+- [x] **T5 (CC-3)** ntakker rewrites segments by id: a short in-place rewrite, or a tombstone plus an append. A `tail -f` stream sees the appended version as a second record.
   - De-duplicate records by `id`, with the later line winning, in `parseJsonl` (used by file and stdin mode).
   - Document that `tail -f` cannot see in-place rewrites and that file mode should be used for exact transcripts.
 

@@ -21,6 +21,13 @@
 //     non-comment lines fail to parse — that signals a wholesale wrong format.
 //   * Records are sorted by ascending timestamp before being returned;
 //     callers must NOT assume the file was chronological.
+//   * ntakker rewrites a segment by `id` as it grows: in place when the new
+//     line fits, otherwise as a tombstone plus an appended line. When the
+//     same `id` appears more than once the LATER line wins
+//     (EVAL-2026-10-16 CC-3) — e.g. a `tail -f` stream that already
+//     delivered the old version and then sees the appended one. A `tail -f`
+//     stream cannot see in-place rewrites at all; read the file
+//     (`--transcript`) for an exact transcript.
 
 import { TranscriptError, type NormalisedRecord } from '../types.js';
 
@@ -42,6 +49,7 @@ interface ParseStats {
 export function parseJsonl(content: string): NormalisedRecord[] {
     const lines = content.split(/\r?\n/);
     const records: NormalisedRecord[] = [];
+    const indexById = new Map<string, number>();
     const stats = { considered: 0, malformed: 0, tombstones: 0 };
 
     for (let i = 0; i < lines.length; i += 1) {
@@ -119,7 +127,14 @@ export function parseJsonl(content: string): NormalisedRecord[] {
             ...(isFinal !== undefined && { isFinal }),
             ...(speaker !== undefined && { speaker }),
         };
-        records.push(rec);
+        const id = typeof obj['id'] === 'string' ? (obj['id'] as string) : undefined;
+        const existing = id !== undefined ? indexById.get(id) : undefined;
+        if (existing !== undefined) {
+            records[existing] = rec;
+        } else {
+            if (id !== undefined) indexById.set(id, records.length);
+            records.push(rec);
+        }
     }
 
     if (stats.considered > 0 && records.length === 0) {

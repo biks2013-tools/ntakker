@@ -282,6 +282,12 @@
         tail -f ~/Recordings/live.jsonl | convo-coach --debounce 20s --provider google
         ```
 
+        ntakker rewrites a growing segment under the same `id`. convo-coach keeps the
+        latest line for each `id`, so a segment that `tail -f` delivers twice is not
+        duplicated. `tail -f` cannot see rewrites made in place, though, so a piped stream
+        can hold an earlier, shorter version of a segment; pass `--transcript` for the exact
+        transcript.
+
         ### Use a custom system prompt and aggressive overflow handling
         ```sh
         convo-coach \
