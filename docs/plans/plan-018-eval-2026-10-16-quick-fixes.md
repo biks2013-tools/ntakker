@@ -10,7 +10,7 @@
 - [x] **T2 (TR-1)** Serialize inference in `ParakeetTranscriptionProvider` / `WhisperKitTranscriptionProvider` (engines are not re-entrant).
 - [x] **T3 (TR-3)** Azure realtime `finish()`: send `input_audio_buffer.commit`, wait (≤2 s) for outstanding transcriptions, then close.
 - [x] **T4 (INF-4)** Daemonizer `umask(0)` → `umask(0o077)`.
-- [ ] **T5 (CAP-4)** SCStream `minimumFrameInterval` → 1 s so the throw-away video output stops running at display rate.
+- [x] **T5 (CAP-4)** SCStream `minimumFrameInterval` → 1 s so the throw-away video output stops running at display rate.
 - [ ] **T6 (CAP-5)** M4A `endSession` at last PTS **+ duration** (stop trimming the final frame).
 - [ ] **T7 (CAP-7)** WAV/CAF recorders latch the first write error and surface it from `append`/`finalize`.
 - [ ] **T8 (CAP-8)** M4A finalize drains pending buffers before `markAsFinished()`.

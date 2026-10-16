@@ -10,8 +10,8 @@
 //
 // Architecture summary:
 //   * `SCStream` is built with the locked configuration in §7.1 (audio
-//     only — `width=2/height=2`, `minimumFrameInterval` set to a value
-//     that effectively suppresses video frames).
+//     only — `width=2/height=2`, `minimumFrameInterval` = 1 s so at
+//     most one throw-away video frame per second is produced).
 //   * Audio buffers arrive on `ntakker-cli.capture.system` (the audio
 //     handler queue); we forward each `CMSampleBuffer` through
 //     `onSampleBuffer` as a `CaptureBuffer(source: .system, ...)`.
@@ -605,7 +605,13 @@ public final class SCKitSystemAudioSource: NSObject,
         cfg.channelCount = channelCount
 
         // Video suppression — values per research §2.1 / design §7.1.
-        cfg.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale.max)
+        // `minimumFrameInterval` is the MINIMUM spacing between frames.
+        // The previous value (1 / CMTimeScale.max ≈ 0.5 ns) meant "no
+        // limit", i.e. video at display refresh rate (60–120 discarded
+        // 2×2 frames/s plus compositor/IOSurface work). One frame per
+        // second is the cheapest value that still keeps the `.screen`
+        // output registered (EVAL-2026-10-16 CAP-4).
+        cfg.minimumFrameInterval = CMTime(value: 1, timescale: 1)
         cfg.width = 2
         cfg.height = 2
         cfg.queueDepth = 5
