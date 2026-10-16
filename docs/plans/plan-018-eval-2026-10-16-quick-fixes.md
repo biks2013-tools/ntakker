@@ -14,7 +14,7 @@
 - [x] **T6 (CAP-5)** M4A `endSession` at last PTS **+ duration** (stop trimming the final frame). **Note:** the claimed loss did NOT reproduce — 3 s recordings measure 3.0000 s (AVURLAsset duration + track timeRange) and 144 000 encoded frames both before and after. Kept as an API-semantics correctness change (no measurable effect); CAP-5 downgraded in the report.
 - [x] **T7 (CAP-7)** WAV/CAF recorders latch the first write error and surface it from `append`/`finalize`.
 - [x] **T8 (CAP-8)** M4A finalize drains pending buffers before `markAsFinished()`.
-- [ ] **T9 (CAP-10)** SCStream `restartStream` in-progress latch.
+- [x] **T9 (CAP-10)** SCStream `restartStream` in-progress latch.
 - [ ] **T10 (INF-7)** AskConfig: no force-unwrapped env URLs → `invalidConfigValue`.
 - [ ] **T11 (TR-8)** SourceSplit `stop()` stops both children in parallel.
 - [ ] **T12 (TR-9)** `TranscriptionManager.awaitValue` deadline via continuation race (not `withTaskGroup`).

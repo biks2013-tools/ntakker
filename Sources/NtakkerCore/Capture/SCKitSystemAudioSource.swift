@@ -148,6 +148,14 @@ public final class SCKitSystemAudioSource: NSObject,
     /// entries older than `restartWindow`.
     private var restartTimestamps: [Date] = []
 
+    /// CAP-10 (EVAL 2026-10-16): single-flight latch for
+    /// `restartStream`. The watchdog fires every poll interval and does
+    /// not reset `lastBufferArrival` until a restart completes, and a
+    /// delegate error can also trigger one — so two restarts could run
+    /// concurrently, and the second `self.stream = newStream` would
+    /// overwrite (and leak) a live SCStream.
+    private var _isRestarting = false
+
     /// Cached format description from the very first audio buffer. Once
     /// set, it does not change for the lifetime of the source.
     private var _formatDescription: CMAudioFormatDescription?
@@ -434,6 +442,17 @@ public final class SCKitSystemAudioSource: NSObject,
     // MARK: - Restart
 
     private func restartStream(reason: String) async {
+        let alreadyRestarting: Bool = stateQueue.sync {
+            if self._isRestarting { return true }
+            self._isRestarting = true
+            return false
+        }
+        guard !alreadyRestarting else {
+            logger.debug("SCStream restart (\(reason)) skipped: a restart is already in progress")
+            return
+        }
+        defer { stateQueue.sync { self._isRestarting = false } }
+
         // Record the restart attempt and check the cap before doing
         // anything expensive.
         let exceeded: Bool = stateQueue.sync {
@@ -522,13 +541,22 @@ public final class SCKitSystemAudioSource: NSObject,
             return
         }
 
-        // 4. Install the new stream and reset the heartbeat.
-        stateQueue.sync {
+        // 4. Install the new stream and reset the heartbeat — unless
+        //    stop() ran while we were rebuilding, in which case nobody
+        //    would ever stop this stream.
+        let installed: Bool = stateQueue.sync {
+            guard self._isRunning, !self._userStopped else { return false }
             self.stream = newStream
             self.lastBufferArrival = Date()
             // Watchdog timer keeps running across restarts; nothing to
             // re-install. The restart history is intentionally retained
             // so the cap is enforced across consecutive failures.
+            return true
+        }
+        guard installed else {
+            try? await newStream.stopCapture()
+            logger.info("SCStream restart (\(reason)) discarded: source stopped during restart")
+            return
         }
         logger.info("SCStream restart complete (\(reason))")
     }
