@@ -14,7 +14,7 @@ Approved: 2026-10-16. The user said "yes please" to the proposed order: plan-019
 
 ## Tasks
 
-- [ ] **T1** Rewrite the `HostClockAligner` core; the public API and `Stats` stay unchanged.
+- [x] **T1** Rewrite the `HostClockAligner` core; the public API and `Stats` stay unchanged.
   - Each source keeps a queue of PTS-stamped chunks, with one copy per ingest. Emission copies the window's overlap straight into the output block buffer. No whole-buffer rebuilds.
   - Each chunk is placed at its PTS. A deviation within 5 ms of the previous chunk's end is snapped (contiguous). A larger forward deviation is a hole, silence-filled and counted as a gap-fill for every window it touches. A backward deviation trims the overlap.
   - Max skew of 400 ms: a source lagging the other by more than that is silence-filled for the window and counted as a gap-fill. Output never blocks on a stalled or absent source, and buffering stays bounded.

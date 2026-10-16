@@ -1,53 +1,54 @@
 // NtakkerCore/Aligning/HostClockAligner.swift — see project-design.md §2.9
 // and `docs/research/scstream-audio-only.md` §4 (gap-fill recipe).
 //
-// Phase F (plan-001) — host-clock-driven cross-source aligner. Two
-// capture sources (system, mic) deliver `CaptureBuffer`s on their own
-// queues; the aligner serializes them onto a private serial queue,
-// buffers samples per source, and emits `AlignedFrame`s of fixed
-// `frameDuration` (default 100 ms) at the pipeline's canonical PTS
-// cadence.
+// Host-clock-driven cross-source aligner. Two capture sources (system,
+// mic) deliver `CaptureBuffer`s on their own queues; the aligner
+// serializes them onto a private serial queue, places their samples on a
+// shared sample timeline by PTS, and emits `AlignedFrame`s of fixed
+// `frameDuration` (default 100 ms).
 //
-// Algorithm summary (from prompt + design §2.9 + research §4):
+// Algorithm (rewritten 2026-10-16, EVAL-2026-10-16 CAP-1 / CAP-2 / C1 /
+// C5, plan-021):
 //
-//   1. Maintain a per-source flat Float32 sample buffer (non-interleaved
-//      layout: channel-0 samples, then channel-1 samples, ...) plus
-//      `headPTS` (the PTS of the first sample currently in the buffer)
-//      and a frame counter.
+//   1. Timeline. Every PTS is converted to an absolute sample index at
+//      `targetSampleRate`. Windows start at the first ingested buffer's
+//      sample index and advance by `windowFrames`. `cursor` is the start
+//      of the next window to emit; nothing before it is ever emitted
+//      again (the aligner never goes back in time).
 //
-//   2. On `ingest(_:)` (any thread): hop onto `ntakker-cli.aligner.serial`,
-//      validate format against the configured target, append the new
-//      samples to the per-source buffer, then call `tryDrain()`.
+//   2. Per source, a queue of chunks (one per ingested buffer, samples
+//      copied once, channel-major). A chunk is placed at its PTS:
+//        * within `snapToleranceFrames` of the previous chunk's end →
+//          snapped to it (contiguous; absorbs PTS jitter);
+//        * further ahead → a hole: left empty (emitted as silence) and
+//          counted as a gap-fill in every window it touches (CAP-1 — the
+//          old flat buffer collapsed such holes, shifting the track);
+//        * behind → the overlapping head is trimmed.
+//      Samples before `cursor` are dropped on arrival.
 //
-//   3. `nextExpectedFramePTS` is `nil` until the first buffer arrives
-//      from either source; it's then anchored to the earliest first
-//      PTS observed across the two sources.
+//   3. A window [ws, we) is emitted when each source either covers `we`
+//      (its last chunk ends at or past it) or lags the other source by
+//      more than `maxSkewFrames` (stalled or absent — CAP-2; the old code
+//      waited forever and the other source's backlog grew without
+//      bound). A stalled window is silence-filled and counted.
 //
-//   4. `tryDrain()` loops emitting one `AlignedFrame` of exactly
-//      `windowFrames` per iteration:
+//   4. Emission copies each chunk's overlap with the window straight
+//      into the output block buffer; fully consumed chunks are dropped.
+//      No per-ingest or per-window rebuilds of the whole backlog (C1).
 //
-//      * For each source:
-//          - If headPTS is later than `nextExpectedFramePTS + 1 sample`,
-//            the source has not yet produced data covering the window
-//            start; emit a silence buffer for that side and increment
-//            the gap-fill counter.
-//          - Else if headPTS is earlier than `nextExpectedFramePTS`,
-//            drop the stale leading frames.
-//          - Once headPTS == nextExpectedFramePTS (within tolerance),
-//            if there are enough buffered frames to cover the window,
-//            slice them off and build the output CMSampleBuffer.
-//          - Otherwise (not enough data yet) — bail out of the drain
-//            loop; we'll retry on the next ingest.
-//      * If both sides are ready, emit AlignedFrame, advance
-//        nextExpectedFramePTS by frameDuration, loop.
+//   5. `flush()` drains complete windows, then emits the remaining
+//      partial windows padded with silence (the tail used to be
+//      discarded). Padding windows are not counted as gap-fills.
 //
-//   5. `flush()` drains any remaining matched window then stops
-//      accepting new buffers.
+//   6. `lastDriftSec` is the absolute difference between the two
+//      sources' current snap deviations — the residual misalignment
+//      between the tracks (C5; it used to compare two PTS that were
+//      equal by construction).
 //
-// Concurrency: `ingest` is thread-safe (queue-hop). All mutable state
-// is confined to `serialQueue`. `onAlignedFrame` is invoked on
-// `serialQueue` so consumers must not block (recorders enqueue onto
-// their own writer queue per design §2.10).
+// Concurrency: `ingest` is thread-safe (queue-hop). All mutable state is
+// confined to `serialQueue`. `onAlignedFrame` is invoked on
+// `serialQueue` so consumers must not block (recorders enqueue onto their
+// own writer queue per design §2.10).
 
 import AVFoundation
 import CoreAudio
@@ -170,23 +171,66 @@ public final class HostClockAligner: @unchecked Sendable {
     private var _liveTaps: [(token: TapToken, closure: @Sendable (AlignedFrame) -> Void)] = []
 
     /// Format description used to wrap silence + emitted buffers.
-    /// Built lazily from `targetSampleRate` / `targetChannelCount`.
     private let formatDescription: CMAudioFormatDescription
 
-    /// Per-source contiguous Float32 buffer (channel-major, non-interleaved
-    /// layout: [ch0_f0, ch0_f1, ..., ch0_fN-1, ch1_f0, ...]).
-    /// Length == `_systemFrameCount * channelCount` always.
-    private var _systemSamples: [Float32] = []
-    private var _systemFrameCount: Int = 0
-    private var _systemHeadPTS: CMTime?
+    /// Integral sample rate used as the CMTime timescale of the timeline.
+    private let timescale: CMTimeScale
 
-    private var _micSamples: [Float32] = []
-    private var _micFrameCount: Int = 0
-    private var _micHeadPTS: CMTime?
+    /// PTS deviation (in frames) absorbed by snapping a chunk onto the
+    /// previous one. Larger deviations are real holes / overlaps.
+    static let snapToleranceSeconds: Double = 0.005
+    private let snapToleranceFrames: Int64
 
-    /// `nextExpectedFramePTS` per the design §2.9 / research §4 recipe.
-    /// `nil` until the first buffer arrives from any source.
-    private var _nextExpectedFramePTS: CMTime?
+    /// How far one source may run ahead of the other before the lagging
+    /// one is treated as stalled for the next window.
+    static let maxSkewSeconds: Double = 0.4
+    private let maxSkewFrames: Int64
+
+    /// One ingested buffer, placed on the timeline.
+    private struct Chunk {
+        /// Absolute sample index of the first frame.
+        var start: Int64
+        var frames: Int
+        /// Channel-major samples (`frames` per channel).
+        var samples: [Float32]
+        var end: Int64 { start + Int64(frames) }
+    }
+
+    /// Per-source placement state.
+    private struct Track {
+        var chunks: [Chunk] = []
+        /// Index of the first live chunk (amortised O(1) pops).
+        var head: Int = 0
+        /// End of the last placed chunk; `nil` until the first buffer.
+        var lastEnd: Int64?
+        /// Snap deviation of the most recent chunk, in frames (for C5).
+        var lastDeviation: Int64 = 0
+        /// Holes inside the stream not yet past the cursor.
+        var gaps: [Range<Int64>] = []
+
+        var live: ArraySlice<Chunk> { chunks[head...] }
+
+        mutating func popConsumed(before position: Int64) {
+            while head < chunks.count, chunks[head].end <= position { head += 1 }
+            if head > 32, head * 2 > chunks.count {
+                chunks.removeFirst(head)
+                head = 0
+            }
+            gaps.removeAll { $0.upperBound <= position }
+        }
+
+        mutating func reset() {
+            chunks.removeAll(keepingCapacity: false)
+            head = 0
+            gaps.removeAll()
+        }
+    }
+
+    private var _system = Track()
+    private var _mic = Track()
+
+    /// Start of the next window to emit; `nil` until the first buffer.
+    private var _cursor: Int64?
 
     /// Counters surfaced via `stats`.
     private var _framesEmitted: Int = 0
@@ -232,6 +276,9 @@ public final class HostClockAligner: @unchecked Sendable {
         let frames = Int((frameDuration.seconds * targetSampleRate).rounded())
         precondition(frames > 0, "frameDuration must resolve to >= 1 frame")
         self.windowFrames = frames
+        self.timescale = CMTimeScale(targetSampleRate.rounded())
+        self.snapToleranceFrames = Int64((Self.snapToleranceSeconds * targetSampleRate).rounded())
+        self.maxSkewFrames = Int64((Self.maxSkewSeconds * targetSampleRate).rounded())
 
         self.formatDescription = SilenceBufferFactory.makeFloat32FormatDescription(
             sampleRate: targetSampleRate,
@@ -261,6 +308,7 @@ public final class HostClockAligner: @unchecked Sendable {
         )
     }
 
+
     // MARK: - Public API
 
     /// Feed a buffer from either source. Thread-safe — hops onto the
@@ -277,21 +325,17 @@ public final class HostClockAligner: @unchecked Sendable {
     }
 
     /// Stop accepting further captures. Synchronous wrt the serial
-    /// queue: returns after any in-flight ingest has completed and
-    /// after a final drain attempt has run.
+    /// queue: returns after any in-flight ingest has completed, every
+    /// complete window has been emitted, and the remaining partial
+    /// windows have been emitted padded with silence.
     public func flush() {
         serialQueue.sync { [self] in
+            guard !self._flushed else { return }
             self._flushed = true
-            // One last drain pass for any complete window already buffered.
             self.tryDrain()
-            // Reset buffers — anything left is, by definition, partial
-            // residue with no aligned counterpart on the other side.
-            self._systemSamples.removeAll(keepingCapacity: false)
-            self._systemFrameCount = 0
-            self._systemHeadPTS = nil
-            self._micSamples.removeAll(keepingCapacity: false)
-            self._micFrameCount = 0
-            self._micHeadPTS = nil
+            self.drainTailPadded()
+            self._system.reset()
+            self._mic.reset()
         }
     }
 
@@ -302,9 +346,6 @@ public final class HostClockAligner: @unchecked Sendable {
 
     // MARK: - Core algorithm (queue-confined)
 
-    /// Validate format, append samples, anchor `nextExpectedFramePTS`
-    /// on first ingest, then attempt to drain windows. Runs on
-    /// `serialQueue`.
     private func ingestOnQueue(_ capture: CaptureBuffer) {
         guard !_flushed else { return }
         guard !_formatErrored else { return }
@@ -349,267 +390,138 @@ public final class HostClockAligner: @unchecked Sendable {
         let frameCount = CMSampleBufferGetNumSamples(sb)
         guard frameCount > 0 else { return }
 
-        // Read all sample bytes into a Float32 array.
-        var newSamples = [Float32](repeating: 0, count: frameCount * targetChannelCount)
+        // One copy: block buffer → channel-major Float32 array.
+        var samples = [Float32](repeating: 0, count: frameCount * targetChannelCount)
         let totalBytes = frameCount * targetChannelCount * MemoryLayout<Float32>.size
         guard let bb = CMSampleBufferGetDataBuffer(sb) else {
             logger?.error("aligner: ingest dropped — buffer has no data buffer")
             return
         }
-        let copyStatus = newSamples.withUnsafeMutableBufferPointer { ptr -> OSStatus in
-            guard let base = ptr.baseAddress else { return -1 }
-            return CMBlockBufferCopyDataBytes(
-                bb,
-                atOffset: 0,
-                dataLength: totalBytes,
-                destination: UnsafeMutableRawPointer(base)
-            )
+        let copyStatus = samples.withUnsafeMutableBytes { raw -> OSStatus in
+            guard let base = raw.baseAddress else { return -1 }
+            return CMBlockBufferCopyDataBytes(bb, atOffset: 0, dataLength: totalBytes, destination: base)
         }
         guard copyStatus == kCMBlockBufferNoErr else {
-            logger?.error(
-                "aligner: CMBlockBufferCopyDataBytes failed (status=\(copyStatus))"
-            )
+            logger?.error("aligner: CMBlockBufferCopyDataBytes failed (status=\(copyStatus))")
             return
         }
 
         let pts = CMSampleBufferGetPresentationTimeStamp(sb)
+        let start = sampleIndex(of: pts)
+        if _cursor == nil { _cursor = start }
 
-        // Append to the appropriate source's accumulator.
         switch capture.source {
         case .system:
-            appendSamples(
-                &_systemSamples,
-                frameCount: &_systemFrameCount,
-                headPTS: &_systemHeadPTS,
-                newSamples: newSamples,
-                newFrameCount: frameCount,
-                newPTS: pts
-            )
+            place(Chunk(start: start, frames: frameCount, samples: samples), on: &_system)
         case .microphone:
-            appendSamples(
-                &_micSamples,
-                frameCount: &_micFrameCount,
-                headPTS: &_micHeadPTS,
-                newSamples: newSamples,
-                newFrameCount: frameCount,
-                newPTS: pts
-            )
+            place(Chunk(start: start, frames: frameCount, samples: samples), on: &_mic)
         }
-
-        // Anchor the output cadence on the first ingest.
-        if _nextExpectedFramePTS == nil {
-            anchorNextExpectedFramePTSIfPossible()
-        }
-
+        updateDrift()
         tryDrain()
     }
 
-    /// Append samples in non-interleaved layout: per-channel slices.
-    /// `dst` keeps the convention `[ch0_f0..ch0_fN-1, ch1_f0.., ...]`.
-    /// The new buffer has the same convention; we splice each channel
-    /// in place.
-    private func appendSamples(
-        _ dst: inout [Float32],
-        frameCount: inout Int,
-        headPTS: inout CMTime?,
-        newSamples: [Float32],
-        newFrameCount: Int,
-        newPTS: CMTime
-    ) {
-        let channelCount = targetChannelCount
-        let oldFrameCount = frameCount
-        let newTotalFrames = oldFrameCount + newFrameCount
+    /// Absolute sample index of `pts` on the aligner's timeline.
+    private func sampleIndex(of pts: CMTime) -> Int64 {
+        CMTimeConvertScale(pts, timescale: timescale, method: .roundHalfAwayFromZero).value
+    }
 
-        // Reallocate. We rebuild channel-by-channel because the layout
-        // is channel-major.
-        var rebuilt = [Float32](repeating: 0, count: newTotalFrames * channelCount)
-        rebuilt.withUnsafeMutableBufferPointer { dstPtr in
-            dst.withUnsafeBufferPointer { oldPtr in
-                newSamples.withUnsafeBufferPointer { newPtr in
-                    for c in 0..<channelCount {
-                        let dstOffset = c * newTotalFrames
-                        let oldOffset = c * oldFrameCount
-                        let newOffset = c * newFrameCount
-
-                        if oldFrameCount > 0, let oldBase = oldPtr.baseAddress {
-                            let oldChunk = UnsafeBufferPointer(
-                                start: oldBase.advanced(by: oldOffset),
-                                count: oldFrameCount
-                            )
-                            for i in 0..<oldFrameCount {
-                                dstPtr[dstOffset + i] = oldChunk[i]
-                            }
-                        }
-                        if let newBase = newPtr.baseAddress {
-                            let newChunk = UnsafeBufferPointer(
-                                start: newBase.advanced(by: newOffset),
-                                count: newFrameCount
-                            )
-                            for i in 0..<newFrameCount {
-                                dstPtr[dstOffset + oldFrameCount + i] = newChunk[i]
-                            }
-                        }
-                    }
-                }
+    /// Place `chunk` on `track` per the snap / hole / overlap rules.
+    private func place(_ chunk: Chunk, on track: inout Track) {
+        var chunk = chunk
+        if let lastEnd = track.lastEnd {
+            let deviation = chunk.start - lastEnd
+            if abs(deviation) <= snapToleranceFrames {
+                chunk.start = lastEnd
+                track.lastDeviation = deviation
+            } else if deviation > 0 {
+                // A hole inside the stream (dropped buffer, PTS jump,
+                // capture restart): keep the true placement.
+                track.gaps.append(lastEnd..<chunk.start)
+                track.lastDeviation = 0
+            } else {
+                // Overlap: the head of this chunk duplicates time already
+                // placed. Trim it.
+                track.lastDeviation = 0
+                chunk = trimmed(chunk, droppingFrames: Int(-deviation))
             }
         }
-
-        dst = rebuilt
-        if oldFrameCount == 0 {
-            // Anchor the head PTS on first-ever data, OR re-anchor after
-            // a drain emptied the buffer.
-            headPTS = newPTS
+        // Never place anything before the emission cursor.
+        if let cursor = _cursor, chunk.start < cursor {
+            chunk = trimmed(chunk, droppingFrames: Int(cursor - chunk.start))
         }
-        frameCount = newTotalFrames
-    }
-
-    /// Set `_nextExpectedFramePTS` to the earliest of the two sources'
-    /// current head PTSs (if any).
-    private func anchorNextExpectedFramePTSIfPossible() {
-        switch (_systemHeadPTS, _micHeadPTS) {
-        case (nil, nil):
+        guard chunk.frames > 0 else {
+            track.lastEnd = max(track.lastEnd ?? chunk.start, chunk.start)
             return
-        case let (sys?, nil):
-            _nextExpectedFramePTS = sys
-        case let (nil, mic?):
-            _nextExpectedFramePTS = mic
-        case let (sys?, mic?):
-            _nextExpectedFramePTS = CMTimeMinimum(sys, mic)
         }
+        track.lastEnd = chunk.end
+        track.chunks.append(chunk)
     }
 
-    /// Repeatedly attempt to emit windows of `windowFrames` until at
-    /// least one source has insufficient data.
+    /// Drop the first `n` frames of every channel of `chunk`.
+    private func trimmed(_ chunk: Chunk, droppingFrames n: Int) -> Chunk {
+        let drop = min(max(0, n), chunk.frames)
+        guard drop > 0 else { return chunk }
+        let remaining = chunk.frames - drop
+        var out = Chunk(start: chunk.start + Int64(drop), frames: remaining, samples: [])
+        guard remaining > 0 else { return out }
+        out.samples.reserveCapacity(remaining * targetChannelCount)
+        for c in 0..<targetChannelCount {
+            let base = c * chunk.frames + drop
+            out.samples.append(contentsOf: chunk.samples[base..<(base + remaining)])
+        }
+        return out
+    }
+
+    private func updateDrift() {
+        let diff = abs(_system.lastDeviation - _mic.lastDeviation)
+        _lastDriftSec = Double(diff) / targetSampleRate
+    }
+
+    /// Emit every window both sources are ready for.
     private func tryDrain() {
-        guard let _ = _nextExpectedFramePTS else { return }
-        // Loop while we can produce another aligned frame.
-        while let nextPTS = _nextExpectedFramePTS, canEmitWindow(at: nextPTS) {
-            emitWindow(at: nextPTS)
+        while let ws = _cursor {
+            let we = ws + Int64(windowFrames)
+            guard let sysStalled = readiness(of: _system, other: _mic, windowEnd: we),
+                  let micStalled = readiness(of: _mic, other: _system, windowEnd: we)
+            else { return }
+            emitWindow(at: ws, countSystemStall: sysStalled, countMicStall: micStalled)
         }
     }
 
-    /// Decide whether we have enough information on both sources to
-    /// emit a window starting at `windowStart`.
-    ///
-    /// We can emit when, for each source, at least one of the
-    /// following holds:
-    ///   (a) the source's headPTS is greater than (windowStart +
-    ///       windowDuration - 1 sample) — meaning no real data covers
-    ///       this window yet, so we will silence-fill;
-    ///   (b) the source has buffered enough frames (after any leading
-    ///       drop) to cover the window.
-    ///
-    /// Case (a) lets us emit even when one side has stalled — the
-    /// aligner doesn't wait indefinitely for stalled sources to come
-    /// back. Case (b) is the standard happy path.
-    ///
-    /// Special case: if neither source has *any* data yet for a window
-    /// (both `headPTS == nil`), we obviously can't emit.
-    private func canEmitWindow(at windowStart: CMTime) -> Bool {
-        let windowEnd = CMTimeAdd(windowStart, frameDuration)
-        let oneSample = CMTime(value: 1, timescale: CMTimeScale(targetSampleRate))
-        let lookahead = CMTimeSubtract(windowEnd, oneSample)
-
-        let systemReady = sourceReady(
-            headPTS: _systemHeadPTS,
-            frameCount: _systemFrameCount,
-            windowStart: windowStart,
-            lookahead: lookahead
-        )
-        let micReady = sourceReady(
-            headPTS: _micHeadPTS,
-            frameCount: _micFrameCount,
-            windowStart: windowStart,
-            lookahead: lookahead
-        )
-
-        // Emit only when BOTH sides are ready (either with real data
-        // or with a confirmed gap). Otherwise we would emit a frame
-        // whose silence-fill could be revoked by a late-arriving
-        // buffer — we don't go back in time.
-        //
-        // EXCEPTION: at flush time, we still emit any window that has
-        // at least one ready side. This is handled by the caller
-        // (`flush` triggers tryDrain after setting the flushed flag,
-        // but the residue cleanup empties buffers anyway, so this
-        // branch is currently inactive). Kept simple here.
-        return systemReady && micReady
+    /// `nil` when `track` is not ready for the window ending at
+    /// `windowEnd`; otherwise whether it is being stall-filled.
+    private func readiness(of track: Track, other: Track, windowEnd: Int64) -> Bool? {
+        if let end = track.lastEnd, end >= windowEnd { return false }
+        // Not covered. Ready only if the other source is far enough
+        // ahead that this one counts as stalled (or absent).
+        if let otherEnd = other.lastEnd, otherEnd >= windowEnd + maxSkewFrames { return true }
+        return nil
     }
 
-    /// A source is "ready" for a given window when either (a) its
-    /// head is already past the window (we'll silence-fill), or (b)
-    /// it has enough buffered frames after dropping any stale leading
-    /// frames whose PTS lies before `windowStart`.
-    private func sourceReady(
-        headPTS: CMTime?,
-        frameCount: Int,
-        windowStart: CMTime,
-        lookahead: CMTime
-    ) -> Bool {
-        guard let head = headPTS else {
-            // No data at all from this source yet. We can't decide
-            // whether the source has stalled or simply hasn't started.
-            // Wait. (Test #1 and #4 both start both sources before
-            // ingest; this branch only fires for a brief moment at
-            // session start, which the prompt's tests tolerate by
-            // running for 1+ second.)
-            return false
+    /// Emit the remaining partial windows, padded with silence, until
+    /// both sources' data has been written out.
+    private func drainTailPadded() {
+        let furthest = max(_system.lastEnd ?? Int64.min, _mic.lastEnd ?? Int64.min)
+        while let ws = _cursor, ws < furthest {
+            emitWindow(at: ws, countSystemStall: false, countMicStall: false)
         }
-        // Head is later than the window — confirmed gap; we'll silence-fill.
-        if CMTimeCompare(head, lookahead) > 0 {
-            return true
-        }
-        // Otherwise, do we have enough frames after trimming the
-        // leading staleness?
-        let staleFrames = framesBefore(windowStart: windowStart, headPTS: head)
-        let usableFrames = frameCount - staleFrames
-        return usableFrames >= windowFrames
     }
 
-    /// How many leading frames to drop because they precede `windowStart`.
-    private func framesBefore(windowStart: CMTime, headPTS: CMTime) -> Int {
-        if CMTimeCompare(headPTS, windowStart) >= 0 { return 0 }
-        let delta = CMTimeSubtract(windowStart, headPTS)
-        let frames = Int((delta.seconds * targetSampleRate).rounded())
-        return max(0, frames)
-    }
+    /// Build and dispatch one `AlignedFrame` for the window at `ws`.
+    private func emitWindow(at ws: Int64, countSystemStall: Bool, countMicStall: Bool) {
+        let we = ws + Int64(windowFrames)
+        let systemBuffer = render(&_system, tag: .system, windowStart: ws, windowEnd: we, stalled: countSystemStall)
+        let micBuffer = render(&_mic, tag: .microphone, windowStart: ws, windowEnd: we, stalled: countMicStall)
 
-    /// Build and dispatch one `AlignedFrame` for the given window.
-    private func emitWindow(at windowStart: CMTime) {
-        let systemBuffer = consumeSlice(
-            for: .system,
-            samples: &_systemSamples,
-            frameCount: &_systemFrameCount,
-            headPTS: &_systemHeadPTS,
-            windowStart: windowStart
-        )
-        let micBuffer = consumeSlice(
-            for: .microphone,
-            samples: &_micSamples,
-            frameCount: &_micFrameCount,
-            headPTS: &_micHeadPTS,
-            windowStart: windowStart
-        )
-
-        // Drift = absolute difference between system PTS and mic PTS
-        // for this emitted window. Both buffers carry `windowStart` as
-        // their PTS by construction — but the underlying source might
-        // have been off-grid by sub-sample amounts before we trimmed.
-        // We measure the difference at the granularity of one sample
-        // period: the staleFrames computation above resolves anything
-        // larger. Surfaced via `stats.lastDriftSec`.
-        let sysPTS = CMSampleBufferGetPresentationTimeStamp(systemBuffer)
-        let micPTS = CMSampleBufferGetPresentationTimeStamp(micBuffer)
-        _lastDriftSec = abs(CMTimeGetSeconds(CMTimeSubtract(sysPTS, micPTS)))
-
+        let pts = CMTime(value: ws, timescale: timescale)
         let frame = AlignedFrame(
-            pts: windowStart,
+            pts: pts,
             duration: frameDuration,
             systemBuffer: systemBuffer,
             micBuffer: micBuffer
         )
         _framesEmitted += 1
-        _nextExpectedFramePTS = CMTimeAdd(windowStart, frameDuration)
+        _cursor = we
         onAlignedFrame?(frame)
 
         // Live taps (Phase B / project-design §LT-6). Snapshot the array
@@ -625,140 +537,52 @@ public final class HostClockAligner: @unchecked Sendable {
         }
     }
 
-    /// Carve a `windowFrames`-long slice for one source. Either:
-    ///   * If the source's head is far ahead of `windowStart`, emit a
-    ///     silence buffer (gap-fill counter ++).
-    ///   * Otherwise drop any stale leading frames, slice the window
-    ///     out of the buffer, and rebuild the residue.
-    private func consumeSlice(
-        for tag: CaptureSourceTag,
-        samples: inout [Float32],
-        frameCount: inout Int,
-        headPTS: inout CMTime?,
-        windowStart: CMTime
+    /// Render one source's slice of the window [ws, we): chunk overlaps
+    /// copied in place, silence elsewhere. Updates gap-fill counters and
+    /// drops consumed chunks.
+    private func render(
+        _ track: inout Track,
+        tag: CaptureSourceTag,
+        windowStart ws: Int64,
+        windowEnd we: Int64,
+        stalled: Bool
     ) -> CMSampleBuffer {
-        let oneSample = CMTime(value: 1, timescale: CMTimeScale(targetSampleRate))
-        let lookahead = CMTimeSubtract(CMTimeAdd(windowStart, frameDuration), oneSample)
-
-        // Case A — gap fill: the head is past this entire window, or
-        // there's no data at all for this source.
-        if let head = headPTS, CMTimeCompare(head, lookahead) > 0 {
-            return synthesizeSilenceCounting(tag: tag, windowStart: windowStart)
-        }
-        if headPTS == nil {
-            return synthesizeSilenceCounting(tag: tag, windowStart: windowStart)
+        let touchesGap = track.gaps.contains { $0.lowerBound < we && $0.upperBound > ws }
+        if stalled || touchesGap {
+            switch tag {
+            case .system: _systemGapFills += 1
+            case .microphone: _micGapFills += 1
+            }
         }
 
-        // Case B — real data covers (at least) this window.
-        let staleFrames = framesBefore(windowStart: windowStart, headPTS: headPTS!)
-        // Trim the leading stale frames if any.
-        if staleFrames > 0 {
-            samples = sliceTrailing(
-                samples: samples,
-                totalFrameCount: frameCount,
-                dropLeadingFrames: staleFrames
+        let overlapping = track.live.filter { $0.start < we && $0.end > ws }
+        let buffer: CMSampleBuffer
+        if overlapping.isEmpty {
+            buffer = SilenceBufferFactory.make(
+                pts: CMTime(value: ws, timescale: timescale),
+                sampleRate: targetSampleRate,
+                channelCount: targetChannelCount,
+                frameCount: windowFrames
             )
-            frameCount -= staleFrames
-            // Advance head PTS by `staleFrames` frames.
-            headPTS = CMTimeAdd(
-                headPTS!,
-                CMTime(value: CMTimeValue(staleFrames), timescale: CMTimeScale(targetSampleRate))
-            )
-        }
-
-        // Should hold by `sourceReady` guarantee, but verify defensively.
-        guard frameCount >= windowFrames else {
-            // This is a programming error — we wouldn't have entered
-            // emitWindow without sourceReady → enough frames. Fall
-            // back to silence rather than crashing.
-            logger?.error(
-                "aligner: consumeSlice for \(tag.rawValue) underflowed (have=\(frameCount), need=\(windowFrames)); silence-filling"
-            )
-            return synthesizeSilenceCounting(tag: tag, windowStart: windowStart)
-        }
-
-        // Carve windowFrames out of the head, build a CMSampleBuffer,
-        // rebuild the residue.
-        let outBuffer = buildSampleBuffer(
-            from: samples,
-            totalFrameCount: frameCount,
-            takingFirst: windowFrames,
-            startPTS: windowStart
-        )
-        // Drop the consumed frames from the per-channel buffer.
-        samples = sliceTrailing(
-            samples: samples,
-            totalFrameCount: frameCount,
-            dropLeadingFrames: windowFrames
-        )
-        frameCount -= windowFrames
-        if frameCount == 0 {
-            headPTS = nil
         } else {
-            headPTS = CMTimeAdd(
-                headPTS!,
-                CMTime(value: CMTimeValue(windowFrames), timescale: CMTimeScale(targetSampleRate))
-            )
+            buffer = buildSampleBuffer(windowStart: ws, chunks: overlapping)
         }
-        return outBuffer
+
+        track.popConsumed(before: we)
+        if stalled {
+            // The stalled window is now emitted as silence; data for it
+            // that arrives later is dropped by the cursor check.
+            track.lastEnd = max(track.lastEnd ?? we, we)
+        }
+        return buffer
     }
 
-    /// Drop the leading `dropLeadingFrames` frames from each channel
-    /// of a non-interleaved Float32 buffer of length
-    /// `totalFrameCount * channelCount`. Returns the remaining
-    /// channel-major-flat buffer of length
-    /// `(totalFrameCount - dropLeadingFrames) * channelCount`.
-    private func sliceTrailing(
-        samples: [Float32],
-        totalFrameCount: Int,
-        dropLeadingFrames: Int
-    ) -> [Float32] {
+    /// One window of channel-major Float32, written straight into the
+    /// output block buffer: zeros, then each chunk's overlap.
+    private func buildSampleBuffer(windowStart ws: Int64, chunks: [Chunk]) -> CMSampleBuffer {
         let channelCount = targetChannelCount
-        let remaining = totalFrameCount - dropLeadingFrames
-        if remaining <= 0 { return [] }
-        var out = [Float32](repeating: 0, count: remaining * channelCount)
-        out.withUnsafeMutableBufferPointer { dstPtr in
-            samples.withUnsafeBufferPointer { srcPtr in
-                guard let dstBase = dstPtr.baseAddress, let srcBase = srcPtr.baseAddress else { return }
-                for c in 0..<channelCount {
-                    let srcOffset = c * totalFrameCount + dropLeadingFrames
-                    let dstOffset = c * remaining
-                    for i in 0..<remaining {
-                        dstBase[dstOffset + i] = srcBase[srcOffset + i]
-                    }
-                }
-            }
-        }
-        return out
-    }
-
-    /// Build a CMSampleBuffer of `takingFirst` frames out of the
-    /// channel-major flat input. PTS is `startPTS`; format is the
-    /// aligner's canonical format description.
-    private func buildSampleBuffer(
-        from samples: [Float32],
-        totalFrameCount: Int,
-        takingFirst frames: Int,
-        startPTS: CMTime
-    ) -> CMSampleBuffer {
-        let channelCount = targetChannelCount
-        let bytesPerSample = MemoryLayout<Float32>.size
-        let totalBytes = bytesPerSample * frames * channelCount
-
-        // Build the channel-major slice for the output buffer.
-        var slice = [Float32](repeating: 0, count: frames * channelCount)
-        slice.withUnsafeMutableBufferPointer { dstPtr in
-            samples.withUnsafeBufferPointer { srcPtr in
-                guard let dstBase = dstPtr.baseAddress, let srcBase = srcPtr.baseAddress else { return }
-                for c in 0..<channelCount {
-                    let srcOffset = c * totalFrameCount
-                    let dstOffset = c * frames
-                    for i in 0..<frames {
-                        dstBase[dstOffset + i] = srcBase[srcOffset + i]
-                    }
-                }
-            }
-        }
+        let frames = windowFrames
+        let totalBytes = MemoryLayout<Float32>.size * frames * channelCount
 
         var blockBuffer: CMBlockBuffer?
         let bbStatus = CMBlockBufferCreateWithMemoryBlock(
@@ -776,23 +600,36 @@ public final class HostClockAligner: @unchecked Sendable {
             assertionFailure("aligner: CMBlockBufferCreateWithMemoryBlock failed (status=\(bbStatus))")
             fatalError("aligner: CMBlockBufferCreateWithMemoryBlock failed (status=\(bbStatus))")
         }
-        let copyStatus = slice.withUnsafeBufferPointer { ptr -> OSStatus in
-            guard let base = ptr.baseAddress else { return -1 }
-            return CMBlockBufferReplaceDataBytes(
-                with: UnsafeRawPointer(base),
-                blockBuffer: bb,
-                offsetIntoDestination: 0,
-                dataLength: totalBytes
-            )
+        var dataPointer: UnsafeMutablePointer<CChar>?
+        let ptrStatus = CMBlockBufferGetDataPointer(
+            bb, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: nil, dataPointerOut: &dataPointer
+        )
+        guard ptrStatus == kCMBlockBufferNoErr, let raw = dataPointer else {
+            assertionFailure("aligner: CMBlockBufferGetDataPointer failed (status=\(ptrStatus))")
+            fatalError("aligner: CMBlockBufferGetDataPointer failed (status=\(ptrStatus))")
         }
-        guard copyStatus == kCMBlockBufferNoErr else {
-            assertionFailure("aligner: CMBlockBufferReplaceDataBytes failed (status=\(copyStatus))")
-            fatalError("aligner: CMBlockBufferReplaceDataBytes failed (status=\(copyStatus))")
+        raw.withMemoryRebound(to: Float32.self, capacity: frames * channelCount) { out in
+            out.initialize(repeating: 0, count: frames * channelCount)
+            for chunk in chunks {
+                let from = max(chunk.start, ws)
+                let to = min(chunk.end, ws + Int64(frames))
+                guard to > from else { continue }
+                let count = Int(to - from)
+                let srcOffset = Int(from - chunk.start)
+                let dstOffset = Int(from - ws)
+                chunk.samples.withUnsafeBufferPointer { src in
+                    guard let srcBase = src.baseAddress else { return }
+                    for c in 0..<channelCount {
+                        (out + c * frames + dstOffset).update(
+                            from: srcBase + c * chunk.frames + srcOffset, count: count)
+                    }
+                }
+            }
         }
 
         var timing = CMSampleTimingInfo(
-            duration: CMTime(value: 1, timescale: CMTimeScale(targetSampleRate)),
-            presentationTimeStamp: startPTS,
+            duration: CMTime(value: 1, timescale: timescale),
+            presentationTimeStamp: CMTime(value: ws, timescale: timescale),
             decodeTimeStamp: .invalid
         )
         var sampleBuffer: CMSampleBuffer?
@@ -815,23 +652,5 @@ public final class HostClockAligner: @unchecked Sendable {
             fatalError("aligner: CMSampleBufferCreate failed (status=\(sbStatus))")
         }
         return sb
-    }
-
-    /// Build a silence sample buffer for the given window and bump
-    /// the appropriate gap-fill counter.
-    private func synthesizeSilenceCounting(
-        tag: CaptureSourceTag,
-        windowStart: CMTime
-    ) -> CMSampleBuffer {
-        switch tag {
-        case .system: _systemGapFills += 1
-        case .microphone: _micGapFills += 1
-        }
-        return SilenceBufferFactory.make(
-            pts: windowStart,
-            sampleRate: targetSampleRate,
-            channelCount: targetChannelCount,
-            frameCount: windowFrames
-        )
     }
 }
