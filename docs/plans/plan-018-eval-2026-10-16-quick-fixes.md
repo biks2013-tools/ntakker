@@ -23,3 +23,15 @@
 
 ## Acceptance
 `swift build` green after each task; touched suites green; no new failures vs plan-017 baseline; checkbox ticked + finding noted in the Issues register at the end of the wave.
+
+## Wave result (2026-10-16)
+
+All 14 tasks landed, one commit each. `swift build` green; convo-coach 168/168.
+
+**Full-suite comparison — zero new failures.** Every failure seen at HEAD reproduces identically at the pre-plan commit `bf69be5` (checked in a temporary worktree):
+- The plan-017 baseline set: Gemini REST ×5, SessionCoordinatorTranscriptionIntegration (`gemini-live` alias, `partNN` naming), ConfigResolver "Shell env supplies transcription keys", SonioxConfigBuilder V1-policy, AppleSpeechSessionReconciliation, HostClockAlignerStress ×2.
+- **Two pre-existing failures missing from the plan-017 list:** `AudioDownsamplerTests:144` ("100 ms of 1 kHz sine → Int16 within bounds") and `UIErrorPresenterTests:220` ("staleRecording → retry").
+- **`NtakkerCoreTests.RecordingSessionTests` never finishes — at baseline too.** `sample` shows the test process spinning in `HostClockAligner.appendSamples` (C1 full-buffer copy per ingest + CAP-2 backlog growth), not deadlocked. This is why a plain `swift test` appears to hang. Run the rest with `swift test --skip NtakkerCoreTests.RecordingSessionTests`. Fixing it belongs to the aligner rewrite (CAP-1/CAP-2/C1).
+
+**Verified only by build / reasoning (no harness):** T3 (Azure realtime WebSocket), T9 (SCStream restart race), T14 (popover Save — needs a manual Save of a recorded session).
+

@@ -7,6 +7,8 @@
 ## Pending items (most critical first)
 
 ### EVAL-2026-10-16 — Quality / speed / resource-efficiency scan: 74 new findings registered
+**RESOLUTION UPDATE (2026-10-16) — plan-018 wave 1 landed** ([docs/plans/plan-018-eval-2026-10-16-quick-fixes.md](docs/plans/plan-018-eval-2026-10-16-quick-fixes.md)): CC-1, TR-1, TR-3, INF-4, CAP-4, CAP-5 (not reproduced — downgraded), CAP-7, CAP-8, CAP-10, INF-7, TR-8, TR-9, TR-17 (as an open-path registry), H2 — one commit each; zero new test failures vs `bf69be5`. **Newly documented test-suite facts:** `RecordingSessionTests` spins forever in `HostClockAligner.appendSamples` (pre-existing; makes plain `swift test` look hung — use `--skip NtakkerCoreTests.RecordingSessionTests`); `AudioDownsamplerTests:144` and `UIErrorPresenterTests:220` are pre-existing failures missing from the plan-017 baseline list. Manual check pending: popover Save (T14). Remaining findings stay open per the report.
+
 **Status (2026-10-16).** Read-only re-scan at commit `bf69be5`. Full report: [docs/reference/evaluation-2026-10-16-quality-performance.md](docs/reference/evaluation-2026-10-16-quality-performance.md) (CAP-1…18, TR-1…20, INF-1…15, UI-1…9, CC-1…12 + status of every open EVAL-2026-06-12 finding). Nothing fixed yet.
 
 **Most critical:**
