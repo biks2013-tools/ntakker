@@ -45,50 +45,91 @@ enum SessionExporter {
         category: "SessionExporter"
     )
 
-    /// Pair of sidecar URLs alongside the source audio. Either field
-    /// may be `nil` when the corresponding file is missing — that is
-    /// the normal case for sessions that recorded without
-    /// transcription, or that never received a question.
-    private struct SourceSidecars {
-        let transcript: URL?
-        let questions: URL?
+    /// The segment stem a source's sidecars are named after. Split-layout
+    /// audio (`<stem>.system.<ext>` / `<stem>.mic.<ext>`) shares the
+    /// sidecars of `<stem>`, so the per-side suffix is stripped.
+    private static func segmentStem(of source: URL) -> String {
+        let stem = source.deletingPathExtension().lastPathComponent
+        for side in [".system", ".mic"] where stem.hasSuffix(side) {
+            return String(stem.dropLast(side.count))
+        }
+        return stem
     }
 
-    /// Locate the transcript / questions JSONL sidecars alongside the
-    /// FIRST audio source. Both writers key off the same base URL the
-    /// engine reports on `.segmentCompleted`, so probing one location
-    /// per session is sufficient — we just have to be tolerant of both
-    /// the stem-based (`<stem>.transcript.jsonl`) and base-based
-    /// (`<base>.questions.jsonl`) naming families.
-    private static func locateSourceSidecars(audioSources: [URL]) -> SourceSidecars {
-        guard let source = audioSources.first else {
-            return SourceSidecars(transcript: nil, questions: nil)
-        }
-        let fm = FileManager.default
-        let dir = source.deletingLastPathComponent()
+    /// Every sidecar filename the engine / app may have written for one
+    /// audio source (EVAL-2026-10-16 UI-1):
+    ///   * transcripts: `<stem>.[system.|microphone.]transcript.<fmt>`;
+    ///     for `.part01` also the bare-stem names a pre-fix build left
+    ///     behind (segment 1 used to keep them after its audio was renamed);
+    ///   * legacy base-based transcripts: `<base>.transcript.<fmt>`;
+    ///   * questions: `<base>.questions.jsonl` / `<stem>.questions.jsonl`.
+    private static func sidecarNameCandidates(for source: URL) -> [String] {
         let base = source.lastPathComponent
-        let stem = source.deletingPathExtension().lastPathComponent
+        let stem = segmentStem(of: source)
+        var stems = [stem]
+        if stem.hasSuffix(".part01") {
+            stems.append(String(stem.dropLast(".part01".count)))
+        }
+        var names: [String] = []
+        for s in stems {
+            for format in TranscriptFormat.allCases {
+                names.append("\(s).transcript.\(format.rawValue)")
+                names.append("\(s).system.transcript.\(format.rawValue)")
+                names.append("\(s).microphone.transcript.\(format.rawValue)")
+            }
+            names.append("\(s).questions.jsonl")
+        }
+        for format in TranscriptFormat.allCases {
+            names.append("\(base).transcript.\(format.rawValue)")
+        }
+        names.append("\(base).questions.jsonl")
+        var seen = Set<String>()
+        return names.filter { seen.insert($0).inserted }
+    }
 
-        // Transcript probe — engine writes `<stem>.transcript.jsonl`,
-        // some older builds wrote `<base>.transcript.jsonl`. Honour
-        // both so the move works regardless of which writer produced
-        // the file.
-        let transcriptCandidates = [
-            dir.appendingPathComponent("\(stem).transcript.jsonl"),
-            dir.appendingPathComponent("\(base).transcript.jsonl"),
-        ]
-        let transcript = transcriptCandidates.first { fm.fileExists(atPath: $0.path) }
+    /// All JSONL transcript sidecars on disk for the session, across
+    /// every part and every per-source file.
+    private static func locateTranscriptSidecars(audioSources: [URL]) -> [URL] {
+        let fm = FileManager.default
+        var seen = Set<String>()
+        var found: [URL] = []
+        for source in audioSources {
+            let dir = source.deletingLastPathComponent()
+            for name in sidecarNameCandidates(for: source)
+            where name.hasSuffix(".transcript.jsonl") {
+                let url = dir.appendingPathComponent(name)
+                guard fm.fileExists(atPath: url.path), seen.insert(url.path).inserted else { continue }
+                found.append(url)
+            }
+        }
+        return found
+    }
 
-        // Questions probe — `QASessionSidecar.write` keys off the bare
-        // audio URL (`<base>.questions.jsonl`). Stem-based fallback
-        // included for symmetry.
-        let questionsCandidates = [
-            dir.appendingPathComponent("\(base).questions.jsonl"),
-            dir.appendingPathComponent("\(stem).questions.jsonl"),
-        ]
-        let questions = questionsCandidates.first { fm.fileExists(atPath: $0.path) }
+    /// The questions sidecar. `persistQASidecarIfNeeded` writes the whole
+    /// history next to the LAST completed segment, so probe from the end.
+    private static func locateQuestionsSidecar(audioSources: [URL]) -> URL? {
+        let fm = FileManager.default
+        for source in audioSources.reversed() {
+            let dir = source.deletingLastPathComponent()
+            for name in sidecarNameCandidates(for: source) where name.hasSuffix(".questions.jsonl") {
+                let url = dir.appendingPathComponent(name)
+                if fm.fileExists(atPath: url.path) { return url }
+            }
+        }
+        return nil
+    }
 
-        return SourceSidecars(transcript: transcript, questions: questions)
+    /// Read and merge transcript sidecars: newest line per segment id,
+    /// sorted by timestamp. `nil` when nothing was read.
+    private static func mergedTranscript(from urls: [URL]) -> [TranscriptSegment]? {
+        var byId: [UUID: TranscriptSegment] = [:]
+        for url in urls {
+            for segment in JSONLTranscriptReader.read(from: url) {
+                byId[segment.id] = segment
+            }
+        }
+        guard !byId.isEmpty else { return nil }
+        return byId.values.sorted { $0.timestamp < $1.timestamp }
     }
 
     /// Expand a single audio source URL into the actual files on disk.
@@ -203,16 +244,14 @@ enum SessionExporter {
         // When no sidecar is found (transcription disabled, or no
         // questions asked) we fall back to the in-memory arrays, which
         // is still correct for that case.
-        let sidecars = locateSourceSidecars(audioSources: audioSources)
-        let transcriptFromSidecar = sidecars.transcript.flatMap { url -> [TranscriptSegment]? in
-            let parsed = JSONLTranscriptReader.read(from: url)
-            return parsed.isEmpty ? nil : parsed
-        }
-        let qaFromSidecar = sidecars.questions.flatMap { url -> [QASidecarEntry]? in
+        let transcriptSidecars = locateTranscriptSidecars(audioSources: audioSources)
+        let questionsSidecar = locateQuestionsSidecar(audioSources: audioSources)
+        let transcriptFromSidecar = mergedTranscript(from: transcriptSidecars)
+        let qaFromSidecar = questionsSidecar.flatMap { url -> [QASidecarEntry]? in
             let parsed = QASessionSidecarReader.read(from: url)
             return parsed.isEmpty ? nil : parsed
         }
-        log.notice("sidecar discovery: transcript=\(sidecars.transcript?.lastPathComponent ?? "—", privacy: .public) (\(transcriptFromSidecar?.count ?? -1, privacy: .public) seg) questions=\(sidecars.questions?.lastPathComponent ?? "—", privacy: .public) (\(qaFromSidecar?.count ?? -1, privacy: .public) entries)")
+        log.notice("sidecar discovery: transcripts=\(transcriptSidecars.map(\.lastPathComponent).joined(separator: ","), privacy: .public) (\(transcriptFromSidecar?.count ?? -1, privacy: .public) seg) questions=\(questionsSidecar?.lastPathComponent ?? "—", privacy: .public) (\(qaFromSidecar?.count ?? -1, privacy: .public) entries)")
 
         // Write transcript.md — ALWAYS produced, even when the live
         // transcript is empty (per user preference 2026-05-15). An
@@ -360,35 +399,9 @@ enum SessionExporter {
     private static func moveSidecarsAlongside(audio source: URL, into destFolder: URL) {
         let fm = FileManager.default
         let dir = source.deletingLastPathComponent()
-        // Two naming families produced by the engine:
-        //   * Stem-based   (no audio extension): `<stem>.transcript.jsonl`
-        //                                        `<stem>.transcript.txt`
-        //                                        `<stem>.transcript.srt`
-        //                                        `<stem>.transcript.vtt`
-        //                                        `<stem>.system.transcript.jsonl`
-        //                                        `<stem>.microphone.transcript.jsonl`
-        //   * Base-based   (full audio filename): `<base>.questions.jsonl`
-        // We probe both for every candidate so layout changes in either
-        // writer can't silently strand a sidecar in the source folder.
-        let base = source.lastPathComponent
-        let stem = source.deletingPathExtension().lastPathComponent
-        var seen = Set<String>()
-        let candidates: [String] = [
-            "\(stem).transcript.jsonl",
-            "\(stem).transcript.txt",
-            "\(stem).transcript.srt",
-            "\(stem).transcript.vtt",
-            "\(stem).system.transcript.jsonl",
-            "\(stem).microphone.transcript.jsonl",
-            "\(stem).questions.jsonl",
-            "\(base).transcript.jsonl",
-            "\(base).transcript.txt",
-            "\(base).transcript.srt",
-            "\(base).transcript.vtt",
-            "\(base).system.transcript.jsonl",
-            "\(base).microphone.transcript.jsonl",
-            "\(base).questions.jsonl",
-        ].filter { seen.insert($0).inserted }
+        // Every naming family the engine / app produce for this source
+        // — see `sidecarNameCandidates(for:)`.
+        let candidates = sidecarNameCandidates(for: source)
         for name in candidates {
             let src = dir.appendingPathComponent(name)
             guard fm.fileExists(atPath: src.path) else { continue }

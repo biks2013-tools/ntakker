@@ -445,4 +445,45 @@ struct SessionCoordinatorTests {
         #expect(sawRecording)
         #expect(transcriptCount == 40)
     }
+
+    @Test("UI-1: first pause renames segment 1's transcript sidecars to .part01")
+    func pauseRenamesFirstSegmentTranscriptSidecars() async throws {
+        let (tmp, cleanup) = try makeTempDir()
+        defer { cleanup() }
+
+        let baseURL = tmp.appendingPathComponent("rec.m4a")
+        let opts = RecordingOptions(output: baseURL, format: .m4a, layout: .mixed)
+        let coordinator = SessionCoordinator(
+            baseOptions: opts,
+            logger: .init(label: "test.ui1"),
+            factory: { perSegOpts in
+                let out = perSegOpts.output
+                FileManager.default.createFile(atPath: out.path, contents: Data())
+                // The engine names each segment's sidecars after its output URL.
+                for tag in [nil, SourceTag.system, SourceTag.microphone] {
+                    let sidecar = SidecarPathBuilder.sidecarURL(
+                        forRecording: out, format: .jsonl, sourceTag: tag)
+                    FileManager.default.createFile(atPath: sidecar.path, contents: Data("{}\n".utf8))
+                }
+                return MockRecordingSession()
+            }
+        )
+        try await coordinator.start()
+        try await coordinator.pause()
+        try await coordinator.resume()
+        try await coordinator.stop()
+        await coordinator.teardown()
+
+        let names = Set(try FileManager.default.contentsOfDirectory(atPath: tmp.path))
+        for expected in [
+            "rec.part01.transcript.jsonl", "rec.part01.system.transcript.jsonl",
+            "rec.part01.microphone.transcript.jsonl",
+            "rec.part02.transcript.jsonl", "rec.part02.system.transcript.jsonl",
+            "rec.part02.microphone.transcript.jsonl",
+        ] {
+            #expect(names.contains(expected), "missing \(expected); have \(names.sorted())")
+        }
+        #expect(!names.contains("rec.transcript.jsonl"), "segment 1's sidecar must not keep the bare name")
+    }
 }
+

@@ -38,9 +38,10 @@ Approved: 2026-10-16 ("yes please", after plan-019 was proposed as the step befo
 
 ### Save and Ask completeness
 
-- [ ] **T6 (UI-1)** The first pause renames segment 1's audio to `.part01` but leaves its transcript sidecars under the bare name. Save then probes `<stem>.part01.transcript.jsonl`, finds nothing, reads only the first audio source, and ignores the `.system` and `.microphone` sidecars.
+- [x] **T6 (UI-1)** The first pause renames segment 1's audio to `.part01` but leaves its transcript sidecars under the bare name. Save then probes `<stem>.part01.transcript.jsonl`, finds nothing, reads only the first audio source, and ignores the `.system` and `.microphone` sidecars.
   - Rename the segment-1 transcript sidecars alongside the audio.
   - Make Save read and merge every part's transcript sidecars, both the mixed `<stem>.transcript.jsonl` and the per-source `.system` / `.microphone` ones, sorted by timestamp. Keep a probe for the bare segment-1 name so older sessions still work.
+  - Done. The coordinator rename is tested (`UI-1` test in `SessionCoordinatorTests`). The exporter merge is build-verified only: `SessionExporter` lives in the app executable, which no test target imports. Save also now finds the questions sidecar, which is written next to the LAST segment; before, Save only looked next to the first.
 - [x] **T6a (new, found during T6)** `JSONLTranscriptReader` excluded every id that had a tombstone. The writer's long-grow tombstone carries the same id as the line appended after it, so Save dropped every batch-provider segment that had grown past its slot. Fix: skip tombstone lines and keep the last valid line per id. A round-trip test against the real writer fails on the old reader.
 - [ ] **T7 (UI-6)** Ask "Full" / "15 min" and the Save fallback read `RecordingController.transcriptSegments`, which is capped at 100 for the live panel. Keep a separate uncapped session transcript for Ask and Save; the panel stays capped.
 

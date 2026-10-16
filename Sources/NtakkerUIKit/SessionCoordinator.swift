@@ -614,6 +614,7 @@ public actor SessionCoordinator {
     ///   matching what the rest of the coordinator already does).
     private func renameFirstSegmentOnDisk(bareURL: URL) -> URL {
         let fm = FileManager.default
+        renameFirstSegmentTranscriptSidecars(fm: fm)
         switch baseOptions.layout {
         case .split:
             // Engine wrote two sibling files. Rename both. The bareURL
@@ -635,6 +636,26 @@ public actor SessionCoordinator {
             let renamed = SegmentNamer.renameForFirstSegment(bareURL)
             renameFile(at: bareURL, to: renamed, fm: fm, label: "single")
             return fm.fileExists(atPath: renamed.path) ? renamed : bareURL
+        }
+    }
+
+    /// EVAL-2026-10-16 UI-1: segment 1's transcript sidecars are named
+    /// after the bare output URL (`<stem>.transcript.<fmt>`, plus the
+    /// `.system` / `.microphone` per-source variants). Rename every one
+    /// that exists to its `.part01` sibling — the naming segment 2+ uses
+    /// (`<stem>.part02.transcript.jsonl`) — so Save finds every part's
+    /// transcript next to its audio.
+    private func renameFirstSegmentTranscriptSidecars(fm: FileManager) {
+        let sourceTags: [SourceTag?] = [nil, .system, .microphone]
+        for format in TranscriptFormat.allCases {
+            for tag in sourceTags {
+                let src = SidecarPathBuilder.sidecarURL(
+                    forRecording: firstSegmentURL, format: format, sourceTag: tag)
+                guard fm.fileExists(atPath: src.path) else { continue }
+                let dst = SidecarPathBuilder.sidecarURL(
+                    forRecording: firstSegmentURL, format: format, partNumber: 1, sourceTag: tag)
+                renameFile(at: src, to: dst, fm: fm, label: "transcript")
+            }
         }
     }
 
