@@ -8,7 +8,7 @@
 //   * All AVAssetWriter / AVAssetWriterInput interactions are confined to
 //     a single private serial queue, `writerQueue`. The queue is owned
 //     by the recorder; it is the only consumer of `writers[*]`,
-//     `inputs[*]`, `pendingFrames`, `_lastAppendedPTS`, `state`, and
+//     `inputs[*]`, `pendingFrames`, `_lastAppendedEndPTS`, `state`, and
 //     `_isFinalizing`. The aligner's serial queue calls into
 //     `append(_:)` which trampolines onto `writerQueue` synchronously
 //     (just to enqueue) and returns immediately.
@@ -104,10 +104,12 @@ public final class M4ARecorder: Recorder, @unchecked Sendable {
     private var systemWriter: WriterUnit?
     private var micWriter: WriterUnit?
 
-    /// Most recent PTS appended to any input. Used to set
-    /// `endSession(atSourceTime:)` in `finalize(timeout:)`. `nil` until
-    /// the first `append(_:)` lands.
-    private var _lastAppendedPTS: CMTime?
+    /// END time (PTS + duration) of the latest buffer appended to any
+    /// input. Used as `endSession(atSourceTime:)` in
+    /// `finalize(timeout:)`. `nil` until the first `append(_:)` lands.
+    /// Using the START PTS here trimmed the final ~100 ms frame from
+    /// every file and every split seam (EVAL-2026-10-16 CAP-5).
+    private var _lastAppendedEndPTS: CMTime?
 
     /// Host-clock session start captured in `start()`. Used as the
     /// fallback `endSession` PTS if no frames were appended.
@@ -200,7 +202,7 @@ public final class M4ARecorder: Recorder, @unchecked Sendable {
         // Then await each writer's finishWriting via withTimeout.
         let units: [WriterUnit] = await withCheckedContinuation { (cont: CheckedContinuation<[WriterUnit], Never>) in
             writerQueue.async { [self] in
-                let endPTS = self._lastAppendedPTS ?? self._sessionStart ?? CMClockGetTime(CMClockGetHostTimeClock())
+                let endPTS = self._lastAppendedEndPTS ?? self._sessionStart ?? CMClockGetTime(CMClockGetHostTimeClock())
 
                 var collected: [WriterUnit] = []
                 if let u = self.singleWriter { collected.append(u) }
@@ -686,12 +688,36 @@ public final class M4ARecorder: Recorder, @unchecked Sendable {
         guard let unit = unit(for: target) else { return }
 
         unit.pending.append(buffer)
-        _lastAppendedPTS = CMSampleBufferGetPresentationTimeStamp(buffer)
+        let bufferEnd = Self.endTime(of: buffer)
+        // Keep the latest end across the split-layout writers.
+        if _lastAppendedEndPTS.map({ CMTimeCompare(bufferEnd, $0) > 0 }) ?? true {
+            _lastAppendedEndPTS = bufferEnd
+        }
         // No need to poke the input — its requestMediaDataWhenReady
         // callback will pull as soon as it's hungry. When it's already
         // ready (the common live-capture case) we still drain inline so
         // that buffers don't queue up unnecessarily.
         drain(unit: unit)
+    }
+
+    /// PTS + duration. Audio buffers built in this project carry a
+    /// per-sample duration, for which `CMSampleBufferGetDuration`
+    /// returns the whole-buffer duration; fall back to
+    /// frames / sampleRate if a buffer arrives without timing.
+    private static func endTime(of buffer: CMSampleBuffer) -> CMTime {
+        let pts = CMSampleBufferGetPresentationTimeStamp(buffer)
+        var duration = CMSampleBufferGetDuration(buffer)
+        if !duration.isValid || duration.isIndefinite,
+           let fmt = CMSampleBufferGetFormatDescription(buffer),
+           let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(fmt)?.pointee,
+           asbd.mSampleRate > 0 {
+            duration = CMTime(
+                value: CMTimeValue(CMSampleBufferGetNumSamples(buffer)),
+                timescale: CMTimeScale(asbd.mSampleRate)
+            )
+        }
+        guard duration.isValid, !duration.isIndefinite else { return pts }
+        return CMTimeAdd(pts, duration)
     }
 
     private func unit(for target: WriterTarget) -> WriterUnit? {

@@ -11,7 +11,7 @@
 - [x] **T3 (TR-3)** Azure realtime `finish()`: send `input_audio_buffer.commit`, wait (≤2 s) for outstanding transcriptions, then close.
 - [x] **T4 (INF-4)** Daemonizer `umask(0)` → `umask(0o077)`.
 - [x] **T5 (CAP-4)** SCStream `minimumFrameInterval` → 1 s so the throw-away video output stops running at display rate.
-- [ ] **T6 (CAP-5)** M4A `endSession` at last PTS **+ duration** (stop trimming the final frame).
+- [x] **T6 (CAP-5)** M4A `endSession` at last PTS **+ duration** (stop trimming the final frame). **Note:** the claimed loss did NOT reproduce — 3 s recordings measure 3.0000 s (AVURLAsset duration + track timeRange) and 144 000 encoded frames both before and after. Kept as an API-semantics correctness change (no measurable effect); CAP-5 downgraded in the report.
 - [ ] **T7 (CAP-7)** WAV/CAF recorders latch the first write error and surface it from `append`/`finalize`.
 - [ ] **T8 (CAP-8)** M4A finalize drains pending buffers before `markAsFinished()`.
 - [ ] **T9 (CAP-10)** SCStream `restartStream` in-progress latch.
