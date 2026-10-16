@@ -29,10 +29,17 @@ public enum TranscriptSanitizer {
         "subtitles by the amara.org community"
     ]
 
+    /// Leading punctuation that opens real content (`[Speaker 1]`,
+    /// `(laughs)`, a quotation, Spanish `¿` / `¡`) — kept by `clean`
+    /// (EVAL-2026-10-16 TR-6). Other leading punctuation (`- `, `...`,
+    /// `, `) is stripped.
+    private static let openingPunctuation = CharacterSet(charactersIn: "([{\"'«“‘¿¡")
+
     public static func clean(_ raw: String) -> String {
         var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         while let first = s.unicodeScalars.first,
-              CharacterSet.punctuationCharacters.contains(first)
+              (CharacterSet.punctuationCharacters.contains(first)
+                && !openingPunctuation.contains(first))
                 || CharacterSet.whitespaces.contains(first)
         {
             s.removeFirst()

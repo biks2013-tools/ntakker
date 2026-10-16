@@ -47,7 +47,7 @@ Approved: 2026-10-16 ("yes please", after plan-019 was proposed as the step befo
 
 ### Sanitizer
 
-- [ ] **T8 (TR-6)** `TranscriptSanitizer.clean` strips all leading punctuation, including the `[` of `[Speaker 1]`. Keep opening brackets and quotes (`( [ { " ' « “ ‘ ¿ ¡`).
+- [x] **T8 (TR-6)** `TranscriptSanitizer.clean` strips all leading punctuation, including the `[` of `[Speaker 1]`. Keep opening brackets and quotes (`( [ { " ' « “ ‘ ¿ ¡`).
 - [ ] **T9 (TR-7)** The hallucination list deletes genuine one-word answers such as "yeah", "ok" and "thanks" from 2 s chunks. Keep always dropping the phrases that are pure hallucinations ("thanks for watching", "subtitles by …", "you", fillers). Drop the plausible short replies only when the chunk is quiet; `TranscriptionManager` passes the chunk peak.
 
 ### Apple providers

@@ -36,4 +36,14 @@ struct TranscriptSanitizerTests {
     func cleanPreservesRealText() {
         #expect(TranscriptSanitizer.clean("The quick brown fox.") == "The quick brown fox.")
     }
+
+    @Test("TR-6: opening brackets and quotes are kept")
+    func cleanKeepsOpeningPunctuation() {
+        #expect(TranscriptSanitizer.clean("[Speaker 1] hello there") == "[Speaker 1] hello there")
+        #expect(TranscriptSanitizer.clean("  (laughs) right") == "(laughs) right")
+        #expect(TranscriptSanitizer.clean("\u{201C}Quoted\u{201D} line") == "\u{201C}Quoted\u{201D} line")
+        #expect(TranscriptSanitizer.clean("¿Qué tal?") == "¿Qué tal?")
+        #expect(TranscriptSanitizer.clean("- ... [Speaker 2] yes") == "[Speaker 2] yes")
+    }
 }
+
