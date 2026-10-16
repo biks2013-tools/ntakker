@@ -22,27 +22,30 @@
 //     locales (highest-confidence wins) before emitting a single `final`
 //     event into the public `events` stream.
 //
-// Reconciliation invariants (see Phase D self-review checklist):
+// Reconciliation invariants (rewritten 2026-10-16, EVAL-2026-10-16 TR-5 —
+// the earlier per-locale utterance ids never matched, so both languages'
+// finals were always emitted):
 //
-//   * `nextUtteranceCounter` is the source of truth for utterance ids; it
-//     increments every time a new id is minted (whether the seed result is
-//     a partial or a final). The plan-005 sketch's `currentUtteranceId(for:)`
-//     was non-incrementing — Constraint #6 in the Phase D brief replaces
-//     it with the incrementing variant implemented here.
-//   * `currentIdForLocale` is the per-locale "open utterance" slot. A
-//     final clears the slot for that locale; the next non-final from the
-//     same locale opens a fresh utterance with a new id.
-//   * `pendingFinals` buffers per-utterance finals from each locale. As
-//     soon as every analyzer has reported a final for the same id, OR
-//     `reconciliationWindowMs` elapses since the first final landed,
-//     `reconcile(_:)` picks the winner and emits one `.final` event.
-//   * `reconciledUtteranceIds` ensures the timeout-driven reconcile path
-//     is a no-op when the all-locales-arrived path already fired.
+//   * All locales hear the same audio, so they share ONE open utterance
+//     group (`openGroupId`). Partials from any locale are emitted under it,
+//     and the reconciled final reuses that id, replacing the partial row.
+//     A partial from a locale that already delivered its final for the open
+//     group starts the next group.
+//   * A final joins, in order of preference: the oldest pending (not open)
+//     group that lacks this locale's final and whose time range overlaps
+//     (or either range is unknown); else the open group if it lacks this
+//     locale's final; else a new group.
+//   * A group reconciles as soon as every analyzer delivered a final, or
+//     `reconciliationWindowMs` after its first final. The highest
+//     confidence wins and ONE `.final` is emitted.
+//   * A final that arrives after its group reconciled and overlaps that
+//     group's time range is a straggler and is dropped instead of being
+//     emitted as a second-language duplicate.
+//   * `reconciledUtteranceIds` keeps the timeout path a no-op once the
+//     all-locales path fired.
 //
-// The session uses an `NSLock` to guard the four pieces of mutable state
-// (`nextUtteranceCounter`, `currentIdForLocale`, `pendingFinals`,
-// `reconciledUtteranceIds`) so the multiple per-locale drain `Task`s and
-// the timeout `Task`s do not race.
+// An `NSLock` guards the mutable grouping state so the per-locale drain
+// `Task`s and the timeout `Task`s do not race.
 
 import Foundation
 import Logging
@@ -192,7 +195,7 @@ final class AppleSpeechSession: StreamingTranscriptionSession, @unchecked Sendab
     /// Maximum wait-for-stragglers window after the first per-utterance
     /// final lands, in milliseconds. After this elapses, `reconcile(_:)`
     /// fires with whichever finals it has.
-    public static let reconciliationWindowMs: Int = 150
+    public static let reconciliationWindowMs: Int = 400
 
     private let analyzers: [(locale: Locale, adapter: any SpeechAnalyzerAdapter)]
     private let source: SourceTag
@@ -206,12 +209,14 @@ final class AppleSpeechSession: StreamingTranscriptionSession, @unchecked Sendab
     /// and never mutated afterwards — no lock needed.
     private var forwardingTasks: [Task<Void, Never>] = []
     private var nextUtteranceCounter: Int = 0
-    /// Per-locale "current open utterance" id. When a final arrives for a
-    /// locale, that locale's slot is cleared; the next non-final result for
-    /// the locale assigns a fresh id.
-    private var currentIdForLocale: [String: Int] = [:]
+    /// The utterance group all locales' partials currently feed (TR-5).
+    private var openGroupId: Int?
+    /// Finals collected per group, awaiting reconciliation.
     private var pendingFinals: [Int: [(locale: Locale, result: TranscriptionResult)]] = [:]
     private var reconciledUtteranceIds: Set<Int> = []
+    /// Time ranges of the most recently reconciled groups, used to drop
+    /// late stragglers (bounded to the last few).
+    private var recentReconciledRanges: [ClosedRange<Date>] = []
 
     init(
         analyzers: [(Locale, any SpeechAnalyzerAdapter)],
@@ -267,12 +272,11 @@ final class AppleSpeechSession: StreamingTranscriptionSession, @unchecked Sendab
     // MARK: - Private
 
     private func handle(_ result: TranscriptionResult, from locale: Locale) {
-        let utteranceId = openOrAssignUtteranceId(for: locale, isFinal: result.isFinal)
-
         if !result.isFinal {
+            let groupId = openGroupForPartial(from: locale)
             eventsContinuation.yield(
                 .partial(
-                    utteranceId: Self.utteranceIdToUUID(utteranceId),
+                    utteranceId: Self.utteranceIdToUUID(groupId),
                     text: result.text,
                     confidence: result.confidence,
                     speaker: nil
@@ -281,37 +285,82 @@ final class AppleSpeechSession: StreamingTranscriptionSession, @unchecked Sendab
             return
         }
 
-        // Final — buffer for reconciliation, close the per-locale open id.
         lock.lock()
-        var arr = pendingFinals[utteranceId] ?? []
+        if let range = result.timeRange,
+           recentReconciledRanges.contains(where: { Self.overlaps($0, range) }) {
+            lock.unlock()
+            logger.debug("apple-speech: dropping late \(locale.identifier) final for an already reconciled utterance")
+            return
+        }
+        let groupId = groupForFinal(result, from: locale)
+        var arr = pendingFinals[groupId] ?? []
         arr.append((locale, result))
-        pendingFinals[utteranceId] = arr
-        currentIdForLocale.removeValue(forKey: locale.identifier)
+        pendingFinals[groupId] = arr
         let collected = arr.count
         lock.unlock()
 
         if collected == analyzers.count {
-            reconcile(utteranceId)
-        } else {
+            reconcile(groupId)
+        } else if collected == 1 {
             Task { [weak self] in
                 try? await Task.sleep(for: .milliseconds(Self.reconciliationWindowMs))
-                self?.reconcile(utteranceId)
+                self?.reconcile(groupId)
             }
         }
     }
 
-    private func openOrAssignUtteranceId(for locale: Locale, isFinal: Bool) -> Int {
+    /// The group a partial from `locale` belongs to.
+    private func openGroupForPartial(from locale: Locale) -> Int {
         lock.lock(); defer { lock.unlock() }
-        if let existing = currentIdForLocale[locale.identifier] {
-            return existing
+        if let open = openGroupId,
+           !(pendingFinals[open] ?? []).contains(where: { $0.locale == locale }) {
+            return open
+        }
+        // No open group, or this locale already finished it: the partial
+        // starts the next utterance. The previous open group (if any)
+        // stays pending until its stragglers arrive or the window fires.
+        let id = nextUtteranceCounter
+        nextUtteranceCounter += 1
+        openGroupId = id
+        return id
+    }
+
+    /// The group a final from `locale` joins. Caller holds `lock`.
+    private func groupForFinal(_ result: TranscriptionResult, from locale: Locale) -> Int {
+        let candidates = pendingFinals
+            .filter { id, finals in
+                id != openGroupId
+                    && !reconciledUtteranceIds.contains(id)
+                    && !finals.contains(where: { $0.locale == locale })
+                    && finals.allSatisfy { other in
+                        guard let a = other.result.timeRange, let b = result.timeRange else { return true }
+                        return Self.overlaps(a, b)
+                    }
+            }
+            .keys
+            .sorted()
+        if let oldest = candidates.first { return oldest }
+        if let open = openGroupId,
+           !(pendingFinals[open] ?? []).contains(where: { $0.locale == locale }) {
+            return open
         }
         let id = nextUtteranceCounter
         nextUtteranceCounter += 1
-        if !isFinal {
-            // Open a new utterance for this locale; finals close it.
-            currentIdForLocale[locale.identifier] = id
-        }
         return id
+    }
+
+    /// Same spoken span: the ranges overlap by more than half of the
+    /// shorter one. Back-to-back utterances that merely touch at the
+    /// boundary do not match. Zero-length ranges fall back to a plain
+    /// intersection test.
+    static func overlaps(_ a: ClosedRange<Date>, _ b: ClosedRange<Date>) -> Bool {
+        let lo = max(a.lowerBound, b.lowerBound)
+        let hi = min(a.upperBound, b.upperBound)
+        guard lo <= hi else { return false }
+        let shorter = min(a.upperBound.timeIntervalSince(a.lowerBound),
+                          b.upperBound.timeIntervalSince(b.lowerBound))
+        guard shorter > 0 else { return true }
+        return hi.timeIntervalSince(lo) > shorter / 2
     }
 
     private func reconcile(_ utteranceId: Int) {
@@ -327,6 +376,12 @@ final class AppleSpeechSession: StreamingTranscriptionSession, @unchecked Sendab
         }
         arr = pending
         reconciledUtteranceIds.insert(utteranceId)
+        if openGroupId == utteranceId { openGroupId = nil }
+        let ranges = arr.compactMap(\.result.timeRange)
+        if let lo = ranges.map(\.lowerBound).min(), let hi = ranges.map(\.upperBound).max() {
+            recentReconciledRanges.append(lo...hi)
+            if recentReconciledRanges.count > 8 { recentReconciledRanges.removeFirst() }
+        }
         lock.unlock()
 
         let winner = arr.max { (a, b) in

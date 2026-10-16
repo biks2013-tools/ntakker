@@ -83,4 +83,88 @@ struct AppleSpeechSessionReconciliationTests {
         }
         #expect(sawPartial)
     }
+
+    // MARK: - EVAL-2026-10-16 TR-5
+
+    private func dualSession() -> (AppleSpeechSession, MockSpeechAnalyzer, MockSpeechAnalyzer) {
+        let en = MockSpeechAnalyzer()
+        let el = MockSpeechAnalyzer()
+        let session = AppleSpeechSession(
+            analyzers: [(Locale(identifier: "en-US"), en), (Locale(identifier: "el-GR"), el)],
+            source: .microphone,
+            logger: Logger(label: "test")
+        )
+        return (session, en, el)
+    }
+
+    private func range(_ start: Double, _ end: Double) -> ClosedRange<Date> {
+        Date(timeIntervalSince1970: start)...Date(timeIntervalSince1970: end)
+    }
+
+    @Test("partials from both locales share one utterance id with the final")
+    func partialsShareTheFinalId() async throws {
+        let (session, en, el) = dualSession()
+        try? await Task.sleep(for: .milliseconds(50))
+        en.push(TranscriptionResult(text: "hel", confidence: nil, isFinal: false, timeRange: nil))
+        try? await Task.sleep(for: .milliseconds(20))
+        el.push(TranscriptionResult(text: "χελ", confidence: nil, isFinal: false, timeRange: nil))
+        try? await Task.sleep(for: .milliseconds(20))
+        en.push(TranscriptionResult(text: "hello", confidence: 0.9, isFinal: true, timeRange: range(0, 1)))
+        el.push(TranscriptionResult(text: "χέλο", confidence: 0.3, isFinal: true, timeRange: range(0, 1)))
+        await session.finish()
+
+        var ids = Set<UUID>()
+        var finals: [String] = []
+        for await ev in session.events {
+            switch ev {
+            case let .partial(id, _, _, _): ids.insert(id)
+            case let .final(id, text, _, _, _, _): ids.insert(id); finals.append(text)
+            default: break
+            }
+        }
+        #expect(finals == ["hello"])
+        #expect(ids.count == 1, "no orphan partial rows")
+    }
+
+    @Test("two utterances in a row reconcile separately")
+    func consecutiveUtterances() async throws {
+        let (session, en, el) = dualSession()
+        try? await Task.sleep(for: .milliseconds(50))
+        en.push(TranscriptionResult(text: "first", confidence: 0.9, isFinal: true, timeRange: range(0, 1)))
+        el.push(TranscriptionResult(text: "φερστ", confidence: 0.2, isFinal: true, timeRange: range(0, 1)))
+        try? await Task.sleep(for: .milliseconds(30))
+        en.push(TranscriptionResult(text: "δεύτερο?", confidence: 0.1, isFinal: true, timeRange: range(1, 2)))
+        el.push(TranscriptionResult(text: "δεύτερο", confidence: 0.8, isFinal: true, timeRange: range(1, 2)))
+        await session.finish()
+
+        var finals: [String] = []
+        for await ev in session.events {
+            if case let .final(_, text, _, _, _, _) = ev { finals.append(text) }
+        }
+        #expect(finals == ["first", "δεύτερο"])
+    }
+
+    @Test("a straggler final after reconciliation is dropped")
+    func stragglerDropped() async throws {
+        let (session, en, el) = dualSession()
+        try? await Task.sleep(for: .milliseconds(50))
+        en.push(TranscriptionResult(text: "hello", confidence: 0.9, isFinal: true, timeRange: range(0, 1)))
+        // The window expires before el reports.
+        try? await Task.sleep(for: .milliseconds(AppleSpeechSession.reconciliationWindowMs + 150))
+        el.push(TranscriptionResult(text: "χέλο", confidence: 0.3, isFinal: true, timeRange: range(0.1, 1)))
+        await session.finish()
+
+        var finals: [String] = []
+        for await ev in session.events {
+            if case let .final(_, text, _, _, _, _) = ev { finals.append(text) }
+        }
+        #expect(finals == ["hello"])
+    }
+
+    @Test("back-to-back ranges that only touch are different utterances")
+    func touchingRangesDoNotOverlap() {
+        #expect(!AppleSpeechSession.overlaps(range(0, 1), range(1, 2)))
+        #expect(AppleSpeechSession.overlaps(range(0, 1), range(0.2, 1.1)))
+    }
 }
+
