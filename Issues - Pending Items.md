@@ -7,6 +7,12 @@
 ## Pending items (most critical first)
 
 ### EVAL-2026-10-16 — Quality / speed / resource-efficiency scan: 74 new findings registered
+**RESOLUTION UPDATE (2026-10-16) — plan-020 transcript-correctness wave landed** ([docs/plans/plan-020-eval-2026-10-16-transcript-correctness.md](docs/plans/plan-020-eval-2026-10-16-transcript-correctness.md)):
+- Fixed, one commit each: INF-1, INF-2 (Soniox reconnect), TR-13 (Azure replay), CC-2, CC-3 (convo-coach), UI-1 (Save bundles every part's and source's sidecars), UI-6 (uncapped session transcript for Ask and Save), TR-6, TR-7 (sanitizer), TR-5 (dual-locale reconciliation), TR-4 (Apple Cloud rotation).
+- **New bug found and fixed:** `JSONLTranscriptReader` dropped every segment that had been rewritten via tombstone-and-append (the tombstone shares the id), so Save lost every grown batch segment.
+- The baseline failure "higher-confidence final wins per utterance" now passes. No new failures.
+- Manual checks pending: multi-part Save, and Apple Cloud longer than 60 s.
+
 **RESOLUTION UPDATE (2026-10-16) — plan-019 landed** ([docs/plans/plan-019-eval-2026-10-16-leftovers-and-doc-drift.md](docs/plans/plan-019-eval-2026-10-16-leftovers-and-doc-drift.md)): UI-4 (coordinator events stream now unbounded; regression test fails on the old policy), INF-3 (not reproduced — `test_scripts/ws-resource-timeout-probe.swift`), F17 (Soniox `finish()` returns on the server's `finished` frame, 2 s cap), and the doc drift below (Vercel → LangChain in CLAUDE.md and `docs/tools/convo-coach.md`; CLAUDE.md popover controls corrected; plan-017 T13/T14 ticked). UI-2 itself (unreachable pause/resume/split) stays open.
 
 **RESOLUTION UPDATE (2026-10-16) — plan-018 wave 1 landed** ([docs/plans/plan-018-eval-2026-10-16-quick-fixes.md](docs/plans/plan-018-eval-2026-10-16-quick-fixes.md)): CC-1, TR-1, TR-3, INF-4, CAP-4, CAP-5 (not reproduced — downgraded), CAP-7, CAP-8, CAP-10, INF-7, TR-8, TR-9, TR-17 (as an open-path registry), H2 — one commit each; zero new test failures vs `bf69be5`. **Newly documented test-suite facts:** `RecordingSessionTests` spins forever in `HostClockAligner.appendSamples` (pre-existing; makes plain `swift test` look hung — use `--skip NtakkerCoreTests.RecordingSessionTests`); `AudioDownsamplerTests:144` and `UIErrorPresenterTests:220` are pre-existing failures missing from the plan-017 baseline list. Manual check pending: popover Save (T14). Remaining findings stay open per the report.

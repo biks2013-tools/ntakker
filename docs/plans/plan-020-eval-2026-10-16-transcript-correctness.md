@@ -65,3 +65,20 @@ Approved: 2026-10-16 ("yes please", after plan-019 was proposed as the step befo
 - `swift build` clean; `convo-coach` `npm test` green.
 - New tests pass. The full suite (`--skip NtakkerCoreTests.RecordingSessionTests`) shows no failures beyond the plan-018 baseline list, and the AppleSpeech reconciliation baseline failure should turn green.
 - Build-only items are called out in the wave result.
+
+## Wave result (2026-10-16)
+
+- All tasks landed, one commit each, plus T6a: a reader bug found while doing T6, which made Save drop every grown batch segment.
+- Test status:
+  - Full suite (`--skip NtakkerCoreTests.RecordingSessionTests`): 471 tests. No new failures against the plan-018 baseline list.
+  - The baseline failure `"higher-confidence final wins per utterance"` now passes (T10).
+  - convo-coach: 174/174.
+- Tests that fail on the old code: UI-4 (plan-019), INF-2, T6a. The INF-1 test asserts a replay size the old code could not produce.
+- Build-verified only:
+  - T3: the Azure wiring. The tail math is tested.
+  - T6: the `SessionExporter` merge, which lives in the app executable.
+  - T11: Apple Cloud rotation, which needs a speech TCC grant.
+- Manual checks pending:
+  - Popover Save with a paused (multi-part) session, then inspect `transcript.md`.
+  - An Apple Cloud recording longer than 60 s.
+
