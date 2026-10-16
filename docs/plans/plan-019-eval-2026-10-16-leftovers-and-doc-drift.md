@@ -9,7 +9,7 @@ Approved: 2026-10-16 ("yes please"); one commit per task.
 - [x] **T1 (UI-4)** `SessionCoordinator.events` uses `.bufferingNewest(16)` and carries state, segment, error and transcript events together. A burst of transcript events can drop a `.stateChanged(.recording)` and leave the controller in `.starting`. Switch the stream to `.unbounded`; the controller drains it continuously on the main actor and every event is small. Add a regression test that emits a state change followed by more than 16 transcript events before consuming.
 - [x] **T2 (INF-3)** Verify whether `timeoutIntervalForResource = 300` kills the Soniox WebSocket at 5 minutes. Fix only if it reproduces.
   - Result: not reproduced. `test_scripts/ws-resource-timeout-probe.swift` keeps an upgraded socket open well past a 3 s resource timeout, with continuous traffic and with a 6 s idle gap. No code change.
-- [ ] **T3 (F17)** `SonioxStreamingSession.finish()` sleeps the full 2 s grace period on every stop. Wait for the server's `{"finished": true}` frame (or the end of the inbound stream), with the grace period as the cap. Add a test that `finish()` returns well before the cap once `finished` arrives.
+- [x] **T3 (F17)** `SonioxStreamingSession.finish()` sleeps the full 2 s grace period on every stop. Wait for the server's `{"finished": true}` frame (or the end of the inbound stream), with the grace period as the cap. Add a test that `finish()` returns well before the cap once `finished` arrives.
 - [ ] **T4 (doc drift)**
   - CLAUDE.md and `docs/tools/convo-coach.md` say "Vercel AI SDK"; the implementation is LangChain (`@langchain/*`).
   - CLAUDE.md says the popover exposes pause / resume / split; those controls exist in `ControlBar` but are not reachable (UI-2).

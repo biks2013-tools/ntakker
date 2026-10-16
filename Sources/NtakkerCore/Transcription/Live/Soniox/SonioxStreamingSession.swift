@@ -77,11 +77,23 @@ public actor SonioxStreamingSession: StreamingTranscriptionSession {
     private static let maxReconnectAttempts: Int = 3
     private static let reconnectDelays: [Duration] = [.zero, .seconds(1), .seconds(4)]
 
-    /// Grace period the receive loop is given to consume the server's
-    /// `{"finished": true}` response after we send the empty-text
-    /// end-of-stream sentinel. Tunable via init for tests that want a
-    /// shorter shutdown window.
+    /// Upper bound on how long `finish()` waits for the server's
+    /// `{"finished": true}` response after the empty-text end-of-stream
+    /// sentinel. `finish()` returns as soon as that frame arrives or
+    /// the inbound stream ends (F17); this is only the cap. Tunable via
+    /// init for tests that want a shorter shutdown window.
     private let finishGracePeriod: Duration
+
+    /// F17: set when the server's `{"finished": true}` frame arrives.
+    private var serverSentFinished: Bool = false
+
+    /// F17: set when the current receive loop's inbound stream ends
+    /// (cleanly or with an error) — no `finished` frame can follow.
+    private var receiveLoopEnded: Bool = false
+
+    /// F17: identifies the current receive loop so a loop replaced by a
+    /// reconnect cannot mark its successor as ended.
+    private var receiveGeneration: Int = 0
 
     private let eventStream: AsyncStream<StreamingTranscriptionEvent>
     private let eventContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation
@@ -208,10 +220,16 @@ public actor SonioxStreamingSession: StreamingTranscriptionSession {
             logger?.debug("soniox.finish: send EOS sentinel failed: \(error.localizedDescription)")
         }
 
-        // Give the receive loop a brief grace period to consume the
-        // server's `{"finished": true}` response. We then cancel the
-        // loop so finish() always returns in bounded time.
-        try? await Task.sleep(for: finishGracePeriod)
+        // Wait for the server's `{"finished": true}` response (or the
+        // end of the inbound stream), capped at `finishGracePeriod`, so
+        // a normal stop no longer pays the full grace period (F17). The
+        // receive loop runs on this actor and lands frames between the
+        // polls. We then cancel the loop so finish() always returns in
+        // bounded time.
+        let deadline = ContinuousClock.now.advanced(by: finishGracePeriod)
+        while !serverSentFinished, !receiveLoopEnded, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
         receiveTask?.cancel()
         receiveTask = nil
 
@@ -233,8 +251,14 @@ public actor SonioxStreamingSession: StreamingTranscriptionSession {
         // same-actor message sends (no hop, but still fully serialised
         // against `ingest(_:)` and `finish()`).
         let aggregator = self.aggregator
+        receiveGeneration += 1
+        let generation = receiveGeneration
+        receiveLoopEnded = false
         receiveTask = Task {
             let stream = self.transport.messages()
+            defer {
+                if self.receiveGeneration == generation { self.receiveLoopEnded = true }
+            }
             do {
                 for try await msg in stream {
                     if Task.isCancelled { break }
@@ -404,6 +428,7 @@ public actor SonioxStreamingSession: StreamingTranscriptionSession {
         }
 
         if server.finished == true {
+            serverSentFinished = true
             // Drain anything still buffered, emit a final metrics
             // snapshot, then close the events stream.
             for evt in await aggregator.drain() {

@@ -217,4 +217,54 @@ final class SonioxStreamingSessionTests: XCTestCase {
         // background receive Task.
         await session.finish()
     }
+
+    // MARK: - F17: finish() returns when the server says finished
+
+    private func makeSession(transport: MockWebSocketTransport, grace: Duration) -> SonioxStreamingSession {
+        SonioxStreamingSession(
+            transport: transport,
+            endpoint: URL(string: "wss://stt-rt.test")!,
+            configMessage: SonioxConfigBuilder.build(
+                apiKey: "test-key",
+                languageHints: ["en"],
+                clientReferenceId: "ntakker-cli-test"
+            ),
+            finishGracePeriod: grace
+        )
+    }
+
+    func testFinishReturnsOnceServerSendsFinished() async throws {
+        let mock = MockWebSocketTransport()
+        let token = #"{"tokens":[{"text":"hi","is_final":false,"confidence":0.9,"language":"en"}]}"#
+        await mock.enqueueIncomingText(token)
+        await mock.enqueueIncomingText(#"{"tokens":[],"finished":true}"#, delay: .milliseconds(150))
+
+        let session = makeSession(transport: mock, grace: .seconds(5))
+        try await session.start()
+        await session.ingest([Float](repeating: 0.0, count: 160))
+
+        let clock = ContinuousClock()
+        let elapsed = await clock.measure { await session.finish() }
+        XCTAssertLessThan(elapsed, .seconds(1), "finish() should return once finished arrives, not after the 5 s cap")
+
+        var sawMetrics = false
+        for await evt in session.events {
+            if case .metrics = evt { sawMetrics = true }
+        }
+        XCTAssertTrue(sawMetrics, "the server's finished frame must still be processed")
+    }
+
+    func testFinishStillHonoursGraceCapWhenServerIsSilent() async throws {
+        let mock = MockWebSocketTransport()
+        // A frame far in the future keeps the inbound stream open.
+        await mock.enqueueIncomingText(#"{"tokens":[],"finished":true}"#, delay: .seconds(30))
+
+        let session = makeSession(transport: mock, grace: .milliseconds(300))
+        try await session.start()
+
+        let clock = ContinuousClock()
+        let elapsed = await clock.measure { await session.finish() }
+        XCTAssertGreaterThanOrEqual(elapsed, .milliseconds(250))
+        XCTAssertLessThan(elapsed, .seconds(2))
+    }
 }
