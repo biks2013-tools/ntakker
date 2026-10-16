@@ -210,6 +210,9 @@ public final class M4ARecorder: Recorder, @unchecked Sendable {
                 if let u = self.micWriter { collected.append(u) }
 
                 for unit in collected {
+                    // CAP-8 (EVAL 2026-10-16): buffers still queued in
+                    // `pending` were silently dropped by markAsFinished().
+                    self.flushPending(unit: unit, timeout: min(timeout, 2))
                     // Mark finished and end session — these MUST run on the
                     // writer queue per research §5.4 (no concurrent append).
                     unit.input.markAsFinished()
@@ -725,6 +728,25 @@ public final class M4ARecorder: Recorder, @unchecked Sendable {
         case .single:     return singleWriter
         case .systemSide: return systemWriter
         case .micSide:    return micWriter
+        }
+    }
+
+    /// Finalize-time drain: append every still-pending buffer before
+    /// `markAsFinished()`. Runs on `writerQueue`, which is exactly where
+    /// `requestMediaDataWhenReady` would deliver its callback — so it
+    /// cannot wait for that callback and polls `isReadyForMoreMediaData`
+    /// instead, bounded by `timeout`.
+    private func flushPending(unit: WriterUnit, timeout: TimeInterval) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !unit.pending.isEmpty, unit.failure == nil, unit.writer.status == .writing {
+            drain(unit: unit)
+            if unit.pending.isEmpty || Date() >= deadline { break }
+            usleep(2_000)
+        }
+        if !unit.pending.isEmpty {
+            logger?.warning(
+                "M4ARecorder.finalize: dropping \(unit.pending.count) pending buffer(s) for \(unit.url.lastPathComponent) (writer not ready within \(timeout)s)"
+            )
         }
     }
 
