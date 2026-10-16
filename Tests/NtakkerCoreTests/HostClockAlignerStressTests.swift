@@ -218,9 +218,9 @@ struct HostClockAlignerStressTests {
     // MARK: - 4) Asymmetric stop — mic source stopped; system keeps running
 
     // Stop the mic source after 300 ms of normal operation. Let the
-    // system source run for another 300 ms while the mic is silent.
-    // Call flush(). Verify the aligner emits silence-fills on the mic
-    // side for the windows after the mic stops.
+    // system source run for another 900 ms while the mic is silent.
+    // Call flush(). Verify the aligner keeps emitting and silence-fills
+    // the mic side once it lags by more than the max skew.
 
     @Test("Mic stopped mid-run: aligner emits mic gap-fills until flush")
     func asymmetricStop() async throws {
@@ -257,52 +257,21 @@ struct HostClockAlignerStressTests {
         // Stop only the mic.
         await mic.stop()
 
-        // System keeps running for another ~400 ms (~4 more frames).
-        // During this time the aligner sees no mic data → gap-fills.
-        // Note: because the aligner requires both sides to be "ready"
-        // before emitting, it will see the mic head PTS lag behind and
-        // eventually treat the mic as stalled (headPTS stays at last
-        // emitted value → lookahead check triggers silence-fill).
-        try await Task.sleep(nanoseconds: 400_000_000)
+        // System keeps running for another ~900 ms. Once it is more than
+        // the aligner's max skew (400 ms) ahead of the mic's last sample,
+        // the mic counts as stalled and its windows are silence-filled
+        // (plan-021 CAP-2 — the old aligner waited for the mic forever).
+        try await Task.sleep(nanoseconds: 900_000_000)
 
         await system.stop()
         aligner.flush()
 
         let stats = aligner.stats
 
-        // At least some frames emitted (both during the dual-source phase
-        // and after the mic stopped — the aligner gap-fills the stalled mic).
-        #expect(stats.framesEmitted >= 3,
-                "expected at least 3 frames total, got \(stats.framesEmitted)")
-
-        // After the mic stops, the system's next buffer head is later than
-        // the next expected window while the mic has no data → the aligner
-        // should produce mic gap-fills. We allow ≥ 1 to accommodate the
-        // window where the mic's last buffer happened to land.
-        //
-        // NOTE: The aligner requires BOTH sides to be ready before
-        // emitting a frame. When the mic stops producing data entirely,
-        // the mic side never reports its head as "past the lookahead" (the
-        // headPTS stays nil / at the last consumed value). This means
-        // `canEmitWindow` returns false and the aligner stalls. On flush(),
-        // the final tryDrain() also cannot emit because the mic side is not
-        // confirmed stalled in the generic path (no new headPTS to compare).
-        //
-        // Design §2.9 (research §4): the silence-fill path fires when the
-        // source's head IS confirmed later than the window lookahead. A
-        // completely silent/stopped source will NOT trigger gap-fills in the
-        // current implementation unless a later buffer from that source
-        // arrives to advance the head past the window.
-        //
-        // This is a documented limitation: the aligner is conservative and
-        // does not unilaterally declare a source stalled after a timeout.
-        // It will only gap-fill if the source itself signals by emitting a
-        // buffer with a later PTS.
-        //
-        // Consequence for this test: micGapFills may be 0 if the mic's
-        // last buffer arrived before the aligner tried to drain the window.
-        // We relax the assertion to `>= 0` and verify the non-crash behavior.
-        #expect(stats.micGapFills >= 0)
+        #expect(stats.framesEmitted >= 10,
+                "expected the system's ~1.2 s to be emitted, got \(stats.framesEmitted)")
+        #expect(stats.micGapFills >= 3,
+                "expected stalled-mic windows to be silence-filled, got \(stats.micGapFills)")
 
         // System gap-fills should be 0 (system kept running).
         #expect(stats.systemGapFills == 0,

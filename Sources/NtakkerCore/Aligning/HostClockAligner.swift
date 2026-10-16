@@ -21,8 +21,8 @@
 //        * within `snapToleranceFrames` of the previous chunk's end →
 //          snapped to it (contiguous; absorbs PTS jitter);
 //        * further ahead → a hole: left empty (emitted as silence) and
-//          counted as a gap-fill in every window it touches (CAP-1 — the
-//          old flat buffer collapsed such holes, shifting the track);
+//          counted once as a gap-fill (CAP-1 — the old flat buffer
+//          collapsed such holes, shifting the track);
 //        * behind → the overlapping head is trimmed.
 //      Samples before `cursor` are dropped on arrival.
 //
@@ -205,8 +205,9 @@ public final class HostClockAligner: @unchecked Sendable {
         var lastEnd: Int64?
         /// Snap deviation of the most recent chunk, in frames (for C5).
         var lastDeviation: Int64 = 0
-        /// Holes inside the stream not yet past the cursor.
-        var gaps: [Range<Int64>] = []
+        /// Holes inside the stream not yet past the cursor; `counted`
+        /// once the hole has been tallied as a gap-fill.
+        var gaps: [(range: Range<Int64>, counted: Bool)] = []
 
         var live: ArraySlice<Chunk> { chunks[head...] }
 
@@ -216,7 +217,7 @@ public final class HostClockAligner: @unchecked Sendable {
                 chunks.removeFirst(head)
                 head = 0
             }
-            gaps.removeAll { $0.upperBound <= position }
+            gaps.removeAll { $0.range.upperBound <= position }
         }
 
         mutating func reset() {
@@ -436,7 +437,7 @@ public final class HostClockAligner: @unchecked Sendable {
             } else if deviation > 0 {
                 // A hole inside the stream (dropped buffer, PTS jump,
                 // capture restart): keep the true placement.
-                track.gaps.append(lastEnd..<chunk.start)
+                track.gaps.append((range: lastEnd..<chunk.start, counted: false))
                 track.lastDeviation = 0
             } else {
                 // Overlap: the head of this chunk duplicates time already
@@ -547,12 +548,18 @@ public final class HostClockAligner: @unchecked Sendable {
         windowEnd we: Int64,
         stalled: Bool
     ) -> CMSampleBuffer {
-        let touchesGap = track.gaps.contains { $0.lowerBound < we && $0.upperBound > ws }
-        if stalled || touchesGap {
-            switch tag {
-            case .system: _systemGapFills += 1
-            case .microphone: _micGapFills += 1
-            }
+        // Gap-fill tally: each hole once (at the first window it
+        // touches, so a hole straddling a window boundary is one fill),
+        // plus one per stall-filled window.
+        var fills = stalled ? 1 : 0
+        for i in track.gaps.indices where !track.gaps[i].counted
+            && track.gaps[i].range.lowerBound < we && track.gaps[i].range.upperBound > ws {
+            track.gaps[i].counted = true
+            fills += 1
+        }
+        switch tag {
+        case .system: _systemGapFills += fills
+        case .microphone: _micGapFills += fills
         }
 
         let overlapping = track.live.filter { $0.start < we && $0.end > ws }
