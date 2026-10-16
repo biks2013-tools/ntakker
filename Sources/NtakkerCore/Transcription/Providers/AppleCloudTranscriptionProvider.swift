@@ -204,6 +204,11 @@ public actor AppleCloudStreamingSession: StreamingTranscriptionSession {
     /// In-flight recognition task. Cancelled and replaced on rotation.
     private var currentTask: SFSpeechRecognitionTask?
 
+    /// TR-4: tasks retired by a rotation, keyed by their utterance id.
+    /// Each has had `endAudio()` and is draining its final while the
+    /// next task already receives audio.
+    private var retiredTasks: [UUID: SFSpeechRecognitionTask] = [:]
+
     /// One UUID per "open utterance window" so partial → final flips
     /// for the same window keep a stable id (caller's TranscriptionManager
     /// keys on this).
@@ -390,6 +395,13 @@ public actor AppleCloudStreamingSession: StreamingTranscriptionSession {
                 logger.error("apple-cloud: recognition error \(domain) code=\(code): \(error.localizedDescription)")
                 eventsContinuation.yield(.error(detail: "Apple Cloud: \(error.localizedDescription) (\(domain) #\(code))"))
             }
+            // TR-4: a retired (rotated-out) task ending is just its
+            // drain completing; the current task keeps running.
+            if utteranceId != currentUtteranceId {
+                retiredTasks[utteranceId] = nil
+                finishStreamIfDrained()
+                return
+            }
             // Whether informational or fatal, the active task is done.
             // If the session is still alive AND we haven't hit a
             // hard auth failure, start a fresh task so the next ingest
@@ -397,10 +409,12 @@ public actor AppleCloudStreamingSession: StreamingTranscriptionSession {
             currentTask = nil
             currentRequest = nil
             if isFinished {
-                eventsContinuation.yield(.metrics(metrics))
-                eventsContinuation.finish()
+                finishStreamIfDrained()
             } else if !isInformational, code == 1101 {
-                // Auth revoked mid-session — do not retry.
+                // Auth revoked mid-session — do not retry. Retired tasks
+                // cannot deliver anything useful either.
+                retiredTasks.values.forEach { $0.cancel() }
+                retiredTasks.removeAll()
                 eventsContinuation.yield(.metrics(metrics))
                 eventsContinuation.finish()
                 isFinished = true
@@ -428,13 +442,18 @@ public actor AppleCloudStreamingSession: StreamingTranscriptionSession {
                     speaker: nil
                 )
             )
+            // TR-4: a retired task's final only completes its drain.
+            if utteranceId != currentUtteranceId {
+                retiredTasks[utteranceId] = nil
+                finishStreamIfDrained()
+                return
+            }
             // Apple's task closes itself after a final; clear our
             // refs and start a fresh one (or finish if user stopped).
             currentTask = nil
             currentRequest = nil
             if isFinished {
-                eventsContinuation.yield(.metrics(metrics))
-                eventsContinuation.finish()
+                finishStreamIfDrained()
             } else {
                 startNewRecognitionTask()
             }
@@ -465,12 +484,21 @@ public actor AppleCloudStreamingSession: StreamingTranscriptionSession {
     private func rotateTask() async {
         guard !isFinished else { return }
         logger.info("apple-cloud: rotating recognition task at \(AppleCloudTranscriptionProvider.taskRotationSeconds)s to stay under Apple's per-task audio cap")
-        // Politely close the current request — the result handler will
-        // fire one final result for the closing window, then start a
-        // fresh task via the same handler.
-        currentRequest?.endAudio()
-        // Do NOT call `currentTask?.cancel()` — that drops the in-flight
-        // final on the floor. `endAudio()` triggers the natural drain.
+        // TR-4: open the NEXT task first so audio keeps flowing into a
+        // live request, then end the old one. Previously audio kept
+        // landing in the ended request until the old final arrived
+        // (~1.5–3 s lost per rotation). The old task drains its final in
+        // the background; `handleResult` tells it apart by utterance id.
+        let oldRequest = currentRequest
+        if let oldTask = currentTask {
+            retiredTasks[currentUtteranceId] = oldTask
+        }
+        currentTask = nil
+        currentRequest = nil
+        startNewRecognitionTask()
+        // Do NOT cancel the old task — that drops the in-flight final on
+        // the floor. `endAudio()` triggers the natural drain.
+        oldRequest?.endAudio()
         // Re-arm the rotation timer for the next window.
         scheduleRotation()
     }
@@ -483,9 +511,17 @@ public actor AppleCloudStreamingSession: StreamingTranscriptionSession {
     /// not landed yet — the result handler will close the stream itself
     /// (it checks `isFinished`). Re-arm the watchdog instead of cutting
     /// the final off; force-close only once `retriesLeft` is exhausted.
+    /// Finish the events stream once the user stopped AND no task —
+    /// current or retired — still owes a final (TR-4).
+    private func finishStreamIfDrained() {
+        guard isFinished, currentTask == nil, retiredTasks.isEmpty else { return }
+        eventsContinuation.yield(.metrics(metrics))
+        eventsContinuation.finish()
+    }
+
     private func forceFinishIfStillOpen(retriesLeft: Int) {
         guard isFinished else { return }
-        if currentTask != nil && retriesLeft > 0 {
+        if (currentTask != nil || !retiredTasks.isEmpty) && retriesLeft > 0 {
             Task { [weak self] in
                 try? await Task.sleep(nanoseconds: 1_500_000_000) // 1.5 s
                 await self?.forceFinishIfStillOpen(retriesLeft: retriesLeft - 1)

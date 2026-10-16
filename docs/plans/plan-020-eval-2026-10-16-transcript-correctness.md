@@ -55,9 +55,10 @@ Approved: 2026-10-16 ("yes please", after plan-019 was proposed as the step befo
 - [x] **T10 (TR-5)** In Apple dual-locale mode every locale gets its own utterance id, so reconciliation never pairs finals and both languages are emitted. This is the cause of the baseline failure `"higher-confidence final wins per utterance"`.
   - Group finals from different locales by time overlap. Without time ranges, group them by arrival within the reconciliation window.
   - Emit partials from the primary locale only, and use that utterance id for the reconciled final so no orphan partial rows remain.
-- [ ] **T11 (TR-4)** The Apple Cloud 55 s rotation calls `endAudio()` and keeps routing audio to the ended request until the old final arrives, losing about 1.5–3 s per rotation.
+- [x] **T11 (TR-4)** The Apple Cloud 55 s rotation calls `endAudio()` and keeps routing audio to the ended request until the old final arrives, losing about 1.5–3 s per rotation.
   - Start the next request and task first, then end the old one. The old task keeps draining its final.
   - Track retired tasks so that only the current task's end starts a new task, and the stream finishes only once every task has ended.
+  - Done; build-verified only. Apple Cloud needs a speech-recognition TCC grant that a raw test binary lacks (status `notDetermined`), and requesting one would show a prompt. Manual check: record more than 60 s with `apple-cloud` in the app and confirm the words spoken around 55 s survive.
 
 ## Verification
 
