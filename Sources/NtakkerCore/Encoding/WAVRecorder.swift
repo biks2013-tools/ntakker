@@ -45,6 +45,7 @@ import AVFoundation
 import CoreMedia
 import Foundation
 import Logging
+import struct os.OSAllocatedUnfairLock
 
 public final class WAVRecorder: Recorder, @unchecked Sendable {
 
@@ -76,6 +77,15 @@ public final class WAVRecorder: Recorder, @unchecked Sendable {
 
     /// Tracked so `start()` can be guarded against double invocation.
     private var didStart: Bool = false
+
+    /// First write error from the async writer queue. `append` hops
+    /// queues, so a failed `AVAudioFile.write` (disk full, volume
+    /// removed) cannot be thrown to the producer directly. Before
+    /// EVAL-2026-10-16 CAP-7 it was only logged — every ~100 ms — and
+    /// `finalize` reported success on a truncated file. Now the next
+    /// `append` and `finalize` rethrow it, so `RecordingSession` stops
+    /// the recording and surfaces the error.
+    private let latchedWriteError = OSAllocatedUnfairLock<Error?>(initialState: nil)
 
     // MARK: - Init
 
@@ -120,21 +130,18 @@ public final class WAVRecorder: Recorder, @unchecked Sendable {
     }
 
     public func append(_ frame: AlignedFrame) throws {
-        // Capture sendable handles before hopping queues. The
-        // CMSampleBuffers themselves are CF types with thread-safe
-        // retain semantics (matching the AlignedFrame envelope's
-        // `@unchecked Sendable` declaration).
+        if let err = latchedWriteError.withLock({ $0 }) { throw err }
+        // CMSampleBuffers are CF types with thread-safe retain semantics
+        // (matching the AlignedFrame envelope's `@unchecked Sendable`).
         let pendingFrame = frame
         writerQueue.async { [self] in
+            guard self.latchedWriteError.withLock({ $0 }) == nil else { return }
             do {
                 try self._appendSync(pendingFrame)
             } catch {
-                // Per the protocol contract `append` is non-throwing on
-                // the writer queue (we cannot rethrow into the producer
-                // because we hopped queues). Surface it via the logger;
-                // a hard failure surfaces during `finalize`.
+                self.latchedWriteError.withLock { if $0 == nil { $0 = error } }
                 self.logger.error(
-                    "WAVRecorder: append failed: \(error.localizedDescription)"
+                    "WAVRecorder: append failed (recording will stop): \(error.localizedDescription)"
                 )
             }
         }
@@ -150,7 +157,11 @@ public final class WAVRecorder: Recorder, @unchecked Sendable {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             writerQueue.async { [self] in
                 self._finalizeSync()
-                cont.resume()
+                if let err = self.latchedWriteError.withLock({ $0 }) {
+                    cont.resume(throwing: err)
+                } else {
+                    cont.resume()
+                }
             }
         }
     }

@@ -255,4 +255,29 @@ struct CAFRecorderTests {
         // the header even with zero audio frames.
         #expect(FileManager.default.fileExists(atPath: output.path))
     }
+
+    // MARK: - EVAL-2026-10-16 CAP-7: async write errors are surfaced
+
+    @Test("CAFRecorder latches a writer-queue error and rethrows it from finalize and append")
+    func writeErrorIsSurfaced() async throws {
+        let dir = try Self.makeTemp()
+        defer { Self.removeTemp(dir) }
+
+        let output = dir.appendingPathComponent("latched.caf")
+        let opts = RecordingOptions(output: output, format: .caf, layout: .mixed, bitDepth: 16)
+        let recorder = CAFRecorder(options: opts)
+
+        // Deliberately skip start(): the writer-queue append fails
+        // ("called before start()"). Before CAP-7 this was only logged
+        // and finalize reported success.
+        let frame = Self.makeFrames(count: 1)[0]
+        try recorder.append(frame)   // hops queues — cannot throw yet
+
+        await #expect(throws: (any Error).self) {
+            try await recorder.finalize(timeout: 10)
+        }
+        #expect(throws: (any Error).self) {
+            try recorder.append(frame)
+        }
+    }
 }

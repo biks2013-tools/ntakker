@@ -52,6 +52,7 @@ import AVFoundation
 import CoreMedia
 import Foundation
 import Logging
+import struct os.OSAllocatedUnfairLock
 
 public final class CAFRecorder: Recorder, @unchecked Sendable {
 
@@ -73,6 +74,11 @@ public final class CAFRecorder: Recorder, @unchecked Sendable {
 
     private var didFinalize: Bool = false
     private var didStart: Bool = false
+
+    /// First async write error — see `WAVRecorder.latchedWriteError`
+    /// (EVAL-2026-10-16 CAP-7): rethrown by the next `append` and by
+    /// `finalize` instead of only being logged.
+    private let latchedWriteError = OSAllocatedUnfairLock<Error?>(initialState: nil)
 
     // MARK: - Init
 
@@ -113,13 +119,16 @@ public final class CAFRecorder: Recorder, @unchecked Sendable {
     }
 
     public func append(_ frame: AlignedFrame) throws {
+        if let err = latchedWriteError.withLock({ $0 }) { throw err }
         let pendingFrame = frame
         writerQueue.async { [self] in
+            guard self.latchedWriteError.withLock({ $0 }) == nil else { return }
             do {
                 try self._appendSync(pendingFrame)
             } catch {
+                self.latchedWriteError.withLock { if $0 == nil { $0 = error } }
                 self.logger.error(
-                    "CAFRecorder: append failed: \(error.localizedDescription)"
+                    "CAFRecorder: append failed (recording will stop): \(error.localizedDescription)"
                 )
             }
         }
@@ -134,7 +143,11 @@ public final class CAFRecorder: Recorder, @unchecked Sendable {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             writerQueue.async { [self] in
                 self._finalizeSync()
-                cont.resume()
+                if let err = self.latchedWriteError.withLock({ $0 }) {
+                    cont.resume(throwing: err)
+                } else {
+                    cont.resume()
+                }
             }
         }
     }
