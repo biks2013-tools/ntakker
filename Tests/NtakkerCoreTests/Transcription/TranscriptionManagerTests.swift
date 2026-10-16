@@ -193,4 +193,35 @@ struct TranscriptionManagerTests {
         try await legacyManager.rotateSidecar(toAudioURL: audioURL, format: .jsonl)
         #expect(FileManager.default.fileExists(atPath: untagged.path))
     }
+
+    // MARK: - EVAL-2026-10-16 TR-9
+
+    @Test("awaitValue honours the deadline even when the task ignores cancellation")
+    func awaitValueDeadlineWithNonCancellableWork() async {
+        // Simulates CoreML inference / a model load: completes after
+        // 1.5 s regardless of cancellation.
+        let stubborn = Task<Void, Never> {
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) { c.resume() }
+            }
+        }
+        let started = ContinuousClock.now
+        let inTime = await TranscriptionManager.awaitValue(
+            of: stubborn,
+            until: started.advanced(by: .milliseconds(200))
+        )
+        let elapsed = ContinuousClock.now - started
+        #expect(inTime == false)
+        #expect(elapsed < .milliseconds(1_000))
+    }
+
+    @Test("awaitValue reports completion for work that finishes in time")
+    func awaitValueCompletesInTime() async {
+        let quick = Task<Void, Never> { try? await Task.sleep(for: .milliseconds(20)) }
+        let inTime = await TranscriptionManager.awaitValue(
+            of: quick,
+            until: ContinuousClock.now.advanced(by: .seconds(2))
+        )
+        #expect(inTime == true)
+    }
 }

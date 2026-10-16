@@ -16,6 +16,7 @@
 import AVFoundation
 import Foundation
 import Logging
+import struct os.OSAllocatedUnfairLock
 
 /// Per-session orchestrator that buffers per-source audio, batch-flushes
 /// to a `TranscriptionProvider`, sanitises results, coalesces segments,
@@ -345,9 +346,17 @@ public actor TranscriptionManager: TranscriptionDispatcher {
 
     /// Await `task.value`, giving up at `deadline`. Returns `true` when
     /// the task completed in time; cancels it and returns `false`
-    /// otherwise. The race runs in a child task group so the actor is
-    /// not blocked while waiting (F18).
-    private static func awaitValue(
+    /// otherwise (F18).
+    ///
+    /// TR-9 (EVAL 2026-10-16): this used to race inside
+    /// `withTaskGroup`, but a task group only returns once EVERY child
+    /// has finished — including the one awaiting `task.value`. For work
+    /// that ignores cancellation (CoreML inference, a model load in
+    /// progress) the "deadline" therefore never applied. Race on a
+    /// single-shot continuation instead, as
+    /// `RecordingSession.withTranscriptionTeardownTimeout` does: the
+    /// losing waiter is simply left behind and ends with the task.
+    static func awaitValue(
         of task: Task<Void, Never>,
         until deadline: ContinuousClock.Instant
     ) async -> Bool {
@@ -356,17 +365,27 @@ public actor TranscriptionManager: TranscriptionDispatcher {
             task.cancel()
             return false
         }
-        return await withTaskGroup(of: Bool.self) { group in
-            group.addTask { await task.value; return true }
-            group.addTask {
-                try? await Task.sleep(for: remaining)
-                return false
+        let completedInTime: Bool = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            let resumed = OSAllocatedUnfairLock(initialState: false)
+            let resume: @Sendable (Bool) -> Void = { value in
+                let first = resumed.withLock { done -> Bool in
+                    defer { done = true }
+                    return !done
+                }
+                if first { cont.resume(returning: value) }
             }
-            let completedInTime = await group.next() ?? false
-            group.cancelAll()
-            if !completedInTime { task.cancel() }
-            return completedInTime
+            let timer = Task {
+                try? await Task.sleep(for: remaining)
+                resume(false)
+            }
+            Task {
+                await task.value
+                resume(true)      // resume first: cancelling the timer
+                timer.cancel()    // makes it call resume(false) early
+            }
         }
+        if !completedInTime { task.cancel() }
+        return completedInTime
     }
 
     /// Snapshot of the current metrics — read by the UI and by the
