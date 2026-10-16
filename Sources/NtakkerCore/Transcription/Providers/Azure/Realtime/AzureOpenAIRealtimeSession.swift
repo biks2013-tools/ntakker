@@ -92,6 +92,21 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
     /// attempts get a clean slate.
     private var didCompleteHandshake = false
 
+    /// TR-3 (EVAL 2026-10-16): graceful-finish bookkeeping. `finish()`
+    /// stops new audio (`isFinishing`), commits whatever the server VAD
+    /// has not committed yet, and waits — bounded by
+    /// `finishDrainTimeoutSeconds` — for every committed item to reach
+    /// `transcription.completed` / `.failed` before closing the socket.
+    /// Without this the last utterance of every recording was lost.
+    private var isFinishing = false
+    /// Audio has been sent since the last `input_audio_buffer.committed`.
+    private var hasUncommittedAudio = false
+    /// The commit sent by `finish()` has not been acknowledged yet.
+    private var awaitingFinalCommit = false
+    /// Committed items whose transcription has not completed yet.
+    private var pendingItemIds: Set<String> = []
+    private static let finishDrainTimeoutSeconds: Double = 2.0
+
     /// Maximum reconnect attempts within a 30 s window (plan-007 §A2.7).
     private static let maxReconnectAttempts = 3
     /// Pre-emptive reconnect lead-time before the 60-min Azure cap.
@@ -122,7 +137,7 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
     // MARK: - StreamingTranscriptionSession
 
     public func ingest(_ samples: [Float]) async {
-        guard !isClosed else { return }
+        guard !isClosed, !isFinishing else { return }
 
         // Resample 16 kHz Float → 24 kHz Int16 LE for the wire.
         guard let pcm16Bytes = resampler.resample(samples) else {
@@ -148,11 +163,35 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
         let base64 = pcm16Bytes.base64EncodedString()
         let envelope = RealtimeWireTypes.InputAudioBufferAppend(audio: base64)
         await sendJSON(envelope)
+        hasUncommittedAudio = true
     }
 
     public func finish() async {
-        guard !isClosed else { return }
+        guard !isClosed, !isFinishing else { return }
+        isFinishing = true
+        // Any socket close from here on is ours: `handleClose` must not
+        // reconnect.
         userInitiatedClose = true
+
+        if wsTask != nil, isConfigured {
+            if hasUncommittedAudio {
+                awaitingFinalCommit = true
+                await sendJSON(RealtimeWireTypes.InputAudioBufferCommit())
+            }
+            let deadline = Date().addingTimeInterval(Self.finishDrainTimeoutSeconds)
+            // The receive loop keeps running on this actor's other
+            // suspension points; poll until it has delivered every
+            // outstanding transcript or the deadline passes.
+            while (awaitingFinalCommit || !pendingItemIds.isEmpty),
+                  wsTask != nil,
+                  Date() < deadline {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            if awaitingFinalCommit || !pendingItemIds.isEmpty {
+                logger.warning("azure-realtime: finish drain timed out (awaitingCommit=\(awaitingFinalCommit), pendingItems=\(pendingItemIds.count))")
+            }
+        }
+
         isClosed = true
         await closeWS(code: .normalClosure, reason: nil)
         eventsContinuation.finish()
@@ -194,6 +233,10 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
         // F10: the fresh socket has no transcription model configured
         // yet — block audio sends until `session.created` + config.
         isConfigured = false
+        // TR-3: items committed on a previous socket can never complete
+        // on this one — don't let `finish()` wait for them.
+        pendingItemIds.removeAll()
+        hasUncommittedAudio = false
         task.resume()
 
         // Start the receive loop in a child task so the actor can
@@ -276,6 +319,9 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
 
         case .bufferCommitted(let payload):
             logger.debug("azure-realtime: input_audio_buffer.committed item=\(payload.itemId ?? "?")")
+            hasUncommittedAudio = false
+            awaitingFinalCommit = false
+            if let itemId = payload.itemId { pendingItemIds.insert(itemId) }
 
         case .transcriptionDelta(let payload):
             // Accumulate per-item; emit a `.partial` snapshot.
@@ -286,6 +332,7 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
             await emit(.partial(utteranceId: utteranceId, text: accumulated, confidence: nil, speaker: nil))
 
         case .transcriptionCompleted(let payload):
+            pendingItemIds.remove(payload.itemId)
             let utteranceId = utteranceIdFor(itemId: payload.itemId)
             partialsByItem.removeValue(forKey: payload.itemId)
             metrics.finalsEmitted += 1
@@ -301,6 +348,7 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
             ))
 
         case .transcriptionFailed(let payload):
+            pendingItemIds.remove(payload.itemId)
             let detail = payload.error.message ?? "(no message)"
             metrics.errorCount += 1
             await emit(.error(detail: "Azure realtime: item \(payload.itemId) failed: \(detail)"))
@@ -308,6 +356,14 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
         case .sessionError(let payload):
             let errorType = payload.error.type ?? "unknown"
             let message = payload.error.message ?? "(no message)"
+            if isFinishing, awaitingFinalCommit {
+                // The final commit was rejected (typically
+                // `input_audio_buffer_commit_empty`: < 100 ms of audio
+                // since the last VAD commit). Nothing left to wait for.
+                awaitingFinalCommit = false
+                logger.debug("azure-realtime: final commit rejected (\(payload.error.code ?? errorType)): \(message)")
+                return
+            }
             metrics.errorCount += 1
             // 2026-05-01 field repro retired the RT-1 detection: Azure
             // transcription REQUIRES `input_audio_transcription.model`,
@@ -387,6 +443,10 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
 
         if userInitiatedClose {
             logger.debug("azure-realtime: user-initiated close — done")
+            // TR-3: the socket is gone; nothing more can arrive, so end
+            // any in-progress `finish()` drain wait now.
+            awaitingFinalCommit = false
+            pendingItemIds.removeAll()
             eventsContinuation.finish()
             return
         }
@@ -538,6 +598,7 @@ public actor AzureOpenAIRealtimeSession: StreamingTranscriptionSession {
                 audio: bytes.base64EncodedString()
             )
             await sendJSON(envelope)
+            hasUncommittedAudio = true
             offset = end
         }
     }
