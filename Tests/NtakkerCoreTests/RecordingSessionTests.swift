@@ -145,8 +145,13 @@ struct RecordingSessionTests {
         let (dir, cleanup) = try makeTempDir()
         defer { cleanup() }
 
+        // `maxDuration` bounds the run on a host whose test runner DOES
+        // hold the Screen Recording + Microphone grants: there `run()`
+        // records from the fake sources instead of throwing, and without
+        // a bound it never returned (2026-10-17 — this, plus the aligner
+        // and M4A busy loops, is why plain `swift test` looked hung).
         let session = RecordingSession(
-            options: makeOptions(in: dir),
+            options: makeOptions(in: dir, maxDuration: 1.0),
             systemSource: FakeAudioSource.makeSystem440Hz(),
             micSource: FakeAudioSource.makeMic880Hz()
         )
@@ -158,10 +163,13 @@ struct RecordingSessionTests {
             caught = error
         }
 
-        // In a test environment the permission gate will throw one of the
-        // screen-recording or microphone NtakkerError variants.
-        #expect(caught != nil, "expected run() to throw a permission error in the test runner")
-        #expect(session.isRunning == false, "isRunning must be false after run() throws")
+        #expect(session.isRunning == false, "isRunning must be false after run() returns")
+        guard caught != nil else {
+            // Grants present: the bounded recording must have produced a file.
+            #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("out.m4a").path),
+                    "with permissions granted, run() should record to the output file")
+            return
+        }
 
         // Verify it is one of the expected permission errors.
         if let ntakkerErr = caught as? NtakkerError {
@@ -254,7 +262,9 @@ struct RecordingSessionTests {
         try PidFile.write(at: pidURL, pid: 999_999)
         defer { PidFile.remove(at: pidURL) }
 
-        let options = makeOptions(in: dir, runMode: .detached)
+        // Bounded for hosts where the runner holds the TCC grants (see
+        // `runSurfacesPermissionError`).
+        let options = makeOptions(in: dir, runMode: .detached, maxDuration: 1.0)
         let session = RecordingSession(
             options: options,
             systemSource: FakeAudioSource.makeSystem440Hz(),
@@ -268,9 +278,9 @@ struct RecordingSessionTests {
             caughtError = error
         }
 
-        // run() must throw (permission error in test runner) but NOT
-        // alreadyRecording — a stale PID file should never produce that.
-        #expect(caughtError != nil, "run() must throw in the permission-gate environment")
+        // run() either throws a permission error (no TCC grants) or
+        // records for `maxDuration` (grants present) — but never
+        // alreadyRecording: a stale PID file must not produce that.
         if let ntakkerErr = caughtError as? NtakkerError {
             switch ntakkerErr {
             case .alreadyRecording:
