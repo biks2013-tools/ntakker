@@ -17,7 +17,7 @@
 3. **TR-1** — concurrent inference on non-thread-safe Parakeet/WhisperKit engines (`maxInFlightPerSource = 2`).
 4. **TR-3** — Azure realtime `finish()` drops the last utterance (no commit / no wait).
 5. **UI-1** — Session Save loses transcript for multi-part / source-split sessions (`SessionExporter.swift:61-90`).
-6. **INF-1 / INF-2 / INF-3** — Soniox reconnect duplicates and loses audio; finish/reconnect race leaks a socket + keepalive; possible forced 5-min WebSocket drop.
+6. **INF-1 / INF-2 / INF-3** — Soniox reconnect duplicates and loses audio; finish/reconnect race leaks a socket + keepalive; possible forced 5-min WebSocket drop (INF-3 not reproduced 2026-10-16, plan-019 T2 — the resource timeout does not close upgraded sockets).
 7. **INF-4** — daemon `umask(0)` → recordings/transcripts world-writable in `--detach` mode.
 
 **Top efficiency wins:** AEC NLMS ≈1.6 G MAC/s (CAP-3/6/11); on-device STT 7.5–15× wasted compute from 2 s chunks padded to 15/30 s (TR-2) + model reloaded every recording (TR-11); SCStream video frames at display rate (CAP-4); aligner rewrite (C1); level meters at 30 Hz with popover closed (M1/M2/UI-5); Save on main actor (H2 → `moveItem`).
