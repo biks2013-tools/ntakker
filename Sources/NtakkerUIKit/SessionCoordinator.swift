@@ -224,6 +224,13 @@ public actor SessionCoordinator {
     /// state transitions, segment-completed events, and errors are
     /// delivered through this single stream so the controller has one
     /// `for await` loop per session.
+    ///
+    /// Unbounded (EVAL-2026-10-16 UI-4): transcript partials share this
+    /// stream with state and error events, so a bounded "newest N"
+    /// buffer could drop a `.stateChanged(.recording)` during a
+    /// partial burst and leave the controller stuck in `.starting`.
+    /// The controller drains the stream continuously and every event
+    /// is small, so the buffer stays short in practice.
     public nonisolated let events: AsyncStream<SessionCoordinatorEvent>
     private nonisolated let eventsContinuation: AsyncStream<SessionCoordinatorEvent>.Continuation
 
@@ -252,7 +259,7 @@ public actor SessionCoordinator {
         self.factory = factory ?? makeLiveRecordingSessionFactory(logger: logger)
         let pair = AsyncStream.makeStream(
             of: SessionCoordinatorEvent.self,
-            bufferingPolicy: .bufferingNewest(16)
+            bufferingPolicy: .unbounded
         )
         self.events = pair.stream
         self.eventsContinuation = pair.continuation

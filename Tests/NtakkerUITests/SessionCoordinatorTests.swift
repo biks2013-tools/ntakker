@@ -55,6 +55,10 @@ final class MockRecordingSession: RecordingSessionLike, @unchecked Sendable {
         }
     }
 
+    func emitTranscript(_ e: TranscriptionEvent) {
+        transcriptContinuation.yield(e)
+    }
+
     func run() async throws {
         // Block until requestStop fires.
         while !stopRequested {
@@ -410,5 +414,35 @@ struct SessionCoordinatorTests {
         #expect(state == SessionCoordinator.CoordinatorState.recording(segment: 2))
         try await coordinator.stop()
         await coordinator.teardown()
+    }
+
+    @Test("UI-4: a transcript burst never drops a state change from events")
+    func transcriptBurstKeepsStateEvents() async throws {
+        let mock = MockRecordingSession()
+        let coordinator = SessionCoordinator(
+            baseOptions: baseOptions(),
+            logger: .init(label: "test.ui4"),
+            factory: { _ in mock }
+        )
+        try await coordinator.start()
+        mock.emit(.recording)
+        for _ in 0..<40 {
+            mock.emitTranscript(.privacyDisclosure(providerDisplayName: "burst"))
+        }
+        // Let both forwarders relay everything before anyone consumes.
+        try await Task.sleep(for: .milliseconds(300))
+        await coordinator.teardown()
+
+        var sawRecording = false
+        var transcriptCount = 0
+        for await event in coordinator.events {
+            switch event {
+            case .stateChanged(.recording): sawRecording = true
+            case .transcriptEvent: transcriptCount += 1
+            default: break
+            }
+        }
+        #expect(sawRecording)
+        #expect(transcriptCount == 40)
     }
 }
