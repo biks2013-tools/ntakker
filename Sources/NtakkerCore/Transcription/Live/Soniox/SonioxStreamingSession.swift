@@ -67,10 +67,28 @@ public actor SonioxStreamingSession: StreamingTranscriptionSession {
 
     /// F9: ring buffer of the most recent outbound PCM chunks, replayed
     /// into a fresh transport after reconnect so the audio spanning the
-    /// drop is not lost. Capped at ~5 s of 16 kHz Int16 mono.
-    private var replayChunks: [Data] = []
+    /// drop is not lost. Each chunk carries its absolute byte offset in
+    /// the session's audio stream (INF-1). Capped at 30 s of 16 kHz
+    /// Int16 mono (~960 KB) so it covers the full 0 + 1 + 4 s reconnect
+    /// backoff plus connect time.
+    private var replayChunks: [(offset: Int, data: Data)] = []
     private var replayBytes: Int = 0
-    private static let replayCapBytes: Int = 5 * 16_000 * MemoryLayout<Int16>.size
+    private static let replayCapBytes: Int = 30 * 16_000 * MemoryLayout<Int16>.size
+
+    /// INF-1: absolute byte offset of the next chunk appended to the ring.
+    private var nextAppendOffset: Int = 0
+
+    /// INF-1: absolute byte offset at which the current connection's
+    /// audio stream starts. Soniox token timestamps are relative to it.
+    private var connectionBaseOffset: Int = 0
+
+    /// INF-1: absolute byte offset up to which audio is covered by final
+    /// tokens. A reconnect replays from here, so already-transcribed
+    /// audio is not sent (and transcribed) twice.
+    private var committedOffset: Int = 0
+
+    /// 16 kHz Int16 mono: bytes per millisecond of audio.
+    private static let bytesPerMs: Int = 16 * MemoryLayout<Int16>.size
 
     private var isReconnecting: Bool = false
     private var reconnectAttempts: Int = 0
@@ -301,10 +319,11 @@ public actor SonioxStreamingSession: StreamingTranscriptionSession {
     /// Bounded append to the replay ring (drops oldest chunks past the
     /// ~5 s cap).
     private func appendToReplayRing(_ chunk: Data) {
-        replayChunks.append(chunk)
+        replayChunks.append((offset: nextAppendOffset, data: chunk))
+        nextAppendOffset += chunk.count
         replayBytes += chunk.count
         while replayBytes > Self.replayCapBytes, !replayChunks.isEmpty {
-            replayBytes -= replayChunks.removeFirst().count
+            replayBytes -= replayChunks.removeFirst().data.count
         }
     }
 
@@ -337,13 +356,23 @@ public actor SonioxStreamingSession: StreamingTranscriptionSession {
     }
 
     /// Reconnect-with-replay: mint a fresh transport, re-send the config
-    /// frame, replay the ring buffer, restart keepalive + receive loop.
+    /// frame, replay the audio after the last final token (INF-1), restart
+    /// keepalive + receive loop.
     /// Up to `maxReconnectAttempts` attempts with 0 / 1 / 4 s backoff;
     /// exhaustion emits one terminal error and terminates the session.
     private func runReconnect(droppedBecause reason: String) async {
         guard let transportFactory else { return }
         await keepalive.stop()
         await transport.close(code: .normal, reason: "soniox reconnect")
+
+        // INF-1: the fresh connection re-transcribes everything after
+        // `committedOffset`, so the provisional (non-final) tokens of the
+        // dropped connection are stale. Committed finals still buffered
+        // in an unfinished utterance are flushed now — the new
+        // connection never sees their audio again.
+        for evt in await aggregator.prepareForReconnect() {
+            yieldAndCount(evt)
+        }
 
         while reconnectAttempts < Self.maxReconnectAttempts && !isFinished {
             let delay = Self.reconnectDelays[
@@ -357,16 +386,25 @@ public actor SonioxStreamingSession: StreamingTranscriptionSession {
             do {
                 try await fresh.connect(url: endpoint, headers: [:])
                 try await fresh.send(text: Self.encode(configMessage))
-                // Replay the buffered audio spanning the drop.
-                for chunk in replayChunks {
-                    try await fresh.send(data: chunk)
+                // INF-1: replay only the audio after the last final
+                // token, and keep going until the chunks that arrived
+                // during the replay (ingest only buffers them while
+                // `isReconnecting`) are sent too.
+                let replayFrom = max(committedOffset, replayChunks.first?.offset ?? nextAppendOffset)
+                connectionBaseOffset = replayFrom
+                var sentUpTo = replayFrom
+                while sentUpTo < nextAppendOffset {
+                    guard let chunk = replayChunks.first(where: { $0.offset + $0.data.count > sentUpTo }) else { break }
+                    let skip = max(0, sentUpTo - chunk.offset)
+                    try await fresh.send(data: skip == 0 ? chunk.data : Data(chunk.data.dropFirst(skip)))
+                    sentUpTo = chunk.offset + chunk.data.count
                 }
                 transport = fresh
                 startReceiveLoop()
-                await keepalive.start(transport: fresh)
                 isReconnecting = false
                 reconnectAttempts = 0
-                logger?.info("soniox: reconnected after transport drop (replayed \(replayBytes) bytes)")
+                await keepalive.start(transport: fresh)
+                logger?.info("soniox: reconnected after transport drop (replayed \(sentUpTo - replayFrom) bytes)")
                 return
             } catch {
                 await fresh.close(code: .normal, reason: "soniox reconnect attempt failed")
@@ -416,6 +454,14 @@ public actor SonioxStreamingSession: StreamingTranscriptionSession {
             // "Socket is not connected" errors that hide the real cause.
             await terminate()
             return
+        }
+
+        // INF-1: advance the committed boundary to the end of the latest
+        // final token (timestamps are relative to this connection).
+        for token in server.tokens where token.isFinal && !token.isMarker {
+            if let endMs = token.endMs {
+                committedOffset = max(committedOffset, connectionBaseOffset + endMs * Self.bytesPerMs)
+            }
         }
 
         // Forward token batch through the aggregator — its output is the

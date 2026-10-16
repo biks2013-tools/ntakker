@@ -8,7 +8,7 @@ Approved: 2026-10-16 ("yes please", after plan-019 was proposed as the step befo
 
 ### Soniox reconnect
 
-- [ ] **T1 (INF-1)** After a transport drop, `SonioxStreamingSession.runReconnect` replays the whole 5 s ring, including audio the old connection already transcribed. That duplicates text. Chunks that arrive during the replay are never sent, and 5 s is shorter than the worst-case outage (0 + 1 + 4 s backoff plus connect time).
+- [x] **T1 (INF-1)** After a transport drop, `SonioxStreamingSession.runReconnect` replays the whole 5 s ring, including audio the old connection already transcribed. That duplicates text. Chunks that arrive during the replay are never sent, and 5 s is shorter than the worst-case outage (0 + 1 + 4 s backoff plus connect time).
   - Track absolute byte offsets for the ring chunks.
   - Record the committed boundary from final tokens' `end_ms`, measured relative to the connection's base offset.
   - On reconnect, replay only from that boundary, and loop until chunks that arrived during the replay are sent too.

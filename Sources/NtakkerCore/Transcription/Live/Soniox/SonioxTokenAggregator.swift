@@ -174,6 +174,22 @@ public actor SonioxTokenAggregator {
         return []
     }
 
+    /// INF-1: called before the session replays audio into a fresh
+    /// connection. Non-final tokens are dropped — the new connection
+    /// re-transcribes their audio. Finals still buffered in an
+    /// unfinished utterance are flushed as one `.final` (their audio is
+    /// not replayed). When only non-finals were buffered the utterance
+    /// id is kept, so the new connection's tokens replace the same
+    /// partial row instead of leaving it orphaned.
+    public func prepareForReconnect(now: Date = Date()) -> [StreamingTranscriptionEvent] {
+        buffer.removeAll { !$0.isFinal }
+        guard !buffer.isEmpty else { return [] }
+        if let event = flush(now: now) {
+            return [event]
+        }
+        return []
+    }
+
     // MARK: - Internals
 
     /// Flush the current buffer into a single `.final` event. Returns
