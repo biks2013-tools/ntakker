@@ -32,7 +32,7 @@ DMG="$OUT/ntakker-studio-$VERSION.dmg"
 SUMS="$OUT/SHA256SUMS"
 CASK="$ROOT/homebrew-tap/Casks/ntakker-studio.rb"
 TAG="ntakker-studio-v$VERSION"
-REPO="biks2013-tools/recording-tool"
+REPO="biks2013-tools/ntakker"
 
 [[ -n "$VERSION" ]] || { echo "error: no CFBundleShortVersionString in $PLIST" >&2; exit 1; }
 [[ -n "${NTAKKER_STUDIO_SIGN_IDENTITY:-}" ]] || { echo "error: NTAKKER_STUDIO_SIGN_IDENTITY is not set (Developer ID Application SHA-1)" >&2; exit 1; }

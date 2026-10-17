@@ -48,7 +48,7 @@ swift run ntakker-cli start --output ~/Recordings/test.m4a
 
 ### 4. Install ntakker studio
 
-Download the notarized `ntakker-studio-<version>.dmg` from [Releases](https://github.com/biks2013-tools/recording-tool/releases) and drag the app to Applications, or:
+Download the notarized `ntakker-studio-<version>.dmg` from [Releases](https://github.com/biks2013-tools/ntakker/releases) and drag the app to Applications, or:
 
 ```sh
 brew install --cask biks2013-tools/ntakker-studio/ntakker-studio
@@ -160,7 +160,7 @@ For the full env-var catalogue see:
 ## Project layout
 
 ```
-recording-tool/
+ntakker/
 ├── Sources/
 │   ├── ntakker-cli/              — CLI executable target
 │   ├── ntakker/           — Menu-bar SwiftUI app

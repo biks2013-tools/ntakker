@@ -288,7 +288,7 @@
              bash scripts/release-ntakker-studio.sh
            ```
            Two identities share the name "Developer ID Application: GEORGIOS MARINOS", so pass the SHA-1 (`security find-identity -v -p codesigning`). The script runs the studio tests, verifies the Developer ID signature and hardened runtime, notarizes the zip and the DMG, and writes `dist/release/ntakker-studio-<version>.zip`, `.dmg`, `SHA256SUMS` and `homebrew-tap/Casks/ntakker-studio.rb`.
-        3. Tag `ntakker-studio-v<version>` and create the GitHub release on `biks2013-tools/recording-tool` with the zip, DMG and `SHA256SUMS`.
+        3. Tag `ntakker-studio-v<version>` and create the GitHub release on `biks2013-tools/ntakker` with the zip, DMG and `SHA256SUMS`.
         4. Copy `homebrew-tap/Casks/ntakker-studio.rb` into `biks2013-tools/homebrew-ntakker-studio` (`Casks/`) and push. Users install with `brew install --cask biks2013-tools/ntakker-studio/ntakker-studio`.
 
         ## Cross-references
