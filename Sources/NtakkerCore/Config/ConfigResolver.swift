@@ -297,6 +297,10 @@ public struct ConfigResolver {
             case .elevenlabs:
                 // plan-007 Phase B: ElevenLabs Scribe v2 batch (REST).
                 return "elevenlabs"
+            case .parakeet:
+                return "parakeet"
+            case .appleCloud:
+                return "apple-cloud"
             }
         }()
 
@@ -432,8 +436,9 @@ public struct ConfigResolver {
                     )
                 }
                 return key
-            case .apple, .whisperkit, .none:
-                // On-device or no-op providers — no API key required.
+            case .apple, .appleCloud, .whisperkit, .parakeet, .none:
+                // On-device, Apple-account, or no-op providers — no API
+                // key required.
                 return nil
             }
         }()

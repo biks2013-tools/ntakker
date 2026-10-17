@@ -99,6 +99,13 @@ public enum TranscriptionProviderId: String, CaseIterable, Sendable, Codable, Eq
     case azureOpenAIRealtime = "azure-openai-realtime"
     /// Plan-007 Phase B — ElevenLabs `scribe_v2` REST batch.
     case elevenlabs
+    /// Plan-012 Phase B — on-device Parakeet TDT v3 (FluidAudio). The
+    /// factory has built it since plan-012; the CLI resolver rejected
+    /// the id until 2026-10-17 because this case was missing.
+    case parakeet
+    /// Apple's server-based `SFSpeechRecognizer`. Same story as
+    /// `parakeet`: the factory accepted it, the CLI resolver did not.
+    case appleCloud = "apple-cloud"
 }
 
 // `TranscriptionSource` is defined in

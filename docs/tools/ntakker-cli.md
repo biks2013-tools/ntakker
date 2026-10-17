@@ -127,8 +127,10 @@
                                   Live transcription provider. Default: apple
                                   (changed from `none` in v1.5 / plan-005).
                                   Allowed: none | apple | apple-cloud | gemini
-                                  | soniox | whisperkit | azure |
+                                  | soniox | whisperkit | parakeet | azure |
                                   azure-openai-realtime | elevenlabs.
+                                  (`parakeet` and `apple-cloud` were
+                                  rejected by the CLI until 2026-10-17.)
                                   (`gemini-live` is accepted as a deprecated
                                   alias for one release; the resolver lowers
                                   it to `gemini` and logs a deprecation
