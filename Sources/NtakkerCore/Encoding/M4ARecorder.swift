@@ -686,12 +686,30 @@ public final class M4ARecorder: Recorder, @unchecked Sendable {
 
     // MARK: - Drain loop
 
+    /// C6: buffers queued per writer before it is failed as stalled.
+    /// The recorder receives the aligner's 100 ms frames, so 600 is a
+    /// minute of audio the encoder has not taken.
+    static let maxPendingBuffers = 600
+
     private func enqueue(buffer: CMSampleBuffer, on target: WriterTarget) {
         // writerQueue-confined.
         guard state == .running else { return }
         guard let unit = unit(for: target) else { return }
+        guard unit.failure == nil else { return }
 
         unit.pending.append(buffer)
+        // C6 (EVAL 2026-06-12): bound the queue. An encoder that has not
+        // accepted a buffer for ~a minute is not coming back; fail the
+        // writer (surfaced by the next `append` / `finalize`) instead of
+        // growing memory for the rest of the recording.
+        if unit.pending.count > Self.maxPendingBuffers {
+            unit.failure = NtakkerError.ioError(
+                "M4A encoder stalled: \(unit.pending.count) buffers pending for \(unit.url.lastPathComponent)"
+            )
+            logger?.error("M4ARecorder: encoder stalled with \(unit.pending.count) pending buffers for \(unit.url.lastPathComponent); failing the writer")
+            unit.pending.removeAll()
+            return
+        }
         let bufferEnd = Self.endTime(of: buffer)
         // Keep the latest end across the split-layout writers.
         if _lastAppendedEndPTS.map({ CMTimeCompare(bufferEnd, $0) > 0 }) ?? true {

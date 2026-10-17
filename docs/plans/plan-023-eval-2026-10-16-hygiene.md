@@ -32,7 +32,8 @@ Approved: 2026-10-17. The user said "Do the cleanup items". One commit per task.
     - Measured on 3,000 records: 31.5 ms → 0.14 ms per stdin trigger; `--help` 140 ms → 75 ms.
     - Tests: 182/182, including 8 new ones; the incremental snapshots are checked against a full re-parse after every line.
 - [x] **T6 (L3)** Delete the dead `LevelMeterView` and `ElapsedTimeView`. Done; neither was referenced anywhere.
-- [ ] **T7 (C6)** Bound the M4A recorder's pending-buffer queue.
+- [x] **T7 (C6)** Bound the M4A recorder's pending-buffer queue.
+  - Done. Past 600 queued frames (a minute of audio) the writer is failed as stalled; the failure surfaces from the next `append` / `finalize` as for any encoder error, and the queue is freed. Build-verified plus the existing M4A tests; a stalled `AVAssetWriterInput` cannot be produced in a unit test.
 - [ ] **T8 (C7)** `split()` leaves the session inconsistent when finalizing the old segment fails. Roll back, and keep the sidecar rotation consistent.
 - [ ] **T9 (CAP-18)** Observe the mic's `wasDisconnectedNotification` so an unplugged mic is reported instead of stalling silently.
 - [ ] **T10 (found in plan-022)** `--transcribe-source mic` is refused unless `--mic-device` is set, because the resolver treats "system default" as disabled. This is the baseline failure "Shell env supplies transcription keys".
