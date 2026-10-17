@@ -1502,6 +1502,15 @@ the project `CLAUDE.md` MUST gain a concise `### convo-coach` entry
 under `## Tools` pointing at `docs/tools/convo-coach.md` plus the
 install snippet (`cd tools/convo-coach && npm install && npm link`).
 
+#### FR-WIN-1 — Pop the ntakker UI out into its own window
+**Status:** IMPLEMENTED (2026-10-17, user request).
+- A header button in the popover ("Pop out into a window") shows the full ntakker UI in a regular titled, resizable, minimisable window, so the user can keep it open while working in other apps.
+- Recording, transcript, Ask and settings state carry over, because they live in the shared `RecordingController` and `@AppStorage`.
+- The window remembers its position and size between pop-outs.
+- **Closing the window** returns ntakker to its menu-bar icon (popover closed).
+- **Clicking the menu-bar icon while the window is open** docks the UI back: the window closes and the popover opens under the icon. The window's header button ("Return to the menu bar") does the same.
+- Level meters keep running while the window is shown.
+
 ---
 
 ## 2. Non-functional requirements

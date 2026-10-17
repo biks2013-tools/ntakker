@@ -39,6 +39,36 @@ import SwiftUI
 struct RootView: View {
     @Environment(\.recordingController) private var recordingController
     @Environment(\.palette) private var palette
+    @Environment(\.popoverPresentation) private var presentation
+
+    /// True while the UI lives in the pop-out window, not the popover.
+    private var isDetached: Bool { presentation?.isDetached ?? false }
+
+    /// Header button: pop the UI out into a window, or — in the
+    /// window — dock it back under the menu-bar icon.
+    @ViewBuilder
+    private var popOutButton: some View {
+        if let presentation {
+            Button {
+                if presentation.isDetached {
+                    presentation.dockBack()
+                } else {
+                    presentation.popOut()
+                }
+            } label: {
+                Image(systemName: presentation.isDetached ? "menubar.arrow.up.rectangle" : "macwindow.on.rectangle")
+                    .imageScale(.medium)
+                    .foregroundStyle(palette.secondary)
+            }
+            .buttonStyle(.borderless)
+            .help(presentation.isDetached
+                ? String(localized: "Return to the menu bar — dock this window back into the menu-bar popover")
+                : String(localized: "Pop out into a window — keeps ntakker open while you work; close the window or click the menu-bar icon to bring it back"))
+            .accessibilityLabel(presentation.isDetached
+                ? String(localized: "Return to the menu bar")
+                : String(localized: "Pop out into a window"))
+        }
+    }
 
     /// In-memory Asking-mode history. UI-local in Phase 1; promoted to
     /// `NtakkerCore.QASessionHistory` in Phase 4 so the floating overlay
@@ -175,6 +205,7 @@ struct RootView: View {
                     )
 
                 PopoverHeader(stateLabel: stateLabel) {
+                    popOutButton
                     AppearanceSwitcher()
                     SettingsLink {
                         Image(systemName: "gearshape")
@@ -232,15 +263,24 @@ struct RootView: View {
                     .padding(.vertical, 8)
             }
 
-            ResizeHandle(width: $popoverWidth, height: $popoverHeight)
+            // In the pop-out window the window edges resize; the
+            // handle only makes sense inside the popover.
+            if !isDetached {
+                ResizeHandle(width: $popoverWidth, height: $popoverHeight)
+            }
         }
         .frame(
-            width: Self.fittedWidth(popoverWidth)
+            minWidth: isDetached ? ResizeHandle.minWidth : nil,
+            idealWidth: isDetached ? Self.fittedWidth(popoverWidth) : nil,
+            maxWidth: isDetached ? .infinity : nil
         )
+        .frame(width: isDetached ? nil : Self.fittedWidth(popoverWidth))
         .frame(
-            height: Self.fittedHeight(popoverHeight),
+            minHeight: isDetached ? ResizeHandle.minHeight : nil,
+            maxHeight: isDetached ? .infinity : nil,
             alignment: .top
         )
+        .frame(height: isDetached ? nil : Self.fittedHeight(popoverHeight), alignment: .top)
         .sheet(isPresented: $showPrivacySheet) {
             PrivacyDisclosureSheet(
                 selectedProvider: Self.normalize(transcribeProviderRaw),

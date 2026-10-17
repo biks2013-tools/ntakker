@@ -69,3 +69,35 @@ extension EnvironmentValues {
         set { self[PopoverBehaviorKey.self] = newValue }
     }
 }
+
+// MARK: - Window-presentation environment key
+
+/// Whether the UI is shown in the menu-bar popover or popped out into
+/// its own window, plus the actions that move it between the two.
+/// Owned by `PopoverController`; views read it to show the right
+/// pop-out / dock-back button and to size themselves (a window is
+/// freely resizable, the popover keeps its own resize handle).
+@MainActor
+@Observable
+final class PopoverPresentation {
+    /// True while the UI lives in the separate window.
+    var isDetached = false
+
+    /// Move the UI out of the popover into a window.
+    var popOut: () -> Void = {}
+
+    /// Move the UI back under the menu-bar icon and show the popover.
+    var dockBack: () -> Void = {}
+}
+
+private struct PopoverPresentationKey: EnvironmentKey {
+    static let defaultValue: PopoverPresentation? = nil
+}
+
+extension EnvironmentValues {
+    /// Popover / window presentation state. `nil` in previews.
+    var popoverPresentation: PopoverPresentation? {
+        get { self[PopoverPresentationKey.self] }
+        set { self[PopoverPresentationKey.self] = newValue }
+    }
+}

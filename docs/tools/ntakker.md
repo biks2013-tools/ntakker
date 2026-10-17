@@ -624,6 +624,26 @@
 
         ## Behavior summary
 
+        ### Pop-out window
+
+        The popover header has a **Pop out into a window** button
+        (the window icon left of the appearance switcher). It shows
+        the whole ntakker UI in a normal, resizable window that stays
+        open while you work in other apps. Recording, the live
+        transcript and Ask continue unchanged.
+
+        - **Close the window** (red button or ⌘W) to go back to the
+          menu-bar icon.
+        - **Click the menu-bar icon** while the window is open to
+          collect it back: the window closes and the popover opens
+          under the icon.
+        - The window's header button, **Return to the menu bar**,
+          does the same.
+
+        The window remembers its position and size. Because ntakker
+        is a menu-bar app, the window does not appear in the Dock or
+        in ⌘-Tab.
+
         ### Stop-and-stitch pause produces multiple files
 
         While recording, the popover status bar shows Pause (⏸) and

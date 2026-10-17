@@ -3151,6 +3151,21 @@ nothing crosses a process boundary):
   trigger only the views that read those specific properties (per-property
   fine-grained tracking — Topic 2 motivation for `@Observable`).
 
+#### 15.1.1 Pop-out window (FR-WIN-1, 2026-10-17)
+
+`PopoverController` owns the pop-out:
+
+- `popOut()` closes the popover and shows the same SwiftUI tree (`RootView` plus the same environment) in a titled, resizable `NSWindow` with its own `NSHostingController`.
+- `dockBack(showPopover:)` closes that window. The status-item click calls it with `true`, so the popover opens; the window's close button calls it with `false`.
+- `PopoverPresentation` (an `@Observable` in the environment) tells `RootView` which mode it is in. In window mode RootView sizes flexibly, hides the popover `ResizeHandle`, and shows "Return to the menu bar" instead of "Pop out".
+
+Two implementation constraints, both found by crashing the app:
+
+1. The popover's live `NSHostingView` is not moved into the window. Re-parenting it threw a constraint-update exception in AppKit's display cycle.
+2. The window's hosting controller uses `sizingOptions = []`, with `NSWindow.contentMinSize` set explicitly. Letting SwiftUI drive the window's size extrema (`.minSize`) caused the same exception.
+
+The frame is persisted under the autosave name `ntakker.detachedWindow`, and tabbing is disallowed.
+
 ### 15.2 Module Organization
 
 The `ntakker` source layout is below. Per investigation Topic 1

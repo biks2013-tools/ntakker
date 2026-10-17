@@ -56,6 +56,20 @@ final class PopoverController {
     /// we re-read both keys and re-clamp on every fire.
     private var sizeObserver: NSObjectProtocol?
 
+    /// Pop-out window state (see `popOut()`).
+    let presentation = PopoverPresentation()
+    private var detachedWindow: NSWindow?
+    private var detachedWindowDelegate: DetachedWindowDelegate?
+    /// Builds the SwiftUI tree (RootView plus its environment). The
+    /// pop-out window gets its own host built from this; everything
+    /// that matters — recording, transcript, Ask — lives in the shared
+    /// `RecordingController` and `@AppStorage`, so both hosts show the
+    /// same session.
+    private let makeContent: () -> AnyView
+    /// Told whether the level meters are on screen (the window shows
+    /// them like an open popover does).
+    private weak var recordingControllerForMeters: RecordingController?
+
     /// M2 (EVAL 2026-10-16): show / close observers that tell the
     /// recording controller whether the level meters are on screen.
     private var visibilityObservers: [NSObjectProtocol] = []
@@ -96,6 +110,7 @@ final class PopoverController {
         logger: Logger
     ) {
         self.logger = logger
+        self.recordingControllerForMeters = recordingController
 
         // Phase E: build the popover before composing the SwiftUI host
         // so the `setBehaviorForPanel(_:)` closure (used by the
@@ -121,6 +136,7 @@ final class PopoverController {
         let behaviorSetter: PopoverBehaviorSetter = { [weak popover] newBehavior in
             popover?.behavior = newBehavior
         }
+        let presentationModel = presentation
 
         // Wrap in `AppearanceHostingRoot` so the persisted
         // `AppearanceMode` choice flows into `.preferredColorScheme(_:)`
@@ -130,15 +146,19 @@ final class PopoverController {
         // `@AppStorage` and `\.colorScheme` itself; no
         // `NotificationCenter` observer or `popover.appearance`
         // override is required (research-nshostingcontroller-appearance.md).
-        let composed = AnyView(
-            AppearanceHostingRoot {
-                rootView
-                    .environment(\.recordingController, recordingController)
-                    .environment(\.popoverBehavior, behaviorSetter)
-                    .environmentObject(PredefinedQuestionsStore.shared)
-            }
-        )
-        let hosting = NSHostingController(rootView: composed)
+        let makeContent: () -> AnyView = {
+            AnyView(
+                AppearanceHostingRoot {
+                    rootView
+                        .environment(\.recordingController, recordingController)
+                        .environment(\.popoverBehavior, behaviorSetter)
+                        .environment(\.popoverPresentation, presentationModel)
+                        .environmentObject(PredefinedQuestionsStore.shared)
+                }
+            )
+        }
+        self.makeContent = makeContent
+        let hosting = NSHostingController(rootView: makeContent())
         self.hostingController = hosting
         popover.contentViewController = hosting
 
@@ -172,8 +192,11 @@ final class PopoverController {
             forName: UserDefaults.didChangeNotification,
             object: UserDefaults.standard,
             queue: .main
-        ) { [weak popover, weak hosting] _ in
+        ) { [weak popover, weak hosting, weak presentationModel] _ in
             guard let popover, let hosting else { return }
+            // In the pop-out window the window owns the size; pushing
+            // the popover's persisted size there would fight the user.
+            if presentationModel?.isDetached == true { return }
             let rawH = UserDefaults.standard.double(forKey: RootView.popoverHeightKey)
             let rawW = UserDefaults.standard.double(forKey: RootView.popoverWidthKey)
             let h: CGFloat = rawH > 0 ? Self.clampHeight(CGFloat(rawH)) : popover.contentSize.height
@@ -227,6 +250,9 @@ final class PopoverController {
             },
         ]
 
+        presentation.popOut = { [weak self] in self?.popOut() }
+        presentation.dockBack = { [weak self] in self?.dockBack(showPopover: true) }
+
         logger.debug("PopoverController initialized (behavior=.transient, contentSize=\(popover.contentSize))")
     }
 
@@ -258,7 +284,19 @@ final class PopoverController {
     ///
     /// - Parameter button: The status-item's button to anchor to. The
     ///   popover's arrow will point up at this button.
+    /// Last status-item button the popover was shown from; the
+    /// dock-back path re-anchors the popover to it.
+    private weak var lastAnchor: NSStatusBarButton?
+
     func toggle(relativeTo button: NSStatusBarButton) {
+        lastAnchor = button
+        // While popped out, the icon collects the window back into the
+        // popover (the window closes, the popover opens in its place).
+        if presentation.isDetached {
+            logger.debug("toggle: docking the pop-out window back into the popover")
+            dockBack(showPopover: true, anchor: button)
+            return
+        }
         if popover.isShown {
             logger.debug("toggle: closing popover")
             popover.performClose(nil)
@@ -340,6 +378,96 @@ final class PopoverController {
         hostingController.view.layoutSubtreeIfNeeded()
     }
 
+    // MARK: - Pop-out window
+
+    /// Show the UI in its own titled, resizable window instead of the
+    /// popover. The window opens where the popover was (or where the
+    /// user last left it) at the popover's current size.
+    func popOut() {
+        guard !presentation.isDetached else {
+            detachedWindow?.makeKeyAndOrderFront(nil)
+            return
+        }
+        let popoverFrame = popover.isShown ? hostingController.view.window?.frame : nil
+        let size = hostingController.view.frame.size == .zero
+            ? popover.contentSize
+            : hostingController.view.frame.size
+
+        popover.close()
+
+        // The window gets its own hosting controller. Moving the
+        // popover's live NSHostingView into a window crashed AppKit
+        // (constraint update loop in the display cycle), and letting
+        // the host drive the window's size extrema did too — so
+        // sizing is left entirely to the window.
+        let windowHosting = NSHostingController(rootView: makeContent())
+        windowHosting.sizingOptions = []
+
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "ntakker"
+        window.isReleasedWhenClosed = false
+        // One window, not a document app: no tab bar / "Merge All
+        // Windows" items in the View and Window menus.
+        window.tabbingMode = .disallowed
+        window.contentViewController = windowHosting
+        window.contentMinSize = NSSize(width: Self.minWidth, height: Self.minHeight)
+        window.setContentSize(size)
+        let delegate = DetachedWindowDelegate { [weak self] in
+            self?.dockBack(showPopover: false)
+        }
+        window.delegate = delegate
+        if !window.setFrameUsingName(Self.detachedWindowAutosaveName) {
+            if let popoverFrame {
+                window.setFrameTopLeftPoint(NSPoint(x: popoverFrame.minX, y: popoverFrame.maxY))
+            } else {
+                window.center()
+            }
+        }
+        window.setFrameAutosaveName(Self.detachedWindowAutosaveName)
+
+        detachedWindow = window
+        detachedWindowDelegate = delegate
+        presentation.isDetached = true
+        // `didClose` of the popover just hid the meters; the window
+        // shows them.
+        recordingControllerForMeters?.levelMetersVisible = true
+
+        NSApp.activate()
+        window.makeKeyAndOrderFront(nil)
+        logger.info("popped the UI out into a window")
+    }
+
+    /// Move the UI back into the popover. `showPopover` opens the
+    /// popover under the status item (the icon click / dock-back
+    /// button); closing the window passes false, so the app simply
+    /// returns to its menu-bar icon.
+    func dockBack(showPopover: Bool, anchor: NSStatusBarButton? = nil) {
+        guard presentation.isDetached, let window = detachedWindow else { return }
+        presentation.isDetached = false
+        detachedWindow = nil
+        detachedWindowDelegate = nil
+
+        window.delegate = nil
+        window.saveFrame(usingName: Self.detachedWindowAutosaveName)
+        window.orderOut(nil)
+        window.contentViewController = nil
+        window.close()
+
+        recordingControllerForMeters?.levelMetersVisible = false
+        logger.info("docked the UI back into the menu-bar popover")
+
+        if showPopover, let button = anchor ?? lastAnchor {
+            toggle(relativeTo: button)
+        }
+    }
+
+    private static let detachedWindowAutosaveName = "ntakker.detachedWindow"
+
     /// Programmatically dismiss the popover. Used by Phase F's quit
     /// flow and by Phase E's "close after Stop" affordance.
     func close() {
@@ -357,5 +485,20 @@ final class PopoverController {
     func setBehaviorForPanel(_ behavior: NSPopover.Behavior) {
         logger.debug("setBehaviorForPanel: \(behavior.rawValue)")
         popover.behavior = behavior
+    }
+}
+
+/// Hands the pop-out window's close button back to `PopoverController`,
+/// which docks the UI back under the menu-bar icon.
+@MainActor
+private final class DetachedWindowDelegate: NSObject, NSWindowDelegate {
+    private let onClose: () -> Void
+
+    init(onClose: @escaping () -> Void) {
+        self.onClose = onClose
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        onClose()
     }
 }
