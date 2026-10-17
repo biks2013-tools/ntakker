@@ -26,72 +26,44 @@ import Foundation
 /// SubRip-format sidecar writer.
 public final class SRTTranscriptWriter: TranscriptFormatWriter {
 
-    public let url: URL
-    private let handle: FileHandle
-    private var index: [UUID: Range<UInt64>] = [:]
+    public var url: URL { file.url }
+    private let file: RewritableSegmentFile
     private var sequenceCounter: Int = 0
     private var sequenceForId: [UUID: Int] = [:]
     private let sessionStart: Date
 
     public init(url: URL,
                 sessionStart: Date = Date()) throws {
-        self.url = url
         self.sessionStart = sessionStart
-        FileManager.default.createFile(atPath: url.path, contents: nil)
-        self.handle = try FileHandle(forUpdating: url)
-        try handle.seekToEnd()
+        self.file = try RewritableSegmentFile(url: url)
     }
 
     public func appendSegment(_ segment: TranscriptSegment) throws {
         sequenceCounter += 1
         sequenceForId[segment.id] = sequenceCounter
-        let bytes = Data(render(seq: sequenceCounter, segment).utf8)
-        let start = try handle.offset()
-        try handle.write(contentsOf: bytes)
-        let end = try handle.offset()
-        index[segment.id] = start..<end
+        try file.append(Data(render(seq: sequenceCounter, segment).utf8), for: segment.id)
     }
 
     public func updateSegment(_ segment: TranscriptSegment) throws {
-        guard let range = index[segment.id], let seq = sequenceForId[segment.id] else {
+        guard let seq = sequenceForId[segment.id] else {
             try appendSegment(segment)
             return
         }
-        let oldLen = Int(range.upperBound - range.lowerBound)
-        let newRendering = render(seq: seq, segment)
-        let newBytes = Data(newRendering.utf8)
-
-        if newBytes.count <= oldLen {
-            // Short-grow — pad inside the cue body before the trailing
-            // "\n\n" so the cue boundaries stay intact.
-            var padded = Data(newRendering.dropLast(2).utf8) // drop "\n\n"
-            padded.append(Data(repeating: 0x20, count: oldLen - newBytes.count))
-            padded.append(contentsOf: [0x0A, 0x0A])
-            try handle.seek(toOffset: range.lowerBound)
-            try handle.write(contentsOf: padded)
-            try handle.seekToEnd()
-        } else {
-            // Long-grow — tombstone the old cue with a placeholder
-            // body of matching length, append the new cue at EOF, and
-            // update the byte-range index.
-            let tombHead = "\(seq)\n\(Self.srtTime(0)) --> \(Self.srtTime(0))\n[updated]"
-            var tomb = Data(tombHead.utf8)
-            if tomb.count + 2 < oldLen {
-                tomb.append(Data(repeating: 0x20, count: oldLen - tomb.count - 2))
-            }
-            tomb.append(contentsOf: [0x0A, 0x0A])
-            try handle.seek(toOffset: range.lowerBound)
-            try handle.write(contentsOf: tomb)
-            try handle.seekToEnd()
-            let start = try handle.offset()
-            try handle.write(contentsOf: newBytes)
-            let end = try handle.offset()
-            index[segment.id] = start..<end
+        // Padding goes inside the cue body, before the "\n\n"
+        // terminator, so cue boundaries stay intact. Long-grow
+        // tombstone: the same cue number with a 0 → 0 timing and an
+        // `[updated]` body, padded to the old cue's length.
+        let terminator = Data([0x0A, 0x0A])
+        let rewritten = try file.rewrite(Data(render(seq: seq, segment).utf8), for: segment.id, terminator: terminator) { length in
+            RewritableSegmentFile.pad(
+                Data("\(seq)\n\(Self.srtTime(0)) --> \(Self.srtTime(0))\n[updated]".utf8),
+                to: length, terminator: terminator)
         }
+        if !rewritten { try appendSegment(segment) }
     }
 
     public func close() throws {
-        try handle.close()
+        try file.close()
     }
 
     // MARK: - Rendering

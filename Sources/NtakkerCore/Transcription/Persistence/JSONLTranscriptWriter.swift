@@ -27,18 +27,19 @@
 //     byte index is updated so subsequent updates target the new
 //     location.
 //
+// The byte index and both grow paths live in `RewritableSegmentFile`
+// (F33), shared with the TXT / SRT / VTT writers.
+//
 // Concurrency: `TranscriptSidecarWriter` (the owning actor) is the
-// only caller, so no internal locking is required. The writer is a
-// `final class` because it carries the mutable byte-index map.
+// only caller, so no internal locking is required.
 
 import Foundation
 
 /// JSONL (newline-delimited JSON) sidecar writer.
 public final class JSONLTranscriptWriter: TranscriptFormatWriter {
 
-    public let url: URL
-    private let handle: FileHandle
-    private var index: [UUID: Range<UInt64>] = [:]
+    public var url: URL { file.url }
+    private let file: RewritableSegmentFile
 
     private static let isoFormatter: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
@@ -47,64 +48,27 @@ public final class JSONLTranscriptWriter: TranscriptFormatWriter {
     }()
 
     public init(url: URL) throws {
-        self.url = url
-        FileManager.default.createFile(atPath: url.path, contents: nil)
-        self.handle = try FileHandle(forUpdating: url)
-        try handle.seekToEnd()
+        self.file = try RewritableSegmentFile(url: url)
     }
 
     public func appendSegment(_ segment: TranscriptSegment) throws {
-        let line = try encode(segment) + "\n"
-        let bytes = Data(line.utf8)
-        let start = try handle.offset()
-        try handle.write(contentsOf: bytes)
-        let end = try handle.offset()
-        index[segment.id] = start..<end
+        try file.append(Data((try encode(segment) + "\n").utf8), for: segment.id)
     }
 
     public func updateSegment(_ segment: TranscriptSegment) throws {
-        guard let range = index[segment.id] else {
-            try appendSegment(segment)
-            return
+        let bytes = Data((try encode(segment) + "\n").utf8)
+        // Long-grow tombstone: a `_tombstone` object padded with spaces
+        // (JSON whitespace) to the old line's length.
+        let rewritten = try file.rewrite(bytes, for: segment.id, terminator: Data([0x0A])) { length in
+            RewritableSegmentFile.pad(
+                Data(#"{"_tombstone":true,"id":"\#(segment.id.uuidString)"}"#.utf8),
+                to: length, terminator: Data([0x0A]))
         }
-        let oldByteLen = Int(range.upperBound - range.lowerBound)
-        let newLine = try encode(segment) + "\n"
-        let newBytes = Data(newLine.utf8)
-
-        if newBytes.count <= oldByteLen {
-            // Short-grow — pad with spaces (JSON ignores trailing
-            // whitespace before the newline, so the line stays valid).
-            var padded = Data(newLine.dropLast().utf8) // strip trailing "\n"
-            padded.append(Data(repeating: 0x20, count: oldByteLen - newBytes.count))
-            padded.append(0x0A) // "\n"
-            try handle.seek(toOffset: range.lowerBound)
-            try handle.write(contentsOf: padded)
-            try handle.seekToEnd()
-        } else {
-            // Long-grow — tombstone the old slot, append the new line
-            // at EOF, update the byte-range index so future updates
-            // target the new location.
-            let tombstoneObj = #"{"_tombstone":true,"id":"\#(segment.id.uuidString)"}"#
-            var tomb = Data(tombstoneObj.utf8)
-            // The tombstone line itself MUST be `oldByteLen` bytes
-            // long (object + trailing newline). Pad with spaces inside
-            // the JSON object's whitespace allowance.
-            if tomb.count + 1 < oldByteLen {
-                tomb.append(Data(repeating: 0x20, count: oldByteLen - tomb.count - 1))
-            }
-            tomb.append(0x0A) // "\n"
-            try handle.seek(toOffset: range.lowerBound)
-            try handle.write(contentsOf: tomb)
-            try handle.seekToEnd()
-            let start = try handle.offset()
-            try handle.write(contentsOf: newBytes)
-            let end = try handle.offset()
-            index[segment.id] = start..<end
-        }
+        if !rewritten { try appendSegment(segment) }
     }
 
     public func close() throws {
-        try handle.close()
+        try file.close()
     }
 
     // MARK: - Encoding

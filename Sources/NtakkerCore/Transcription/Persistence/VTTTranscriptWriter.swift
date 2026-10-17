@@ -22,65 +22,32 @@ import Foundation
 /// WebVTT-format sidecar writer.
 public final class VTTTranscriptWriter: TranscriptFormatWriter {
 
-    public let url: URL
-    private let handle: FileHandle
-    private var index: [UUID: Range<UInt64>] = [:]
+    public var url: URL { file.url }
+    private let file: RewritableSegmentFile
     private let sessionStart: Date
     private var headerWritten = false
 
     public init(url: URL,
                 sessionStart: Date = Date()) throws {
-        self.url = url
         self.sessionStart = sessionStart
-        FileManager.default.createFile(atPath: url.path, contents: nil)
-        self.handle = try FileHandle(forUpdating: url)
-        try handle.seekToEnd()
+        self.file = try RewritableSegmentFile(url: url)
     }
 
     public func appendSegment(_ segment: TranscriptSegment) throws {
         try ensureHeader()
-        let bytes = Data(render(segment).utf8)
-        let start = try handle.offset()
-        try handle.write(contentsOf: bytes)
-        let end = try handle.offset()
-        index[segment.id] = start..<end
+        try file.append(Data(render(segment).utf8), for: segment.id)
     }
 
     public func updateSegment(_ segment: TranscriptSegment) throws {
-        guard let range = index[segment.id] else {
-            try appendSegment(segment)
-            return
+        // Same padding and tombstone model as the SRT writer, without
+        // the cue number.
+        let terminator = Data([0x0A, 0x0A])
+        let rewritten = try file.rewrite(Data(render(segment).utf8), for: segment.id, terminator: terminator) { length in
+            RewritableSegmentFile.pad(
+                Data("\(Self.vttTime(0)) --> \(Self.vttTime(0))\n[updated]".utf8),
+                to: length, terminator: terminator)
         }
-        let oldLen = Int(range.upperBound - range.lowerBound)
-        let newRendering = render(segment)
-        let newBytes = Data(newRendering.utf8)
-
-        if newBytes.count <= oldLen {
-            // Short-grow — pad inside the cue body before the trailing
-            // "\n\n" so the cue boundaries stay intact.
-            var padded = Data(newRendering.dropLast(2).utf8)
-            padded.append(Data(repeating: 0x20, count: oldLen - newBytes.count))
-            padded.append(contentsOf: [0x0A, 0x0A])
-            try handle.seek(toOffset: range.lowerBound)
-            try handle.write(contentsOf: padded)
-            try handle.seekToEnd()
-        } else {
-            // Long-grow — tombstone old cue with a placeholder body of
-            // matching length, append the new cue at EOF.
-            let tombHead = "\(Self.vttTime(0)) --> \(Self.vttTime(0))\n[updated]"
-            var tomb = Data(tombHead.utf8)
-            if tomb.count + 2 < oldLen {
-                tomb.append(Data(repeating: 0x20, count: oldLen - tomb.count - 2))
-            }
-            tomb.append(contentsOf: [0x0A, 0x0A])
-            try handle.seek(toOffset: range.lowerBound)
-            try handle.write(contentsOf: tomb)
-            try handle.seekToEnd()
-            let start = try handle.offset()
-            try handle.write(contentsOf: newBytes)
-            let end = try handle.offset()
-            index[segment.id] = start..<end
-        }
+        if !rewritten { try appendSegment(segment) }
     }
 
     public func close() throws {
@@ -88,14 +55,14 @@ public final class VTTTranscriptWriter: TranscriptFormatWriter {
         // otherwise leave a zero-byte sidecar. Write the header anyway
         // so the file is a valid (empty-cue-list) WebVTT document.
         try ensureHeader()
-        try handle.close()
+        try file.close()
     }
 
     // MARK: - Helpers
 
     private func ensureHeader() throws {
         if !headerWritten {
-            try handle.write(contentsOf: Data("WEBVTT\n\n".utf8))
+            try file.writeUnindexed(Data("WEBVTT\n\n".utf8))
             headerWritten = true
         }
     }

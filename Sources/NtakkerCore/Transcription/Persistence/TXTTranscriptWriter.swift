@@ -17,9 +17,8 @@ import Foundation
 /// Plain-text sidecar writer.
 public final class TXTTranscriptWriter: TranscriptFormatWriter {
 
-    public let url: URL
-    private let handle: FileHandle
-    private var index: [UUID: Range<UInt64>] = [:]
+    public var url: URL { file.url }
+    private let file: RewritableSegmentFile
 
     private static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -28,54 +27,23 @@ public final class TXTTranscriptWriter: TranscriptFormatWriter {
     }()
 
     public init(url: URL) throws {
-        self.url = url
-        FileManager.default.createFile(atPath: url.path, contents: nil)
-        self.handle = try FileHandle(forUpdating: url)
-        try handle.seekToEnd()
+        self.file = try RewritableSegmentFile(url: url)
     }
 
     public func appendSegment(_ segment: TranscriptSegment) throws {
-        let bytes = Data(render(segment).utf8)
-        let start = try handle.offset()
-        try handle.write(contentsOf: bytes)
-        let end = try handle.offset()
-        index[segment.id] = start..<end
+        try file.append(Data(render(segment).utf8), for: segment.id)
     }
 
     public func updateSegment(_ segment: TranscriptSegment) throws {
-        guard let range = index[segment.id] else {
-            try appendSegment(segment)
-            return
+        // Long-grow tombstone: a blank line of matching length.
+        let rewritten = try file.rewrite(Data(render(segment).utf8), for: segment.id, terminator: Data([0x0A])) { length in
+            RewritableSegmentFile.pad(Data(), to: length, terminator: Data([0x0A]))
         }
-        let oldLen = Int(range.upperBound - range.lowerBound)
-        let newRendering = render(segment)
-        let newBytes = Data(newRendering.utf8)
-
-        if newBytes.count <= oldLen {
-            // Short-grow — pad with spaces between content and newline.
-            var padded = Data(newRendering.dropLast().utf8) // strip trailing "\n"
-            padded.append(Data(repeating: 0x20, count: oldLen - newBytes.count))
-            padded.append(0x0A)
-            try handle.seek(toOffset: range.lowerBound)
-            try handle.write(contentsOf: padded)
-            try handle.seekToEnd()
-        } else {
-            // Long-grow — tombstone is a blank line of matching length,
-            // then append the new rendering at EOF.
-            var tomb = Data(repeating: 0x20, count: oldLen - 1)
-            tomb.append(0x0A)
-            try handle.seek(toOffset: range.lowerBound)
-            try handle.write(contentsOf: tomb)
-            try handle.seekToEnd()
-            let start = try handle.offset()
-            try handle.write(contentsOf: newBytes)
-            let end = try handle.offset()
-            index[segment.id] = start..<end
-        }
+        if !rewritten { try appendSegment(segment) }
     }
 
     public func close() throws {
-        try handle.close()
+        try file.close()
     }
 
     // MARK: - Rendering
