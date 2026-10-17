@@ -123,6 +123,12 @@ cask "ntakker" do
   desc "Menu-bar recorder for system audio and microphone, with live transcription"
   homepage "https://github.com/$REPO"
 
+  livecheck do
+    url :url
+    regex(/^$PRODUCT-v?(\d+(?:\.\d+)+)\$/i)
+    strategy :github_releases
+  end
+
   depends_on macos: :tahoe
 
   app "ntakker.app"
@@ -153,6 +159,12 @@ cask "ntakker-studio" do
   desc "Explore ntakker recordings: transcripts, playback, cuts, Q&A and minutes"
   homepage "https://github.com/$REPO"
 
+  livecheck do
+    url :url
+    regex(/^$PRODUCT-v?(\d+(?:\.\d+)+)\$/i)
+    strategy :github_releases
+  end
+
   depends_on macos: :tahoe
 
   app "ntakker-studio.app"
@@ -182,6 +194,12 @@ cask "ntakker-cli" do
   name "ntakker-cli"
   desc "Command-line recorder for system audio and microphone, with live transcription"
   homepage "https://github.com/$REPO"
+
+  livecheck do
+    url :url
+    regex(/^$PRODUCT-v?(\d+(?:\.\d+)+)\$/i)
+    strategy :github_releases
+  end
 
   depends_on macos: :tahoe
 

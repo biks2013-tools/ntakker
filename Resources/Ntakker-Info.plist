@@ -2,35 +2,35 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleIdentifier</key>
-    <string>com.giorgosmarinos.ntakker</string>
-    <key>CFBundleName</key>
-    <string>ntakker</string>
-    <key>CFBundleDisplayName</key>
-    <string>ntakker</string>
-    <key>CFBundleShortVersionString</key>
-    <string>0.2.0</string>
-    <key>CFBundleVersion</key>
-    <string>0.2.0</string>
-    <key>CFBundleExecutable</key>
-    <string>ntakker</string>
-    <key>CFBundleIconFile</key>
-    <string>AppIcon</string>
-    <key>CFBundleIconName</key>
-    <string>AppIcon</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
-    <key>LSUIElement</key>
-    <true/>
-    <key>NSMicrophoneUsageDescription</key>
-    <string>ntakker records the microphone alongside system audio. Audio is written only to the file path you choose. Nothing is sent over the network.</string>
-    <key>NSSpeechRecognitionUsageDescription</key>
-    <string>ntakker uses Apple Speech Recognition to transcribe captured audio. When the on-device speech model for your chosen locale is unavailable, audio is sent to Apple's servers for processing (per Apple's Speech Recognition privacy policy).</string>
-    <key>NSScreenCaptureUsageDescription</key>
-    <string>ntakker uses the Screen Recording permission to capture system audio (the audio output of all running applications) via ScreenCaptureKit. No video frames are saved; only audio is recorded.</string>
-    <key>NSScreenCaptureDescription</key>
-    <string>ntakker uses the Screen Recording permission to capture system audio (the audio output of all running applications) via ScreenCaptureKit. No video frames are saved; only audio is recorded.</string>
+	<key>CFBundleDisplayName</key>
+	<string>ntakker</string>
+	<key>CFBundleExecutable</key>
+	<string>ntakker</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.giorgosmarinos.ntakker</string>
+	<key>CFBundleName</key>
+	<string>ntakker</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.2.0</string>
+	<key>CFBundleVersion</key>
+	<string>0.2.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>ntakker records the microphone alongside system audio. Audio is written only to the file path you choose. Nothing is sent over the network.</string>
+	<key>NSScreenCaptureDescription</key>
+	<string>ntakker uses the Screen Recording permission to capture system audio (the audio output of all running applications) via ScreenCaptureKit. No video frames are saved; only audio is recorded.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>ntakker uses the Screen Recording permission to capture system audio (the audio output of all running applications) via ScreenCaptureKit. No video frames are saved; only audio is recorded.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>ntakker uses Apple Speech Recognition to transcribe captured audio. When the on-device speech model for your chosen locale is unavailable, audio is sent to Apple's servers for processing (per Apple's Speech Recognition privacy policy).</string>
 </dict>
 </plist>

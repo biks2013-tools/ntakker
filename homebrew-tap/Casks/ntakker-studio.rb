@@ -7,6 +7,12 @@ cask "ntakker-studio" do
   desc "Explore ntakker recordings: transcripts, playback, cuts, Q&A and minutes"
   homepage "https://github.com/biks2013-tools/ntakker"
 
+  livecheck do
+    url :url
+    regex(/^ntakker-studio-v?(\d+(?:\.\d+)+)$/i)
+    strategy :github_releases
+  end
+
   depends_on macos: :tahoe
 
   app "ntakker-studio.app"

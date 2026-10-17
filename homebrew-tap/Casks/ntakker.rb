@@ -7,6 +7,12 @@ cask "ntakker" do
   desc "Menu-bar recorder for system audio and microphone, with live transcription"
   homepage "https://github.com/biks2013-tools/ntakker"
 
+  livecheck do
+    url :url
+    regex(/^ntakker-v?(\d+(?:\.\d+)+)$/i)
+    strategy :github_releases
+  end
+
   depends_on macos: :tahoe
 
   app "ntakker.app"

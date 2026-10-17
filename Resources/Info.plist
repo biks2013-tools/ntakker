@@ -2,29 +2,29 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleIdentifier</key>
-    <string>com.giorgosmarinos.ntakker-cli</string>
-    <key>CFBundleName</key>
-    <string>ntakker-cli</string>
-    <key>CFBundleDisplayName</key>
-    <string>ntakker-cli</string>
-    <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
-    <key>CFBundleVersion</key>
-    <string>0.1.0</string>
-    <key>CFBundleExecutable</key>
-    <string>ntakker-cli</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
-    <key>NSMicrophoneUsageDescription</key>
-    <string>ntakker-cli records the microphone alongside system audio. Audio is written only to the file path you pass via --output. Nothing is sent over the network.</string>
-    <key>NSSpeechRecognitionUsageDescription</key>
-    <string>ntakker-cli uses on-device speech recognition to transcribe captured audio into a transcript sidecar. Audio never leaves your Mac.</string>
-    <key>NSScreenCaptureUsageDescription</key>
-    <string>ntakker-cli uses the Screen Recording permission to capture system audio (the audio output of all running applications) via ScreenCaptureKit. No video frames are saved; only audio is recorded.</string>
-    <key>NSScreenCaptureDescription</key>
-    <string>ntakker-cli uses the Screen Recording permission to capture system audio (the audio output of all running applications) via ScreenCaptureKit. No video frames are saved; only audio is recorded.</string>
+	<key>CFBundleDisplayName</key>
+	<string>ntakker-cli</string>
+	<key>CFBundleExecutable</key>
+	<string>ntakker-cli</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.giorgosmarinos.ntakker-cli</string>
+	<key>CFBundleName</key>
+	<string>ntakker-cli</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>0.1.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>ntakker-cli records the microphone alongside system audio. Audio is written only to the file path you pass via --output. Nothing is sent over the network.</string>
+	<key>NSScreenCaptureDescription</key>
+	<string>ntakker-cli uses the Screen Recording permission to capture system audio (the audio output of all running applications) via ScreenCaptureKit. No video frames are saved; only audio is recorded.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>ntakker-cli uses the Screen Recording permission to capture system audio (the audio output of all running applications) via ScreenCaptureKit. No video frames are saved; only audio is recorded.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>ntakker-cli uses on-device speech recognition to transcribe captured audio into a transcript sidecar. Audio never leaves your Mac.</string>
 </dict>
 </plist>

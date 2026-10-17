@@ -7,6 +7,12 @@ cask "ntakker-cli" do
   desc "Command-line recorder for system audio and microphone, with live transcription"
   homepage "https://github.com/biks2013-tools/ntakker"
 
+  livecheck do
+    url :url
+    regex(/^ntakker-cli-v?(\d+(?:\.\d+)+)$/i)
+    strategy :github_releases
+  end
+
   depends_on macos: :tahoe
 
   binary "ntakker-cli"
