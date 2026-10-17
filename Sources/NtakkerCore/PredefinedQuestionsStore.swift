@@ -21,7 +21,7 @@ public final class PredefinedQuestionsStore: ObservableObject {
     private static let storageKey = "ntakker-cli.predefinedQuestions.v1"
 
     private static let log = Logger(
-        subsystem: "com.local.ntakker",
+        subsystem: "com.giorgosmarinos.ntakker",
         category: "PredefinedQuestionsStore"
     )
 

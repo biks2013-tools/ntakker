@@ -5,7 +5,7 @@
 - Swift Package Manager layout: `Sources/<Target>/…`, `Tests/<Target>Tests/…` — sibling, not nested.
 - Swift language mode pinned to **5** in `Package.swift` (`swiftLanguageModes: [.v5]`); tools-version is 6.2 only because `.macOS(.v26)` requires it. Any per-target migration to Swift 6 strict concurrency must be deliberate.
 - Deployment target: `macOS 26` (Tahoe) — required for `SpeechAnalyzer`. Code that requires earlier macOS must use `#available(macOS 26, *)` gating.
-- TCC plists are embedded at link time via `-Xlinker -sectcreate __TEXT __info_plist Resources/<plist>`. CLI uses `Resources/Info.plist`, UI uses `Resources/NtakkerUI-Info.plist`. Bundle IDs MUST stay distinct: `com.local.ntakker-cli` vs `com.local.ntakker`.
+- TCC plists are embedded at link time via `-Xlinker -sectcreate __TEXT __info_plist Resources/<plist>`. CLI uses `Resources/Info.plist`, UI uses `Resources/NtakkerUI-Info.plist`. Bundle IDs MUST stay distinct: `com.giorgosmarinos.ntakker-cli` vs `com.giorgosmarinos.ntakker`.
 - Tests use Swift Testing (not XCTest) with the `-F /Library/Developer/CommandLineTools/Library/Developer/Frameworks` workaround so they run without full Xcode.
 - Capture / Encoding / Mixing / Transcription are sub-namespaces inside `NtakkerCore` — keep new code in the matching folder. UI domain logic (controllers, coordinators, generators) lives in `NtakkerUIKit`; AppKit/SwiftUI shell code lives in `Sources/ntakker/`.
 

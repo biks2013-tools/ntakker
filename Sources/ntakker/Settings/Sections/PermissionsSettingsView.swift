@@ -39,7 +39,7 @@ struct PermissionsSettingsView: View {
                 Text("To force the system prompts to re-appear from scratch, run in Terminal:")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("tccutil reset ScreenCapture com.local.ntakker\ntccutil reset Microphone com.local.ntakker")
+                Text("tccutil reset ScreenCapture com.giorgosmarinos.ntakker\ntccutil reset Microphone com.giorgosmarinos.ntakker")
                     .font(.system(.caption, design: .monospaced))
                     .padding(8)
                     .background(Color.secondary.opacity(0.08))

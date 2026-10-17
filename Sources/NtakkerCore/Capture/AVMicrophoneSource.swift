@@ -653,7 +653,7 @@ public final class AVMicrophoneSource: NSObject,
     ///   * `buffers=0` for several seconds AFTER `start: live TCC mic
     ///     authorization = authorized` ⇒ TCC silent-deny / HAL did not
     ///     route the device. Re-grant ntakker in System Settings →
-    ///     Microphone (or `tccutil reset Microphone com.local.ntakker`
+    ///     Microphone (or `tccutil reset Microphone com.giorgosmarinos.ntakker`
     ///     and re-run).
     ///   * `buffers>0` but `recentPeakAmp` stays at `0.0000` ⇒ the OS is
     ///     handing us zero-filled frames (device muted, wrong device

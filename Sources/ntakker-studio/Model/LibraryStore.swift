@@ -6,7 +6,7 @@
 // Library folder. The studio keeps its own setting
 // (`studio.libraryFolder`). On first launch it adopts ntakker's
 // recording folder (`com.ntakker-cli.ui.outputFolder` in the
-// `com.local.ntakker` defaults); when that is not set either, the app
+// `com.giorgosmarinos.ntakker` defaults); when that is not set either, the app
 // asks the user to choose a folder — there is no silent default.
 
 import AppKit
@@ -17,7 +17,10 @@ import Observation
 @MainActor @Observable
 final class LibraryStore {
     static let folderKey = "studio.libraryFolder"
-    static let ntakkerDefaultsSuite = "com.local.ntakker"
+    static let ntakkerDefaultsSuite = "com.giorgosmarinos.ntakker"
+    /// ntakker's bundle id before the public release; its preferences
+    /// still hold the folder until ntakker has run once under the new id.
+    static let legacyNtakkerDefaultsSuite = "com.local.ntakker"
     static let ntakkerFolderKey = "com.ntakker-cli.ui.outputFolder"
 
     private(set) var root: URL?
@@ -40,8 +43,9 @@ final class LibraryStore {
         let d = UserDefaults.standard
         if let stored = d.string(forKey: Self.folderKey), !stored.isEmpty {
             root = URL(fileURLWithPath: stored, isDirectory: true)
-        } else if let ntakker = UserDefaults(suiteName: Self.ntakkerDefaultsSuite)?.string(forKey: Self.ntakkerFolderKey),
-                  !ntakker.isEmpty {
+        } else if let ntakker = [Self.ntakkerDefaultsSuite, Self.legacyNtakkerDefaultsSuite].lazy
+                    .compactMap({ UserDefaults(suiteName: $0)?.string(forKey: Self.ntakkerFolderKey) })
+                    .first(where: { !$0.isEmpty }) {
             root = URL(fileURLWithPath: ntakker, isDirectory: true)
             d.set(ntakker, forKey: Self.folderKey)
         }

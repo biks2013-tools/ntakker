@@ -15,7 +15,7 @@
 //    plan-002 §3 / project-design §15.13). Installs a multiplexed
 //    handler that simultaneously routes every log line to:
 //      - macOS unified logging (`os_log`/`OSLog`) under the supplied
-//        subsystem (e.g. `com.local.ntakker`), so logs appear in
+//        subsystem (e.g. `com.giorgosmarinos.ntakker`), so logs appear in
 //        Console.app and via `log stream --subsystem …`.
 //      - A plain-text append-only file at `fileURL` (mode `0600`),
 //        formatted as
@@ -117,7 +117,7 @@ public enum LoggerFactory {
     ///
     /// - Parameters:
     ///   - subsystem: macOS unified-logging subsystem string. For the
-    ///     menu-bar app this is `"com.local.ntakker"` (the UI's
+    ///     menu-bar app this is `"com.giorgosmarinos.ntakker"` (the UI's
     ///     CFBundleIdentifier; mirrors the convention in §15.13).
     ///   - fileURL: Optional path to a plain-text log file. When
     ///     non-nil, the file is opened in append mode and `chmod`ed

@@ -140,7 +140,7 @@ let package = Package(
         // domain layer (RecordingController, SessionCoordinator,
         // FilenameGenerator, …) and embeds Resources/Ntakker-Info.plist
         // — a SEPARATE plist from the CLI so TCC bundle ids do not
-        // collide (R-23 — com.local.ntakker ≠ com.local.ntakker-cli).
+        // collide (R-23 — com.giorgosmarinos.ntakker ≠ com.giorgosmarinos.ntakker-cli).
         .executableTarget(
             name: "ntakker",
             dependencies: [
@@ -153,7 +153,7 @@ let package = Package(
                 // Embed Resources/Ntakker-Info.plist into the binary's
                 // __TEXT,__info_plist section. Same mechanism as the
                 // CLI target, just pointing at the UI's own plist
-                // (LSUIElement=true, com.local.ntakker).
+                // (LSUIElement=true, com.giorgosmarinos.ntakker).
                 .unsafeFlags([
                     "-Xlinker", "-sectcreate",
                     "-Xlinker", "__TEXT",

@@ -14,7 +14,7 @@ macOS-only audio recording + live/batch transcription suite:
 
 ## Products
 - `ntakker-cli` — Swift CLI (executable target, embeds Resources/Info.plist).
-- `ntakker` — Swift menu-bar app (executable target, embeds Resources/NtakkerUI-Info.plist; bundle id `com.local.ntakker`, distinct from CLI).
+- `ntakker` — Swift menu-bar app (executable target, embeds Resources/NtakkerUI-Info.plist; bundle id `com.giorgosmarinos.ntakker`, distinct from CLI).
 - `NtakkerCore` — Swift library (capture, encoding, mixing, transcription providers, config).
 - `NtakkerUIKit` — Swift library (UI domain layer: RecordingController, SessionCoordinator, …).
 - `tools/dual-transcript-merger` — TypeScript CLI (npm-linkable) merging dual-channel JSONL sidecars.

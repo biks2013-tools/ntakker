@@ -24,7 +24,7 @@
 // Phase H additions (this file):
 //   - Bootstrap calls `LoggerFactory.bootstrap(subsystem:fileURL:levelString:)`
 //     so logs route to BOTH macOS unified logging (Console.app under
-//     subsystem `com.local.ntakker`) AND the per-UI log file at
+//     subsystem `com.giorgosmarinos.ntakker`) AND the per-UI log file at
 //     `~/.tool-agents/ntakker/ntakker.log` (mode 0600, append).
 //   - The hidden `UILoggingMenu` is constructed and held as a stored
 //     property so option-click on the status item bar can swap to a
@@ -159,8 +159,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// macOS unified-logging subsystem string for this app.
     /// Mirrors `CFBundleIdentifier` from `Resources/NtakkerUI-Info.plist`
-    /// (R-23 — must NOT collide with the CLI's `com.local.ntakker-cli`).
-    private static let osLogSubsystem = "com.local.ntakker"
+    /// (R-23 — must NOT collide with the CLI's `com.giorgosmarinos.ntakker-cli`).
+    private static let osLogSubsystem = "com.giorgosmarinos.ntakker"
 
     /// Tool name for `~/.tool-agents/<toolName>/`. Used to derive both
     /// the `.env` location and the per-UI log file path.
@@ -187,11 +187,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - NSApplicationDelegate
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // Before any view reads @AppStorage: carry the settings over from
+        // the pre-release bundle id (com.local.ntakker), once.
+        LegacyDefaultsMigration.run()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 1. Bootstrap swift-log first so every subsequent log line
         //    routes through the same handler. Per project-design §15.13
         //    the UI uses a DUAL backend (macOS unified logging via
-        //    OSLog under subsystem `com.local.ntakker`, AND a plain-
+        //    OSLog under subsystem `com.giorgosmarinos.ntakker`, AND a plain-
         //    text file at `~/.tool-agents/ntakker/ntakker.log`
         //    mode 0600). Idempotent — safe even if a future call site
         //    bootstraps again.
@@ -346,8 +352,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Bootstraps swift-log for the UI app. Per project-design §15.13
     /// the UI installs a DUAL backend:
     ///   1. macOS unified logging (`OSLog`) under subsystem
-    ///      `com.local.ntakker`, category = logger label. Visible
-    ///      via Console.app and `log stream --subsystem com.local.ntakker`.
+    ///      `com.giorgosmarinos.ntakker`, category = logger label. Visible
+    ///      via Console.app and `log stream --subsystem com.giorgosmarinos.ntakker`.
     ///   2. Plain-text append-only file at
     ///      `~/.tool-agents/ntakker/ntakker.log` (mode 0600). The
     ///      enclosing directory is materialized at mode 0700 by

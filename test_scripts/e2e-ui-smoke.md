@@ -22,7 +22,7 @@
 - [ ] `otool -s __TEXT __info_plist .build/release/ntakker` prints a
       non-empty `__info_plist` section (TCC binding pre-requisite).
 - [ ] Confirm bundle id in the embedded plist:
-      `otool -s __TEXT __info_plist .build/release/ntakker | xxd -r -p | grep -a com.local.ntakker`.
+      `otool -s __TEXT __info_plist .build/release/ntakker | xxd -r -p | grep -a com.giorgosmarinos.ntakker`.
 - [ ] No stale UI is running:
       `pgrep -lf ntakker` returns empty before each scenario.
 
@@ -38,8 +38,8 @@
 ## AC-UI-2 — First-launch permission state + Start gating
 
 - [ ] Reset both grants:
-      `tccutil reset ScreenCapture com.local.ntakker`
-      `tccutil reset Microphone com.local.ntakker`.
+      `tccutil reset ScreenCapture com.giorgosmarinos.ntakker`
+      `tccutil reset Microphone com.giorgosmarinos.ntakker`.
 - [ ] Launch `.build/release/ntakker`. The status item appears in the
       menu bar; click it.
 - [ ] Popover opens. The two `PermissionStatusView` rows show

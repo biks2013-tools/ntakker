@@ -18,7 +18,7 @@ import UniformTypeIdentifiers
 enum MarkdownPaneExporter {
 
     private static let log = Logger(
-        subsystem: "com.local.ntakker",
+        subsystem: "com.giorgosmarinos.ntakker",
         category: "MarkdownPaneExporter"
     )
 

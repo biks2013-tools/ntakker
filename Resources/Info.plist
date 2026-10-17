@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>com.local.ntakker-cli</string>
+    <string>com.giorgosmarinos.ntakker-cli</string>
     <key>CFBundleName</key>
     <string>ntakker-cli</string>
     <key>CFBundleDisplayName</key>

@@ -37,11 +37,11 @@ import os
 enum SessionExporter {
 
     /// Subsystem-tagged logger so Console.app can reliably filter on
-    /// `subsystem == com.local.ntakker` AND `category == SessionExporter`.
+    /// `subsystem == com.giorgosmarinos.ntakker` AND `category == SessionExporter`.
     /// NSLog from a `.app` launched via `open` does not always surface
     /// in the unified log; `Logger` always does.
     private static let log = Logger(
-        subsystem: "com.local.ntakker",
+        subsystem: "com.giorgosmarinos.ntakker",
         category: "SessionExporter"
     )
 

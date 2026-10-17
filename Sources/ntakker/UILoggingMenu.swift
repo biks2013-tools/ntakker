@@ -32,7 +32,7 @@ import NtakkerCore
 /// Usage from `AppDelegate`:
 ///
 ///     let menu = UILoggingMenu(
-///         subsystem: "com.local.ntakker",
+///         subsystem: "com.giorgosmarinos.ntakker",
 ///         fileURL: logFileURL,
 ///         currentLevel: "info",
 ///         logger: loggingMenuLogger
@@ -73,7 +73,7 @@ final class UILoggingMenu {
     /// - Parameters:
     ///   - subsystem: macOS unified-logging subsystem string used by
     ///     the original `LoggerFactory.bootstrap` call (typically
-    ///     `"com.local.ntakker"`).
+    ///     `"com.giorgosmarinos.ntakker"`).
     ///   - fileURL: same file URL used by the original bootstrap, or
     ///     `nil` if the app launched without a file backend.
     ///   - currentLevel: the level string applied at launch (so the

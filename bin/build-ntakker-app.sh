@@ -2,9 +2,9 @@
 # bin/build-ntakker-app.sh
 #
 # Wrap the SPM-built `ntakker` executable in a real `.app` bundle so
-# macOS Launch Services can register the bundle id `com.local.ntakker`.
+# macOS Launch Services can register the bundle id `com.giorgosmarinos.ntakker`.
 # Without this, TCC has no record of the bundle id (verifiable with
-# `tccutil reset Microphone com.local.ntakker` reporting "No such
+# `tccutil reset Microphone com.giorgosmarinos.ntakker` reporting "No such
 # bundle identifier"), which causes:
 #
 #   * The macOS microphone prompt to either not appear or be attributed
@@ -123,7 +123,7 @@ fi
 # thinks it has already seen it. Without this, Launch Services may
 # keep a stale record from a previous build (or no record at all if
 # the bundle has never been opened). After this, `tccutil reset
-# Microphone com.local.ntakker` should succeed, and the next
+# Microphone com.giorgosmarinos.ntakker` should succeed, and the next
 # microphone-touching action will produce a real per-app prompt.
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
 if [[ -x "$LSREGISTER" ]]; then
@@ -142,7 +142,7 @@ echo "Bundle ready: $APP_DIR"
 echo
 echo "Next steps:"
 echo "  1. Reset any stale TCC state (now succeeds because LS knows the bundle):"
-echo "       tccutil reset Microphone com.local.ntakker"
+echo "       tccutil reset Microphone com.giorgosmarinos.ntakker"
 echo "  2. Launch the bundle (NOT the bare binary in .build/) and click Start:"
 echo "       open $APP_DIR"
 echo "  3. The macOS microphone prompt should appear, attributed to ntakker."
