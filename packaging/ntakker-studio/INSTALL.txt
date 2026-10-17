@@ -1,0 +1,18 @@
+ntakker studio
+==============
+
+Install: drag "ntakker-studio" onto "Applications", then open it from Applications.
+
+What it is: the companion app to ntakker. It opens the recordings ntakker saved
+(audio + transcripts), plays them with the transcript following along, lets you
+jump to any line, cut parts out into a new copy, rename speakers, fix transcript
+text, re-transcribe, search every transcript, and ask questions or write meeting
+minutes with your AI provider.
+
+First launch: if ntakker is set up on this Mac, the studio uses ntakker's recording
+folder. Otherwise it asks you to choose the folder that holds your recordings.
+
+Ask, minutes and re-transcription use ntakker's settings
+(~/.tool-agents/ntakker/.env): NTAKKER_ASK_PROVIDER and the provider's key.
+
+Requires macOS 26 or later.
