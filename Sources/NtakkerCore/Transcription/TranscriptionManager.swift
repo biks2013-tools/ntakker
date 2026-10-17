@@ -198,6 +198,19 @@ public actor TranscriptionManager: TranscriptionDispatcher {
             cont.yield(.privacyDisclosure(providerDisplayName: provider.displayName))
         }
 
+        // F28 / TR-11: start loading an on-device model now instead of
+        // inside the first chunk's call. A failure here is only logged;
+        // the first `transcribe` retries the load and reports it.
+        let provider = self.provider
+        let logger = self.logger
+        Task {
+            do {
+                try await provider.prepare()
+            } catch {
+                logger.warning("provider warm-up failed (the first chunk will retry): \(error.localizedDescription)")
+            }
+        }
+
         processTask = Task { [weak self] in
             await self?.processLoop()
         }

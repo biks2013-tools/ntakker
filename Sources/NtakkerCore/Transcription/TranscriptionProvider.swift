@@ -41,4 +41,14 @@ public protocol TranscriptionProvider: Sendable {
         source: SourceTag,
         options: TranscriptionOptions
     ) async throws -> any StreamingTranscriptionSession
+
+    /// Load whatever the first `transcribe` would otherwise wait for
+    /// (an on-device model). Called once when the batch pipeline
+    /// starts, so the first chunks are not stuck behind a model load
+    /// (EVAL-2026-06-12 F28). Default: nothing to do.
+    func prepare() async throws
+}
+
+extension TranscriptionProvider {
+    public func prepare() async throws {}
 }

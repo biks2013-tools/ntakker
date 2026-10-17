@@ -5,7 +5,8 @@
 // Greek, Turkish, Polish, …). Plan-012 Phase B.
 //
 // Architectural shape mirrors `WhisperKitTranscriptionProvider`:
-//   * `actor` for naturally-deduplicated lazy load.
+//   * `actor`; the loaded manager lives in the process-wide
+//     `OnDeviceModelCache` (EVAL-2026-10-16 TR-11).
 //   * Batch-only — `openStreamingSession(...)` throws
 //     `transcriptionConfigConflict` (matches WhisperKit posture).
 //   * Lazy ~600 MB model download on first transcribe call
@@ -55,24 +56,28 @@ public actor ParakeetTranscriptionProvider: TranscriptionProvider {
     private nonisolated let configuredLanguage: String?
     private let logger: Logger
 
-    /// The loaded ASR manager. nil until the first transcribe call.
-    private var asrManager: AsrManager?
+    /// The loaded ASR manager and its inference gate, from the
+    /// process-wide `OnDeviceModelCache` (TR-11). `nil` until the
+    /// first `prepare` / `transcribe` call. Shared with every other
+    /// Parakeet provider — `AsrManager` is not re-entrant
+    /// (EVAL-2026-10-16 TR-1; see `InferenceGate`), and it keeps a
+    /// separate decoder state per `source`, so one manager serves both
+    /// sides of `--transcribe-source both` (F29).
+    private var loaded: CachedInferenceEngine<AsrManager>?
 
-    /// In-flight load task. Multiple concurrent first-callers all
-    /// `await` the same task so we never run two model loaders in
-    /// parallel (which would double-download the model on a fresh
-    /// machine).
-    private var loadTask: Task<AsrManager, Error>?
+    private let modelCache: OnDeviceModelCache
 
-    /// Serialises engine calls — `AsrManager` is not re-entrant
-    /// (EVAL-2026-10-16 TR-1; see `InferenceGate`).
-    private let inferenceGate = InferenceGate()
+    /// FluidAudio picks the model from `AsrModelVersion`, not from
+    /// `modelName`, so every Parakeet provider shares the v3 engine.
+    private static let cacheKey = "parakeet:v3"
 
     public init(
         modelName: String = ParakeetTranscriptionProvider.defaultModelName,
         language: String? = nil,
+        modelCache: OnDeviceModelCache = .shared,
         logger: Logger = Logger(label: "ntakker-cli.transcription.parakeet")
     ) {
+        self.modelCache = modelCache
         self.modelName = modelName
         self.configuredLanguage = language
         self.logger = logger
@@ -97,9 +102,9 @@ public actor ParakeetTranscriptionProvider: TranscriptionProvider {
         // FluidAudio does not. Use 16_000 (1 second @ 16 kHz).
         guard samples.count >= 16_000 else { return "" }
 
-        let manager: AsrManager
+        let loaded: CachedInferenceEngine<AsrManager>
         do {
-            manager = try await ensureLoaded()
+            loaded = try await ensureLoaded()
         } catch {
             throw NtakkerError.transcriptionProviderUnavailable(
                 reason: "Parakeet failed to load model '\(modelName)': \(error.localizedDescription)"
@@ -114,6 +119,9 @@ public actor ParakeetTranscriptionProvider: TranscriptionProvider {
         // workable spelling is to let the compiler infer the enum type
         // from `AsrManager.transcribe(_:source:)`'s parameter type at
         // the call site — a tiny if/else avoids the unutterable type.
+        await modelCache.touch(Self.cacheKey)
+        let manager = loaded.engine
+        let inferenceGate = loaded.gate
         await inferenceGate.acquire()
         do {
             let result: ASRResult
@@ -152,43 +160,34 @@ public actor ParakeetTranscriptionProvider: TranscriptionProvider {
 
     // MARK: - Internals
 
-    /// Lazy, deduplicated AsrManager construction. The first caller
-    /// spawns the load task; subsequent concurrent callers await the
-    /// same task. Once the load completes the task slot is cleared
-    /// and the resolved manager is cached.
-    private func ensureLoaded() async throws -> AsrManager {
-        if let asrManager { return asrManager }
-        if let loadTask { return try await loadTask.value }
+    /// Load the model now so the first chunk does not wait for it
+    /// (F28). Called when the transcription pipeline starts.
+    public func prepare() async throws {
+        _ = try await ensureLoaded()
+    }
 
+    /// The shared AsrManager, loaded at most once per process (TR-11).
+    /// Concurrent first callers share one load; a failed load is not
+    /// cached, so the next call retries it (e.g. after a network blip
+    /// during the first download).
+    private func ensureLoaded() async throws -> CachedInferenceEngine<AsrManager> {
+        if let loaded { return loaded }
         let logger = self.logger
         let modelName = self.modelName
-        let configuredLanguage = self.configuredLanguage
         if let lang = configuredLanguage, !lang.isEmpty {
             logger.notice("Parakeet language hint '\(lang)' is informational only — FluidAudio v0.8.x has no per-call language API; the multilingual model auto-detects.")
         }
-        logger.info("Parakeet loading model '\(modelName)' (first launch may download ~600MB; cached after)")
-        let task = Task { () throws -> AsrManager in
+        let resolved = try await modelCache.engine(for: Self.cacheKey) { () async throws -> AsrManager in
+            logger.info("Parakeet loading model '\(modelName)' (first launch may download ~600MB; cached after)")
             let started = Date()
             // Multilingual TDT v3 — 25 European languages incl. Greek.
             let models = try await AsrModels.downloadAndLoad(version: .v3)
             let manager = AsrManager(config: .default)
             try await manager.initialize(models: models)
-            let elapsed = Int(Date().timeIntervalSince(started))
-            logger.info("Parakeet model '\(modelName)' loaded in \(elapsed)s")
+            logger.info("Parakeet model '\(modelName)' loaded in \(Int(Date().timeIntervalSince(started)))s")
             return manager
         }
-        loadTask = task
-        do {
-            let resolved = try await task.value
-            asrManager = resolved
-            loadTask = nil
-            return resolved
-        } catch {
-            // Clear the task slot so a future caller can retry the
-            // load (e.g. after the user fixes a network blip during
-            // the initial download).
-            loadTask = nil
-            throw error
-        }
+        loaded = resolved
+        return resolved
     }
 }

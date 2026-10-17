@@ -302,6 +302,14 @@
           ad-hoc CLI binaries.)
         - **WhisperKit (on-device)** — WhisperKit running on Apple
           silicon CoreML.  No API key, no network.
+
+          On-device models (WhisperKit and Parakeet) start loading
+          when transcription starts, not on the first chunk. Once
+          loaded, a model stays in memory and is shared by later
+          recordings and by both sides of `--transcribe-source both`.
+          It is unloaded after 10 minutes without use, so expect the
+          app to hold about 0.6–1 GB for up to 10 minutes after an
+          on-device recording (EVAL-2026-10-16 TR-11).
         - **Gemini** — Google Gemini REST batch API (plan-004). Requires
           `GOOGLE_API_KEY` (see "Configuration" below). The picker label
           was `Gemini Live` in plan-003; it was renamed to **Gemini**

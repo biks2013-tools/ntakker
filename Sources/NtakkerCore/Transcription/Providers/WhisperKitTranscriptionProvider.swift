@@ -24,9 +24,11 @@
 // the streaming surface throws `transcriptionConfigConflict` per the
 // same contract `FakeTranscriptionProvider` uses.
 //
-// Threading: `actor`-isolated so the lazy `load` is naturally
-// deduplicated under concurrent first-call contention from
-// `TranscriptionManager` (up to 2 parallel calls per source).
+// Threading: `actor`-isolated. The loaded pipeline lives in the
+// process-wide `OnDeviceModelCache` (EVAL-2026-10-16 TR-11), which
+// deduplicates concurrent loads and shares one engine — and its
+// inference gate — between recordings and between the two managers of
+// `--transcribe-source both`.
 //
 // First-call cost: the default model is ~620 MB and is downloaded by
 // WhisperKit on first use (cached under the user's `Documents/
@@ -74,19 +76,16 @@ public actor WhisperKitTranscriptionProvider: TranscriptionProvider {
     private nonisolated let configuredWordTimestamps: Bool?
     private let logger: Logger
 
-    /// The loaded pipeline. `nil` until the first `transcribe` call
-    /// completes its lazy load.
-    private var pipe: WhisperKit?
+    /// The loaded pipeline and its inference gate, from the
+    /// process-wide `OnDeviceModelCache` (TR-11). `nil` until the
+    /// first `prepare` / `transcribe` call. Every provider for the
+    /// same model shares the engine and the gate — `WhisperKit` is not
+    /// re-entrant (EVAL-2026-10-16 TR-1; see `InferenceGate`).
+    private var loaded: CachedInferenceEngine<WhisperKit>?
 
-    /// In-flight load task. Multiple concurrent first-callers all
-    /// `await` the same task so we never run two `WhisperKit(config)`
-    /// initialisers in parallel (which would double-download the
-    /// model on a fresh machine).
-    private var loadTask: Task<WhisperKit, Error>?
+    private let modelCache: OnDeviceModelCache
 
-    /// Serialises engine calls — `WhisperKit` is not re-entrant
-    /// (EVAL-2026-10-16 TR-1; see `InferenceGate`).
-    private let inferenceGate = InferenceGate()
+    private nonisolated var cacheKey: String { "whisperkit:\(modelName)" }
 
     public init(
         // `actor` types can't reference `Self` in default-argument
@@ -97,8 +96,10 @@ public actor WhisperKitTranscriptionProvider: TranscriptionProvider {
         task: String? = nil,
         temperature: Float? = nil,
         wordTimestamps: Bool? = nil,
+        modelCache: OnDeviceModelCache = .shared,
         logger: Logger = Logger(label: "ntakker-cli.transcription.whisperkit")
     ) {
+        self.modelCache = modelCache
         self.modelName = modelName
         self.configuredLanguage = language
         self.configuredTask = task
@@ -119,19 +120,21 @@ public actor WhisperKitTranscriptionProvider: TranscriptionProvider {
         // ("Returns "" for non-speech input — does NOT throw").
         guard samples.count >= 6_400 else { return "" }
 
-        let pipe: WhisperKit
+        let loaded: CachedInferenceEngine<WhisperKit>
         do {
-            pipe = try await ensureLoaded()
+            loaded = try await ensureLoaded()
         } catch {
             throw NtakkerError.transcriptionProviderUnavailable(
                 reason: "WhisperKit failed to load model '\(modelName)': \(error.localizedDescription)"
             )
         }
+        await modelCache.touch(cacheKey)
 
         let decode = decodingOptions(from: options)
+        let inferenceGate = loaded.gate
         await inferenceGate.acquire()
         do {
-            let results = try await pipe.transcribe(
+            let results = try await loaded.engine.transcribe(
                 audioArray: samples,
                 decodeOptions: decode
             )
@@ -170,38 +173,30 @@ public actor WhisperKitTranscriptionProvider: TranscriptionProvider {
 
     // MARK: - Internals
 
-    /// Lazy, deduplicated WhisperKit pipeline construction. The
-    /// first caller spawns the load task; subsequent concurrent
-    /// callers `await` the same task. Once the load completes the
-    /// task slot is cleared and the resolved pipeline is cached.
-    private func ensureLoaded() async throws -> WhisperKit {
-        if let pipe { return pipe }
-        if let loadTask { return try await loadTask.value }
+    /// Load the model now so the first chunk does not wait for it
+    /// (F28). Called when the transcription pipeline starts.
+    public func prepare() async throws {
+        _ = try await ensureLoaded()
+    }
 
+    /// The shared WhisperKit pipeline for `modelName`, loaded at most
+    /// once per process (TR-11). Concurrent first callers — two
+    /// in-flight chunks, or both managers in source-split mode — share
+    /// one load, so the model is never downloaded or compiled twice.
+    /// A failed load is not cached; the next call retries it.
+    private func ensureLoaded() async throws -> CachedInferenceEngine<WhisperKit> {
+        if let loaded { return loaded }
         let logger = self.logger
         let modelName = self.modelName
-        logger.info("WhisperKit loading model '\(modelName)' (first launch may download ~620MB; cached after)")
-        let task = Task { () throws -> WhisperKit in
+        let resolved = try await modelCache.engine(for: cacheKey) { () async throws -> WhisperKit in
+            logger.info("WhisperKit loading model '\(modelName)' (first launch may download ~620MB; cached after)")
             let started = Date()
-            let config = WhisperKitConfig(model: modelName)
-            let pipe = try await WhisperKit(config)
-            let elapsed = Int(Date().timeIntervalSince(started))
-            logger.info("WhisperKit model '\(modelName)' loaded in \(elapsed)s")
+            let pipe = try await WhisperKit(WhisperKitConfig(model: modelName))
+            logger.info("WhisperKit model '\(modelName)' loaded in \(Int(Date().timeIntervalSince(started)))s")
             return pipe
         }
-        loadTask = task
-        do {
-            let resolved = try await task.value
-            pipe = resolved
-            loadTask = nil
-            return resolved
-        } catch {
-            // Clear the task slot so a future caller can retry the
-            // load (e.g. after the user fixes a network blip during
-            // the initial download).
-            loadTask = nil
-            throw error
-        }
+        loaded = resolved
+        return resolved
     }
 
     /// Map the project's `TranscriptionOptions` onto WhisperKit's
