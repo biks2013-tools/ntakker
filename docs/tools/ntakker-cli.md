@@ -733,8 +733,8 @@
         |----------------|---------------------------------------------------------------------------------------------------|--------------------|
         | `none`         | Transcription disabled — true no-op.                                                              | _(none)_           |
         | `apple`        | **Default (v1.5+).** On-device Apple SpeechAnalyzer (macOS 26+). No API key, no network. Supports dual-locale parallel recognition via comma-separated `--transcribe-language` (e.g. `en-US,el-GR`). | _(none)_         |
-        | `whisperkit`   | On-device WhisperKit (Apple silicon CoreML).  No API key, no network.                              | _(none)_           |
-        | `parakeet`     | **On-device Parakeet TDT V3 multilingual** via FluidAudio (CoreML, ANE). ~25 European languages including Greek. ~600MB lazy first-launch download. Batch architecture. No API key. (plan-012) | _(none)_ |
+        | `whisperkit`   | On-device WhisperKit (Apple silicon CoreML).  No API key, no network. Audio is sent in 10–14 s chunks cut at a pause, so text appears about every 10 s. | _(none)_           |
+        | `parakeet`     | **On-device Parakeet TDT V3 multilingual** via FluidAudio (CoreML, ANE). ~25 European languages including Greek. ~600MB lazy first-launch download. Batch architecture: 10–14 s chunks cut at a pause, so text appears about every 10 s. No API key. (plan-012) | _(none)_ |
         | `gemini`       | Google Gemini REST batch API (HTTPS POST; 2.5 s WAV chunks at 16 kHz mono PCM16; plan-004).       | `GOOGLE_API_KEY`   |
         | `gemini-live`  | Deprecated alias for `gemini` (one-release transition; resolver lowers it to `gemini` and warns). | `GOOGLE_API_KEY`   |
         | `apple-cloud`  | Apple Cloud Speech Recognition (`SFSpeechRecognizer` with `requiresOnDeviceRecognition=false`). Requires the bundled `ntakker.app` — the raw CLI cannot present the TCC Speech Recognition prompt. No extra API key beyond the Apple ID on the device. | _(none)_ |

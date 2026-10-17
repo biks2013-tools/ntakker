@@ -28,8 +28,9 @@ Approved: 2026-10-17. The user said "yes proceed with the CPU/energy wave". One 
   - Add a process-wide model cache with idle eviction.
   - Done. `OnDeviceModelCache` holds one engine per key, plus the `InferenceGate` its callers must share. Concurrent first loads are de-duplicated, failed loads are not cached, and an entry unused for 10 min is dropped (each `transcribe` touches it). `TranscriptionProvider.prepare()` (default no-op) is called when the batch pipeline starts, so the model loads at once instead of inside the first chunk (EVAL-2026-06-12 F28). Real check: `ntakker-cli --transcribe parakeet --transcribe-source both` logged one "loading model" line instead of two, starting at pipeline start.
   - **Found while doing T5:** the CLI rejected `--transcribe parakeet` and `apple-cloud`, because `TranscriptionProviderId` lacked both cases (separate commit).
-- [ ] **T6 (TR-2)** On-device providers get the same ~2.5 s chunks as the cloud batch providers, padded to the model window (15 s Parakeet, 30 s Whisper).
+- [x] **T6 (TR-2)** On-device providers get the same ~2.5 s chunks as the cloud batch providers, padded to the model window (15 s Parakeet, 30 s Whisper).
   - Add a per-provider chunk policy: longer chunks for on-device models, cut at silence.
+  - Done. `ChunkPolicy` (`.drainAll` for the cloud batch providers, unchanged; `.silenceCut(10 s, 14 s)` for WhisperKit and Parakeet). A chunk is cut in the middle of the first 50 ms frame below −46 dBFS after 10 s, or at the quietest frame once 14 s is buffered; the rest stays for the next chunk. The overflow cap scales to 2 × the maximum (28 s). Trade-off: on-device text now appears about every 10 s instead of every 2.5 s. Real check with Parakeet on the mic and a spoken passage: two chunks of 10.2 s and 10.0 s, both cut at pauses, and the transcript was word-perfect.
 
 ## Verification
 

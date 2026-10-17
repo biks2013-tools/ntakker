@@ -47,8 +47,14 @@ public protocol TranscriptionProvider: Sendable {
     /// starts, so the first chunks are not stuck behind a model load
     /// (EVAL-2026-06-12 F28). Default: nothing to do.
     func prepare() async throws
+
+    /// How the batch pipeline cuts audio into chunks for this provider
+    /// (EVAL-2026-10-16 TR-2). Default: `.drainAll`, the short chunks
+    /// the cloud batch APIs want.
+    var chunkPolicy: ChunkPolicy { get }
 }
 
 extension TranscriptionProvider {
     public func prepare() async throws {}
+    public var chunkPolicy: ChunkPolicy { .drainAll }
 }

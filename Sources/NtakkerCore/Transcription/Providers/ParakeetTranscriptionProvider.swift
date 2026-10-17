@@ -39,6 +39,10 @@ public actor ParakeetTranscriptionProvider: TranscriptionProvider {
     public nonisolated let id: String = "parakeet"
     public nonisolated let supportedModes: Set<TranscriptionMode> = [.batch]
 
+    /// TR-2: 10–14 s chunks cut at a pause instead of ~2.5 s fixed
+    /// cuts, which the model padded to its full encoder window.
+    public nonisolated var chunkPolicy: ChunkPolicy { .onDevice }
+
     /// Default Parakeet model version (multilingual TDT-0.6B v3 —
     /// supports the 25 European languages including Greek). The
     /// project's NTAKKER_PARAKEET_MODEL knob is informational only in

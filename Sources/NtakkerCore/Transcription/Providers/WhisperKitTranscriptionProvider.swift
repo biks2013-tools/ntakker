@@ -46,6 +46,10 @@ public actor WhisperKitTranscriptionProvider: TranscriptionProvider {
     public nonisolated let id = "whisperkit"
     public nonisolated let supportedModes: Set<TranscriptionMode> = [.batch]
 
+    /// TR-2: 10–14 s chunks cut at a pause instead of ~2.5 s fixed
+    /// cuts, which the model padded to its full encoder window.
+    public nonisolated var chunkPolicy: ChunkPolicy { .onDevice }
+
     /// Default model name. `large-v3` is the multilingual flagship
     /// (~99 languages); the date-stamped suffix matches the canonical
     /// CoreML export Argmax ships in their HuggingFace model repo.

@@ -183,7 +183,7 @@ public actor TranscriptionManager: TranscriptionDispatcher {
     /// streaming branch in `start()` can early-return cleanly.
     private func startBatchPipeline() -> AsyncStream<TranscriptionEvent> {
         for tag in source.activeSourceTags() {
-            buffers[tag] = SourceBuffer(source: tag)
+            buffers[tag] = SourceBuffer(source: tag, policy: provider.chunkPolicy)
             inFlight[tag] = []
         }
 
