@@ -86,7 +86,7 @@ final class RecordingWorkspace {
         }.value
         documents = docs
         rebuildEntries()
-        await player.load(tracks: rec.tracks.map(\.url))
+        await player.load(tracks: rec.tracks)
         isLoaded = true
         let urls = rec.tracks.map(\.url)
         waveform = await Task.detached(priority: .utility) {

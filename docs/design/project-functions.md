@@ -1522,6 +1522,7 @@ install snippet (`cd tools/convo-coach && npm install && npm link`).
 - **FR-STU-7 Minutes.** Summary, topics, decisions, action items and open questions with timecodes, optionally in a chosen language; saved to `<stem>.minutes.md`.
 - **FR-STU-8 Speakers.** Rename diarized speakers per recording (`<stem>.studio.json`); names are used everywhere in the studio.
 - **FR-STU-9 Edit text.** Fix a line's text; saved back to the JSONL, with a one-time `.orig` backup.
+- **FR-STU-11 Echo filter.** On a split recording, a player switch removes the system audio that leaked into the microphone, in real time during playback; the echo delay is measured per recording. Files are not changed. (Added 2026-10-17.)
 - **FR-STU-10 Re-transcribe and search.** Re-transcribe a recording with a batch provider (parakeet, whisperkit, gemini, azure, elevenlabs) into a new exact-timed transcript. Search every transcript in the library (case- and accent-insensitive, all words) and open a result at its moment.
 
 ---

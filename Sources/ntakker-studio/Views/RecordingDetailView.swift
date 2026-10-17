@@ -128,6 +128,7 @@ struct ErrorBanner: View {
 
 struct PlayerBar: View {
     @Bindable var workspace: RecordingWorkspace
+    @AppStorage("studio.echoFilter") private var echoFilterPref = false
 
     var body: some View {
         let player = workspace.player
@@ -148,6 +149,20 @@ struct PlayerBar: View {
             if let error = player.loadError {
                 Text("Audio: \(error)").foregroundStyle(.red).font(.caption).lineLimit(1)
             }
+            if player.canFilterEcho {
+                Button {
+                    player.echoFilter.toggle()
+                    echoFilterPref = player.echoFilter
+                } label: {
+                    Label(player.echoFilter ? "Echo removed" : "Remove echo",
+                          systemImage: player.echoFilter ? "ear.fill" : "ear")
+                        .foregroundStyle(player.echoFilter ? Color.accentColor : Color.secondary)
+                }
+                .help(player.echoFilter
+                      ? "Echo filter on: the system audio that leaked into the microphone is being subtracted. Click to hear the original."
+                      : "Echo filter: subtract the system audio that leaked into the microphone (speakers picked up by the mic), while you listen. The files are not changed.")
+                .accessibilityValue(player.echoFilter ? "on" : "off")
+            }
             Toggle("Skip cuts", isOn: $workspace.previewCuts)
                 .toggleStyle(.checkbox)
                 .disabled(workspace.cuts.isEmpty)
@@ -164,6 +179,9 @@ struct PlayerBar: View {
         .font(.title3)
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
+        .onChange(of: player.canFilterEcho, initial: true) { _, can in
+            if can { player.echoFilter = echoFilterPref }
+        }
     }
 }
 

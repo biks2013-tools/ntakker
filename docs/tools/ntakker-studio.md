@@ -111,8 +111,23 @@
         ### Player
 
         - Plays the mic and system tracks of a split recording mixed
-          together (`AVMutableComposition`).
+          together, through `AVAudioEngine` (blocks of 8192 frames, about
+          0.7 s scheduled ahead).
         - Speeds 0.75x to 2x.
+        - **Remove echo** (split recordings only): subtracts the system
+          audio that leaked into the microphone, while you listen. It is
+          ntakker's NLMS echo canceller (`SoftwareAECProcessor.processAligned`,
+          playback tuning) with the system track as the reference. When a
+          recording opens, its echo delay is measured
+          (`EchoDelayEstimator`, 1 ms envelopes over two minutes; 110–145 ms
+          on the recordings tried) and the reference is delayed by that
+          minus 20 ms, so the echo falls inside the filter's 85 ms window.
+          The filter keeps learning while off, so switching it on is
+          immediate; after a jump it settles again within a second or two.
+          The choice is remembered. Files are never changed. Measured on
+          three real recordings: the mic is 15–16 dB quieter while the
+          system side talks on two of them, about 3 dB on the third, which
+          is mostly speech in the room (kept, as it should be).
         - Space plays / pauses and Left / Right skip 5 s, but only while
           no text field has keyboard focus. The Playback menu offers the
           same actions as Option-Space, Option-Left, Option-Right, which

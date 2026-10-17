@@ -13086,9 +13086,18 @@ ntakker stamps segments with wall-clock time. The studio places a line at `times
 
 `LibraryStore` (folder, scan, index, search, selection) → `RecordingWorkspace` per open recording (documents, entries, filters, cuts, Ask/minutes/re-transcribe tasks) → `PlayerController` (AVPlayer over an `AVMutableComposition` of all tracks, 20 Hz time, skip ranges for cut preview). Views: `LibrarySidebar`, `RecordingDetailView` (header, `PlayerBar`, `WaveformStrip`), `TranscriptPane`, `InspectorPane` (Ask, Minutes, Speakers, Cut, Re-transcribe, Info), `MarkdownText`. The tools column is fixed-width in an HStack: an `HSplitView` sized panes by unwrapped text and pushed the content past the window edges.
 
+### STU-4.1 — Playback echo filter (added 2026-10-17)
+
+- `PlayerController` plays through `AVAudioEngine`: a `BlockReader` on its own queue reads 8192-frame blocks from every track, mixes them, and keeps four scheduled on an `AVAudioPlayerNode` (→ `AVAudioUnitTimePitch` for speed). Seeking bumps a generation counter, drops the schedule and restarts the reader; completions of an older generation are ignored. Time = start frame + the node's sample time.
+- For a split recording the reader runs `SoftwareAECProcessor.processAligned(mic:reference:)` on every block, with the system track read from a second file handle `referenceDelay` frames behind playback. Output = cleaned mic (when the switch is on) or the original mic, plus the system track.
+- `SoftwareAECProcessor.playbackConfiguration` (μ 0.3, step cap 1, leak 1e-6, 4096 taps, mono): fast convergence is safe because nothing is written; the double-talk gate and divergence reset still apply. `resetAlignedTimeline(clearingEchoPath:)` keeps the weights across a seek and clears them when the reference delay changes.
+- `EchoDelayEstimator` (kit): cross-correlation of 1 ms RMS envelopes over two minutes a quarter into the recording, lags 0–500 ms. Real recordings: 114–142 ms, beyond the 85 ms window — without the delay the filter reached only 3–7 dB; with it 15–16 dB.
+- Cost: about 18× real time per core in a debug build for one 48 kHz filter; it also runs while the switch is off, so switching on is instant.
+
 ### STU-5 — Decisions
 
 - **STU-ADR-1** Cuts write a new copy; originals are read-only to the studio except for explicit text edits (backed up) and the studio's own sidecars. (User decision, 2026-10-17.)
 - **STU-ADR-2** Ask/minutes use ntakker's Ask configuration; the studio loads `~/.tool-agents/ntakker/.env` at launch and has no configuration folder of its own. (User decision.)
 - **STU-ADR-3** No silent library default: the studio adopts ntakker's folder setting or asks.
+- **STU-ADR-5** The echo filter is a playback effect only; exporting a cleaned copy is a possible follow-up.
 - **STU-ADR-4** Re-transcription is batch-only in v1; streaming providers would need a faster-than-real-time feed and file-relative timestamps.

@@ -44,3 +44,12 @@ Packaging: `scripts/package-ntakker-studio-app.sh` and `scripts/redeploy-ntakker
 
 - `swift build`, `swift test --filter NtakkerStudioTests` green; existing suites unchanged.
 - Live: open a real recording, play, click a line → audio at that line, cut a range → new folder with shorter audio and shifted transcript, Ask and minutes against the configured provider, search across the library.
+
+## Addendum (2026-10-17): playback echo filter
+
+User request: "can you add a real-time filter in studio to clear the echo?"
+
+- [x] **T12** `SoftwareAECProcessor.processAligned` + `playbackConfiguration` + `resetAlignedTimeline` (core, 3 tests); `EchoDelayEstimator` (kit, 1 test); `PlayerController` rewritten on `AVAudioEngine` with a block reader that filters the mic against the delayed system track; "Remove echo" switch in the player bar.
+  - Found: the echo on real recordings arrives 114–142 ms after the system audio, beyond the filter's 85 ms window. Delaying the reference by the measured delay raised the reduction from 3–7 dB to 15–16 dB on two of three recordings.
+  - Live check: playback, transcript follow and the switch work in the app.
+

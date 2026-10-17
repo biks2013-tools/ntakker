@@ -139,3 +139,18 @@ struct RetranscriberTests {
         }
     }
 }
+
+@Suite("EchoDelayEstimator")
+struct EchoDelayEstimatorTests {
+    @Test("finds the lag of a delayed envelope; nil for unrelated or silent tracks")
+    func lag() {
+        var state: UInt64 = 5
+        let sys: [Float] = (0..<20_000).map { _ in
+            state = state &* 6364136223846793005 &+ 1442695040888963407
+            return Float(state >> 40) / Float(1 << 24)
+        }
+        let mic = [Float](repeating: 0, count: 120) + sys.dropLast(120).map { $0 * 0.4 }
+        #expect(EchoDelayEstimator.estimate(mic: mic, system: sys) == 0.12)
+        #expect(EchoDelayEstimator.estimate(mic: [Float](repeating: 0, count: 20_000), system: sys) == nil)
+    }
+}

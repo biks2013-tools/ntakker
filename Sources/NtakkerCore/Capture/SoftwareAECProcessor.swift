@@ -689,6 +689,93 @@ public final class SoftwareAECProcessor: @unchecked Sendable {
         onCleanedMic?(CaptureBuffer(source: .microphone, buffer: cleanedSampleBuffer))
     }
 
+    // MARK: - Sample-aligned blocks (recorded files)
+
+    /// Tuning for cleaning a recording on playback. The live defaults
+    /// adapt very slowly (μ = 0.01, steps capped at 1e-3) because a
+    /// diverging filter there would damage the recording; on playback
+    /// nothing is written, so the filter can converge in about a second.
+    /// The double-talk gate and the divergence reset still apply.
+    public static func playbackConfiguration(sampleRate: Double, filterLength: Int = 4096) -> Configuration {
+        Configuration(
+            filterLength: filterLength,
+            stepSize: 0.3,
+            channels: 1,
+            sampleRate: sampleRate,
+            stepMax: 1,
+            leakage: 1e-6
+        )
+    }
+
+    /// The last `filterLength - 1` reference samples fed to
+    /// `processAligned`, so a block's window can reach back into the
+    /// previous block. Zero before the first block (silence).
+    private var alignedHistory: [Float] = []
+    /// Logical position of the next aligned block's first sample.
+    private var alignedPosition = 0
+
+    /// Cancel echo in a block of microphone samples, given the reference
+    /// (system audio) samples recorded at the same moments. For audio
+    /// that is already sample-aligned — the mic and system tracks of one
+    /// recording read from disk — so no PTS anchoring is involved.
+    /// Consecutive calls continue the same timeline; call
+    /// `resetAlignedTimeline()` after a jump (a seek). Uses filter 0
+    /// only: pass mono mic and mono reference. Not to be mixed with the
+    /// live `feedReference` / `processMic` path on the same instance.
+    ///
+    /// Added for ntakker-studio's playback echo filter (2026-10-17).
+    public func processAligned(mic: [Float], reference: [Float]) -> [Float] {
+        let n = min(mic.count, reference.count)
+        guard n > 0 else { return mic }
+        let L = config.filterLength
+        if alignedHistory.count != L - 1 {
+            alignedHistory = [Float](repeating: 0, count: L - 1)
+        }
+        var span = alignedHistory
+        span.append(contentsOf: reference.prefix(n))
+        var out = [Float](repeating: 0, count: n)
+        let start = alignedPosition
+        let micBlock = Array(mic.prefix(n))
+        filterLock.withLockUnchecked {
+            let counts = self.runFilter(
+                0,
+                mic: micBlock,
+                reference: span,
+                available: (start - L + 1)..<(start + n),
+                micFirstLogical: start,
+                frameCount: n,
+                output: &out
+            )
+            self.micStats.samplesProcessed &+= UInt64(n)
+            self.micStats.updatesSkippedRefSilence &+= counts.skippedRefSilence
+            self.micStats.updatesSkippedDoubleTalk &+= counts.skippedDoubleTalk
+            self.micStats.divergenceResets &+= counts.resets
+        }
+        alignedHistory = Array(span.suffix(L - 1))
+        alignedPosition += n
+        if mic.count > n { out.append(contentsOf: mic.dropFirst(n)) }
+        return out
+    }
+
+    /// Start a new aligned timeline (after a seek). The learnt echo path
+    /// (the weights) is kept, since it does not change with position,
+    /// unless `clearingEchoPath` (the reference was shifted, so what was
+    /// learnt no longer lines up); the reference history and envelopes
+    /// are always cleared.
+    public func resetAlignedTimeline(clearingEchoPath: Bool = false) {
+        alignedHistory = []
+        alignedPosition = 0
+        filterLock.withLockUnchecked {
+            if clearingEchoPath {
+                self.weights[0] = [Float](repeating: 0, count: self.config.filterLength)
+            }
+            self.refEnv[0] = 0
+            self.micEnv[0] = 0
+            self.resEnv[0] = 0
+            self.divergentSampleCount[0] = 0
+        }
+    }
+
     private struct FilterCounts {
         var passThrough: UInt64 = 0
         var skippedRefSilence: UInt64 = 0
