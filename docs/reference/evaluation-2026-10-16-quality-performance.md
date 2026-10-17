@@ -77,7 +77,7 @@
 - **C5 (2026-06-12) fixed:** `lastDriftSec` now reports the residual track skew.
 - **AEC never cancelled echo (High, fixed in plan-022 T4).** The NLMS reference window for mic sample `p` started at `p + 1`, so it read future reference audio or audio 85–170 ms old. On a synthetic echo the old filter left more energy than the echo itself. The window now ends at `p`, and the ring grew from 2L to 4L.
 - **CLI rejected `--transcribe parakeet` and `apple-cloud` (Medium, fixed in plan-022).** `TranscriptionProviderId` lacked both cases, although the factory built both providers.
-- **`--transcribe-source mic` refused without `--mic-device` (Medium, open).** The resolver treats an unset mic device (meaning "system default") as "mic disabled". This is the cause of the baseline failure "Shell env supplies transcription keys".
+- **`--transcribe-source mic` refused without `--mic-device` (Medium, fixed in plan-023 T10).** The resolver treats an unset mic device (meaning "system default") as "mic disabled". This is the cause of the baseline failure "Shell env supplies transcription keys".
 
 ## 4. Suggested attack order
 

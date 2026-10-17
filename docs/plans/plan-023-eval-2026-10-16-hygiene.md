@@ -41,7 +41,8 @@ Approved: 2026-10-17. The user said "Do the cleanup items". One commit per task.
     - When following the system default input, the source re-attaches to the new default after 0.5 s.
     - When a device was chosen explicitly, the source does not switch to another mic; it logs an error and stops, and the recording continues with a silent mic track (the aligner fills it).
     - Build-verified only, since a device disconnect cannot be produced in a unit test. Manual check: unplug a USB or Bluetooth mic mid-recording, with the default device and with an explicit one.
-- [ ] **T10 (found in plan-022)** `--transcribe-source mic` is refused unless `--mic-device` is set, because the resolver treats "system default" as disabled. This is the baseline failure "Shell env supplies transcription keys".
+- [x] **T10 (found in plan-022)** `--transcribe-source mic` is refused unless `--mic-device` is set, because the resolver treats "system default" as disabled. This is the baseline failure "Shell env supplies transcription keys".
+  - Done. Only an explicit `none` counts as disabled now. The baseline test passes, and two new tests were added. Real check: `ntakker-cli start --transcribe parakeet --transcribe-source mic` (with no `--mic-device`) records.
 
 ## Verification
 

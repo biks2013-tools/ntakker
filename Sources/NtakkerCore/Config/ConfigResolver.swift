@@ -757,9 +757,13 @@ public struct ConfigResolver {
         //         `--transcribe-source mic` AND `--mic <empty/none>` is a
         //         configuration conflict (asks to transcribe a microphone
         //         that's been disabled). Per design §LT-5.5 step 9.
+        //         An UNSET mic device means "the system default input",
+        //         not "disabled" — treating nil as disabled refused every
+        //         `--transcribe-source mic` run without `--mic-device`
+        //         (found 2026-10-17, plan-022; fixed in plan-023 T10).
         if transcribeIsActive
             && transcribeSourceEnum == .mic
-            && (micDevice == nil || micDevice?.lowercased() == "none")
+            && micDevice?.lowercased() == "none"
         {
             throw NtakkerError.transcriptionConfigConflict(
                 reason: "--transcribe-source mic requires a microphone (current --mic is disabled)"

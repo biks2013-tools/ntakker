@@ -40,4 +40,37 @@ struct ConfigResolverProviderIdTests {
         let ids = Set(TranscriptionProviderId.allCases.map(\.rawValue))
         #expect(ids.isSuperset(of: ["apple", "apple-cloud", "gemini", "whisperkit", "parakeet", "soniox", "azure", "azure-openai-realtime", "elevenlabs"]))
     }
+
+    @Test("--transcribe-source mic without a mic device uses the default input (plan-023 T10)")
+    func micSourceWithDefaultDevice() throws {
+        let opts = try ConfigResolver(
+            toolName: "ntakker-cli",
+            shellEnv: [
+                "OUTPUT_PATH": "/tmp/ntakker-cli-resolver-provider-id.m4a",
+                "NTAKKER_TRANSCRIBE": "parakeet",
+                "NTAKKER_TRANSCRIBE_SOURCE": "mic",
+            ],
+            userEnv: [:],
+            localEnv: [:]
+        ).resolve(cliOverrides: [:])
+        #expect(opts.transcriptionSource == .mic)
+        #expect(opts.micDevice == nil)
+    }
+
+    @Test("--transcribe-source mic with --mic-device none is still a conflict")
+    func micSourceWithDisabledMic() {
+        #expect(throws: NtakkerError.self) {
+            _ = try ConfigResolver(
+                toolName: "ntakker-cli",
+                shellEnv: [
+                    "OUTPUT_PATH": "/tmp/ntakker-cli-resolver-provider-id.m4a",
+                    "NTAKKER_TRANSCRIBE": "parakeet",
+                    "NTAKKER_TRANSCRIBE_SOURCE": "mic",
+                    "NTAKKER_MIC_DEVICE": "none",
+                ],
+                userEnv: [:],
+                localEnv: [:]
+            ).resolve(cliOverrides: [:])
+        }
+    }
 }
