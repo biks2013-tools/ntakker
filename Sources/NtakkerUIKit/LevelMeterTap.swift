@@ -14,8 +14,8 @@
 // pair per source — so this helper reads channel 0 only and documents
 // the assumption with the comment block on `extractLevels`.
 //
-// The dB conversion is performed by the consumer of this sample (e.g.
-// `LevelMeterView`). We deliberately keep the linear magnitudes here so
+// The dB conversion is performed by the consumer of this sample
+// (`LevelMeterScale`). We deliberately keep the linear magnitudes here so
 // tests can assert exact values without floating-point dB cliff-edges
 // (`20*log10(0)` is `-inf`, which is a pain to compare).
 

@@ -24,9 +24,8 @@
 //        text; Save… is filled with the accent gradient.
 //
 // The bouncing-bar geometry is driven by `recordingController.latestLevels`
-// — the same publisher the legacy `LevelMeterView` subscribes to. Each
-// bar's height is the source's dBFS-mapped RMS times a fixed
-// centre-weighted profile (EVAL 2026-10-16 UI-5). When the session is
+// (fed by `LevelMeterPublisher`). Each bar's height is the source's
+// dBFS-mapped RMS times a fixed centre-weighted profile (EVAL 2026-10-16 UI-5). When the session is
 // not recording, all bars freeze at min-height per FR-IRQ-42.
 
 import NtakkerCore

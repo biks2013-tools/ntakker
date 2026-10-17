@@ -31,7 +31,7 @@ Approved: 2026-10-17. The user said "Do the cleanup items". One commit per task.
     - The provider registry is a set of lazy `import()` loaders, so `buildLanguageModel` is now async.
     - Measured on 3,000 records: 31.5 ms → 0.14 ms per stdin trigger; `--help` 140 ms → 75 ms.
     - Tests: 182/182, including 8 new ones; the incremental snapshots are checked against a full re-parse after every line.
-- [ ] **T6 (L3)** Delete the dead `LevelMeterView` and `ElapsedTimeView`.
+- [x] **T6 (L3)** Delete the dead `LevelMeterView` and `ElapsedTimeView`. Done; neither was referenced anywhere.
 - [ ] **T7 (C6)** Bound the M4A recorder's pending-buffer queue.
 - [ ] **T8 (C7)** `split()` leaves the session inconsistent when finalizing the old segment fails. Roll back, and keep the sidecar rotation consistent.
 - [ ] **T9 (CAP-18)** Observe the mic's `wasDisconnectedNotification` so an unplugged mic is reported instead of stalling silently.
