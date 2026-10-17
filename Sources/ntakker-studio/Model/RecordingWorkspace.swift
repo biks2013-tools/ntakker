@@ -91,6 +91,7 @@ final class RecordingWorkspace {
         }.value
         documents = docs
         rebuildEntries()
+        player.echoDelayOverride = metadata.echoDelayMs.map { $0 / 1000 }
         await player.load(tracks: rec.tracks)
         isLoaded = true
         let urls = rec.tracks.map(\.url)
@@ -211,6 +212,14 @@ final class RecordingWorkspace {
         }
     }
 
+    /// Set the echo delay by hand (ms), or `nil` to use the measured one.
+    /// Saved with the recording.
+    func setEchoDelayOverride(_ ms: Double?) {
+        let rounded = ms.map { ($0 / 5).rounded() * 5 }
+        saveMetadata { $0.echoDelayMs = rounded }
+        player.echoDelayOverride = metadata.echoDelayMs.map { $0 / 1000 }
+    }
+
     func setSyncOffset(_ seconds: Double) {
         saveMetadata { $0.syncOffsetSec = (seconds * 100).rounded() / 100 }
     }
@@ -263,7 +272,7 @@ final class RecordingWorkspace {
     func exportCut() {
         let removeEcho = exportRemovesEcho && canRemoveEcho
         guard exportProgress == nil, !cuts.isEmpty || removeEcho else { return }
-        let rec = recording, plan = cutPlan, start = audioStart, meta = metadata
+        let rec = recording, plan = cutPlan, start = audioStart, meta = metadata, echoSettings = player.echoSettings
         var byFile: [TranscriptFile: [TranscriptEntry]] = [:]
         for (file, doc) in documents {
             byFile[file] = doc.entries(audioStart: start, exact: isExact(file), syncOffsetSec: meta.syncOffsetSec)
@@ -276,7 +285,7 @@ final class RecordingWorkspace {
                 let result = try await Task.detached(priority: .userInitiated) {
                     try RecordingCutExporter.export(
                         recording: rec, plan: plan, entriesByTranscript: entriesByFile,
-                        audioStart: start, metadata: meta, removeEcho: removeEcho
+                        audioStart: start, metadata: meta, removeEcho: removeEcho, echoSettings: echoSettings
                     ) { p in
                         Task { @MainActor in
                             if self.exportProgress != nil { self.exportProgress = p }

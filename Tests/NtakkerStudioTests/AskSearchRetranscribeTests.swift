@@ -154,3 +154,115 @@ struct EchoDelayEstimatorTests {
         #expect(EchoDelayEstimator.estimate(mic: [Float](repeating: 0, count: 20_000), system: sys) == nil)
     }
 }
+
+@Suite("Echo filter settings and residual suppression")
+struct EchoProcessorTests {
+    private func noise(_ n: Int, seed: UInt64, amp: Float) -> [Float] {
+        var s = seed
+        return (0..<n).map { _ in
+            s = s &* 6364136223846793005 &+ 1442695040888963407
+            return (Float(s >> 40) / Float(1 << 24) * 2 - 1) * amp
+        }
+    }
+    private func power(_ x: ArraySlice<Float>) -> Float { x.reduce(0) { $0 + $1 * $1 } / Float(max(1, x.count)) }
+    private func db(_ a: Float, _ b: Float) -> Float { 10 * log10(a / max(b, 1e-12)) }
+
+    @Test("with no echo estimate the suppressor reconstructs its input, 512 samples late")
+    func reconstruction() {
+        let x = noise(20_000, seed: 1, amp: 0.4)
+        let res = ResidualEchoSuppressor(overSubtraction: 1.6, floor: 0.08)
+        var out: [Float] = []
+        for i in stride(from: 0, to: x.count, by: 3_000) {
+            let j = min(x.count, i + 3_000)
+            out += res.process(output: Array(x[i..<j]), echo: [Float](repeating: 0, count: j - i))
+        }
+        #expect(out.count == x.count)
+        let err = (1_024..<x.count).map { abs(out[$0] - x[$0 - 512]) }.max() ?? 1
+        #expect(err < 1e-4, "max reconstruction error \(err)")
+    }
+
+    @Test("a residual that follows the echo estimate is suppressed")
+    func suppresses() {
+        let echo = noise(48_000, seed: 2, amp: 0.4)
+        let residual = echo.map { $0 * 0.2 }
+        let res = ResidualEchoSuppressor(overSubtraction: 1.6, floor: 0.08)
+        let out = res.process(output: residual, echo: echo)
+        #expect(db(power(residual[10_000...]), power(out[10_000...])) > 10)
+    }
+
+    @Test("strength 0 returns the mic, 0.5 sits halfway")
+    func strength() {
+        let rate = 16_000.0, delay = 80
+        let ref = noise(32_000, seed: 3, amp: 0.3)
+        let mic = (0..<ref.count).map { i in i >= delay ? 0.5 * ref[i - delay] : 0 }
+        let zero = EchoProcessor(sampleRate: rate, settings: .init(strength: 0, suppression: .off, adaptation: .fast))
+        #expect(zero.process(mic: mic, reference: ref) == mic)
+        let full = EchoProcessor(sampleRate: rate, settings: .standard)
+        let half = EchoProcessor(sampleRate: rate, settings: .init(strength: 0.5, suppression: .off, adaptation: .fast))
+        let f = full.process(mic: mic, reference: ref), h = half.process(mic: mic, reference: ref)
+        let err = (0..<mic.count).map { abs(h[$0] - (0.5 * mic[$0] + 0.5 * f[$0])) }.max() ?? 1
+        #expect(err < 1e-5)
+    }
+
+    @Test("on a distorted echo, high suppression removes more than the canceller alone")
+    func nonlinearEcho() {
+        let rate = 16_000.0, delay = 80
+        let ref = noise(16_000 * 10, seed: 4, amp: 0.5)
+        // Loudspeaker distortion: the canceller can only model the linear part.
+        let mic = (0..<ref.count).map { i in i >= delay ? 0.5 * tanhf(2.5 * ref[i - delay]) : 0 }
+        func run(_ s: EchoFilterSettings.Suppression) -> Float {
+            let p = EchoProcessor(sampleRate: rate, settings: .init(strength: 1, suppression: s, adaptation: .fast))
+            var out: [Float] = []
+            for i in stride(from: 0, to: mic.count, by: 4_096) {
+                let j = min(mic.count, i + 4_096)
+                out += p.process(mic: Array(mic[i..<j]), reference: Array(ref[i..<j]))
+            }
+            let tail = (mic.count - 32_000)..<mic.count
+            return db(power(mic[tail]), power(out[tail]))
+        }
+        let off = run(.off), high = run(.high), low = run(.low)
+        #expect(high > off + 3, "off \(off) dB, low \(low) dB, high \(high) dB")
+        #expect(low > off, "off \(off) dB, low \(low) dB")
+    }
+
+    @Test("local speech over the echo keeps most of its level with suppression")
+    func doubleTalk() {
+        let rate = 16_000.0, delay = 80
+        let ref = noise(16_000 * 10, seed: 6, amp: 0.3)
+        let echo = (0..<ref.count).map { i in i >= delay ? 0.3 * ref[i - delay] : 0 }
+        // A 300 Hz tone stands in for local speech in the last 3 s, over the echo.
+        let speech: [Float] = (0..<ref.count).map { i in i >= 16_000 * 7 ? 0.3 * sinf(Float(i) * 2 * .pi * 300 / Float(rate)) : 0 }
+        let mic = zip(echo, speech).map { $0 + $1 }
+        for (s, maxLoss) in [(EchoFilterSettings.Suppression.low, Float(1.5)), (.high, Float(3))] {
+            let p = EchoProcessor(sampleRate: rate, settings: .init(strength: 1, suppression: s, adaptation: .fast))
+            var out: [Float] = []
+            for i in stride(from: 0, to: mic.count, by: 4_096) {
+                let j = min(mic.count, i + 4_096)
+                out += p.process(mic: Array(mic[i..<j]), reference: Array(ref[i..<j]))
+            }
+            // Speech level: correlate the output with the tone (delayed by the latency).
+            let lat = p.latency
+            let range = (16_000 * 8)..<(mic.count - lat)
+            let num = range.reduce(Float(0)) { $0 + out[$1 + lat] * speech[$1] }
+            let den = range.reduce(Float(0)) { $0 + speech[$1] * speech[$1] }
+            let loss = -20 * log10(max(1e-6, num / den))
+            #expect(loss < maxLoss, "\(s): speech level down \(loss) dB")
+        }
+    }
+
+    @Test("stable adaptation still converges, more slowly than fast")
+    func adaptation() {
+        let rate = 16_000.0, delay = 80
+        let ref = noise(16_000 * 3, seed: 5, amp: 0.3)
+        let mic = (0..<ref.count).map { i in i >= delay ? 0.5 * ref[i - delay] : 0 }
+        func reduction(_ a: EchoFilterSettings.Adaptation) -> Float {
+            let p = EchoProcessor(sampleRate: rate, settings: .init(strength: 1, suppression: .off, adaptation: a))
+            let out = p.process(mic: mic, reference: ref)
+            let tail = 32_000..<mic.count
+            return db(power(mic[tail]), power(out[tail]))
+        }
+        let fast = reduction(.fast), stable = reduction(.stable)
+        #expect(stable > 3, "stable \(stable) dB")
+        #expect(fast > stable, "fast \(fast) dB vs stable \(stable) dB after 2 s")
+    }
+}

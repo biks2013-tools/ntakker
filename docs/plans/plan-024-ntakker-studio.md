@@ -54,4 +54,5 @@ User request: "can you add a real-time filter in studio to clear the echo?"
   - Live check: playback, transcript follow and the switch work in the app.
 - [x] **T13** Export a copy with the echo removed: `EchoCleaner` (kit), `RecordingCutExporter(removeEcho:)`, a checkbox in the Cut tab, folder suffix `clean` / `cut-clean`. Tests: a 150 ms synthetic echo removed by > 10 dB from the start with local speech within 1 dB, the export copy, and the nothing-to-do guard.
 - [x] **T14** Release ntakker studio 0.2.0 with T12 and T13.
+- [x] **T15** Adjustable echo filter: `EchoProcessor` + `EchoFilterSettings` (strength, suppression, adaptation), `ResidualEchoSuppressor` (second stage), per-recording delay override in `studio.json`, settings popover in the player bar; the export uses the same settings. Tests (6): perfect reconstruction, residual suppression, strength mix, distorted echo (high > off + 3 dB), double-talk speech loss (< 1.5 / 3 dB), stable vs fast. Real recordings: off 16 dB → low 23 dB → high 28 dB.
 

@@ -41,6 +41,8 @@ public enum EchoCleaner {
         micURL: URL,
         systemURL: URL,
         to destination: URL,
+        settings: EchoFilterSettings = .standard,
+        delayOverride: Double? = nil,
         progress: (Double) -> Void = { _ in }
     ) throws -> Double {
         let mic = try AVAudioFile(forReading: micURL)
@@ -48,10 +50,10 @@ public enum EchoCleaner {
         let rate = mic.processingFormat.sampleRate
         guard sys.processingFormat.sampleRate == rate else { throw EchoCleanerError.formatMismatch }
         let duration = Double(mic.length) / rate
-        let lag = try EchoDelayEstimator.estimate(micURL: micURL, systemURL: systemURL, duration: duration) ?? 0
+        let lag = try delayOverride ?? EchoDelayEstimator.estimate(micURL: micURL, systemURL: systemURL, duration: duration) ?? 0
         let delay = AVAudioFramePosition(max(0, lag - EchoDelayEstimator.referenceMargin) * rate)
 
-        let aec = SoftwareAECProcessor(config: SoftwareAECProcessor.playbackConfiguration(sampleRate: rate))
+        let echo = EchoProcessor(sampleRate: rate, settings: settings)
         let warmUp = min(mic.length, AVAudioFramePosition(warmUpSeconds * rate))
         let total = Double(warmUp + mic.length)
         var done = 0.0
@@ -61,12 +63,12 @@ public enum EchoCleaner {
         while pos < warmUp {
             if Task.isCancelled { throw CancellationError() }
             let n = Int(min(AVAudioFramePosition(blockFrames), warmUp - pos))
-            _ = aec.processAligned(mic: mono(read(mic, at: pos, n)), reference: mono(read(sys, at: pos - delay, n)))
+            _ = echo.process(mic: mono(read(mic, at: pos, n)), reference: mono(read(sys, at: pos - delay, n)), produceOutput: false)
             pos += AVAudioFramePosition(n)
             done += Double(n)
             progress(done / total)
         }
-        aec.resetAlignedTimeline()
+        echo.resetTimeline()
 
         let out = try AVAudioFile(
             forWriting: destination,
@@ -78,21 +80,35 @@ public enum EchoCleaner {
         guard let buffer = AVAudioPCMBuffer(pcmFormat: mic.processingFormat, frameCapacity: AVAudioFrameCount(blockFrames)) else {
             throw EchoCleanerError.formatMismatch
         }
+        // The second stage delays the output by `latency` samples: skip that
+        // many at the start and feed as many extra (silent) at the end, so
+        // the cleaned track stays sample-aligned with the original.
+        var skip = echo.latency
         pos = 0
-        while pos < mic.length {
+        let end = mic.length + AVAudioFramePosition(echo.latency)
+        while pos < end {
             if Task.isCancelled { throw CancellationError() }
-            let n = Int(min(AVAudioFramePosition(blockFrames), mic.length - pos))
-            let cleaned = aec.processAligned(mic: mono(read(mic, at: pos, n)), reference: mono(read(sys, at: pos - delay, n)))
-            buffer.frameLength = AVAudioFrameCount(n)
-            for c in 0..<channels {
-                cleaned.withUnsafeBufferPointer { src in
-                    _ = memcpy(buffer.floatChannelData![c], src.baseAddress!, n * MemoryLayout<Float>.size)
-                }
+            let n = Int(min(AVAudioFramePosition(blockFrames), end - pos))
+            var cleaned = echo.process(mic: mono(read(mic, at: pos, n)), reference: mono(read(sys, at: pos - delay, n)))
+            if skip > 0 {
+                let drop = min(skip, cleaned.count)
+                cleaned.removeFirst(drop)
+                skip -= drop
             }
-            try out.write(from: buffer)
+            let room = Int(mic.length - out.length)
+            if cleaned.count > room { cleaned.removeLast(cleaned.count - room) }
+            if !cleaned.isEmpty {
+                buffer.frameLength = AVAudioFrameCount(cleaned.count)
+                for c in 0..<channels {
+                    cleaned.withUnsafeBufferPointer { src in
+                        _ = memcpy(buffer.floatChannelData![c], src.baseAddress!, cleaned.count * MemoryLayout<Float>.size)
+                    }
+                }
+                try out.write(from: buffer)
+            }
             pos += AVAudioFramePosition(n)
             done += Double(n)
-            progress(done / total)
+            progress(min(1, done / total))
         }
         return lag
     }

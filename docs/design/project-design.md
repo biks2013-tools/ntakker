@@ -13094,6 +13094,12 @@ ntakker stamps segments with wall-clock time. The studio places a line at `times
 - `EchoDelayEstimator` (kit): cross-correlation of 1 ms RMS envelopes over two minutes a quarter into the recording, lags 0–500 ms. Real recordings: 114–142 ms, beyond the 85 ms window — without the delay the filter reached only 3–7 dB; with it 15–16 dB.
 - Cost: about 18× real time per core in a debug build for one 48 kHz filter; it also runs while the switch is off, so switching on is instant.
 
+### STU-4.2 — Adjustable echo filter (added 2026-10-17)
+
+- `EchoProcessor` (kit) is the one echo pipeline for the player and `EchoCleaner`: NLMS canceller → optional `ResidualEchoSuppressor` → strength mix, configured by `EchoFilterSettings` (strength, suppression off/low/high, adaptation stable/fast; persisted app-wide under `studio.echo.*`). `update(_:)` applies new settings between blocks; a new adaptation speed makes a fresh canceller.
+- `ResidualEchoSuppressor`: STFT 512 / hop 256, √Hann analysis and synthesis (perfect reconstruction, tested), per-bin gain `max(floor, 1 − k·S_echo/S_out)` with smoothed powers and gains; low k 0.6 / floor 0.3, high k 1.6 / floor 0.08. Latency 512 samples: the processor delays the dry mic by the same amount for the strength mix; `EchoCleaner` trims it so the cleaned track stays sample-aligned. In playback the mic is 10.7 ms behind the system track while the second stage is on (inaudible).
+- The echo delay override is per recording (`StudioMetadata.echoDelayMs`); the player and the export use it instead of the measured delay.
+
 ### STU-5 — Decisions
 
 - **STU-ADR-1** Cuts write a new copy; originals are read-only to the studio except for explicit text edits (backed up) and the studio's own sidecars. (User decision, 2026-10-17.)

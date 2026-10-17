@@ -129,6 +129,7 @@ struct ErrorBanner: View {
 struct PlayerBar: View {
     @Bindable var workspace: RecordingWorkspace
     @AppStorage("studio.echoFilter") private var echoFilterPref = false
+    @State private var showEchoSettings = false
 
     var body: some View {
         let player = workspace.player
@@ -162,6 +163,11 @@ struct PlayerBar: View {
                       ? "Echo filter on: the system audio that leaked into the microphone is being subtracted. Click to hear the original."
                       : "Echo filter: subtract the system audio that leaked into the microphone (speakers picked up by the mic), while you listen. The files are not changed.")
                 .accessibilityValue(player.echoFilter ? "on" : "off")
+                Button { showEchoSettings.toggle() } label: { Image(systemName: "slider.horizontal.3") }
+                    .help("Echo filter settings: strength, extra suppression, adaptation speed, echo delay")
+                    .popover(isPresented: $showEchoSettings, arrowEdge: .bottom) {
+                        EchoSettingsView(workspace: workspace)
+                    }
             }
             Toggle("Skip cuts", isOn: $workspace.previewCuts)
                 .toggleStyle(.checkbox)
@@ -259,3 +265,86 @@ struct WaveformStrip: View {
         }
     }
 }
+
+/// The echo filter's adjustable settings. Strength, suppression and
+/// adaptation are app-wide; the delay override belongs to the recording.
+/// They apply while listening and to "Export Copy" with echo removal.
+struct EchoSettingsView: View {
+    let workspace: RecordingWorkspace
+
+    var body: some View {
+        let player = workspace.player
+        let settings = Binding(
+            get: { player.echoSettings },
+            set: { player.echoSettings = $0; $0.save() }
+        )
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Echo filter").font(.headline)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Strength")
+                    Spacer()
+                    Text("\(Int((settings.wrappedValue.strength * 100).rounded())) %").monospacedDigit().foregroundStyle(.secondary)
+                }
+                Slider(value: settings.strength, in: 0...1, step: 0.05)
+                Text("How much of the echo to take out. Lower keeps a little of the original sound, if the voice sounds thin.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Extra suppression")
+                Picker("Extra suppression", selection: settings.suppression) {
+                    Text("Off").tag(EchoFilterSettings.Suppression.off)
+                    Text("Low").tag(EchoFilterSettings.Suppression.low)
+                    Text("High").tag(EchoFilterSettings.Suppression.high)
+                }
+                .pickerStyle(.segmented).labelsHidden()
+                Text("A second stage that also quietens what the main filter leaves (room reverb, speaker distortion). High removes the most but can make voices sound slightly muffled when both sides talk at once.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Adaptation")
+                Picker("Adaptation", selection: settings.adaptation) {
+                    Text("Stable").tag(EchoFilterSettings.Adaptation.stable)
+                    Text("Fast").tag(EchoFilterSettings.Adaptation.fast)
+                }
+                .pickerStyle(.segmented).labelsHidden()
+                Text("Fast re-learns within a second when the echo changes (someone moved the laptop). Stable learns more slowly but holds up better in a noisy room. Changing it restarts the learning.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Set the echo delay by hand", isOn: Binding(
+                    get: { player.echoDelayOverride != nil },
+                    set: { on in workspace.setEchoDelayOverride(on ? (player.echoDelay ?? 0.12) * 1000 : nil) }
+                ))
+                if let o = player.echoDelayOverride {
+                    HStack {
+                        Slider(value: Binding(get: { o * 1000 }, set: { workspace.setEchoDelayOverride($0) }), in: 0...400, step: 5)
+                        Text("\(Int(o * 1000)) ms").monospacedDigit().frame(width: 56, alignment: .trailing)
+                    }
+                }
+                Text(player.echoDelay.map { "Measured for this recording: \(Int($0 * 1000)) ms." } ?? "Measuring the echo delay…")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("How long after the other side speaks their voice reaches your mic. Set it by hand only if the echo is still clearly audible; it is saved with this recording.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Button("Reset to Defaults") {
+                    settings.wrappedValue = .standard
+                    workspace.setEchoDelayOverride(nil)
+                }
+                Spacer()
+                Text("Also used by Export Copy").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(16)
+        .frame(width: 340)
+    }
+}
+

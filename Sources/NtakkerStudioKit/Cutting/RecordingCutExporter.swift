@@ -114,6 +114,7 @@ public enum RecordingCutExporter {
         audioStart: Date,
         metadata: StudioMetadata,
         removeEcho: Bool = false,
+        echoSettings: EchoFilterSettings = .standard,
         now: Date = Date(),
         progress: @escaping (Double) -> Void = { _ in }
     ) throws -> CutExportResult {
@@ -134,7 +135,10 @@ public enum RecordingCutExporter {
             var cleanedMic: URL?
             if removeEcho, let micTrack, let sysTrack {
                 let tmp = dest.appendingPathComponent(".cleaning-\(micTrack.url.lastPathComponent)")
-                echoDelay = try EchoCleaner.clean(micURL: micTrack.url, systemURL: sysTrack.url, to: tmp) { p in
+                echoDelay = try EchoCleaner.clean(
+                    micURL: micTrack.url, systemURL: sysTrack.url, to: tmp,
+                    settings: echoSettings, delayOverride: metadata.echoDelayMs.map { $0 / 1000 }
+                ) { p in
                     progress(p * cleanShare)
                 }
                 cleanedMic = tmp

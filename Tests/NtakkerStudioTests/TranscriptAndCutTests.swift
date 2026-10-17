@@ -193,42 +193,38 @@ struct RealFileCutTests {
 /// STUDIO_AEC_DIR=<folder with <stem>.mic.m4a + <stem>.system.m4a> swift test --filter RealEchoFilter
 @Suite("Real echo filter", .enabled(if: ProcessInfo.processInfo.environment["STUDIO_AEC_DIR"] != nil))
 struct RealEchoFilterTests {
-    @Test("mic energy while the system side is active, before and after the filter")
+    @Test("mic energy while the system side is active, per suppression level")
     func measure() throws {
         let dir = URL(fileURLWithPath: ProcessInfo.processInfo.environment["STUDIO_AEC_DIR"]!)
         let rec = try #require(RecordingLibraryScanner.recordings(inFolder: dir).first { $0.tracks.count == 2 })
         let micURL = rec.tracks.first { $0.role == .microphone }!.url
         let sysURL = rec.tracks.first { $0.role == .system }!.url
-        let micF = try AVAudioFile(forReading: micURL)
-        let sysF = try AVAudioFile(forReading: sysURL)
-        let refF = try AVAudioFile(forReading: sysURL)
-        let rate = micF.processingFormat.sampleRate
-        let lag = try EchoDelayEstimator.estimate(micURL: micURL, systemURL: sysURL, duration: Double(micF.length) / rate) ?? 0
-        let delay = AVAudioFramePosition(max(0, lag - 0.02) * rate)
-        let aec = SoftwareAECProcessor(config: SoftwareAECProcessor.playbackConfiguration(sampleRate: rate))
+        let probe = try AVAudioFile(forReading: micURL)
+        let rate = probe.processingFormat.sampleRate
+        let lag = try EchoDelayEstimator.estimate(micURL: micURL, systemURL: sysURL, duration: Double(probe.length) / rate) ?? 0
+        let delay = AVAudioFramePosition(max(0, lag - EchoDelayEstimator.referenceMargin) * rate)
         let start = AVAudioFramePosition(Double(ProcessInfo.processInfo.environment["STUDIO_AEC_START"] ?? "600")! * rate)
-        let total = Int(180 * rate), block = 8192
-        func monoBlock(_ f: AVAudioFile, _ n: Int) -> [Float] {
-            let b = AVAudioPCMBuffer(pcmFormat: f.processingFormat, frameCapacity: AVAudioFrameCount(n))!
-            try? f.read(into: b, frameCount: AVAudioFrameCount(n))
-            let ch = Int(f.processingFormat.channelCount), got = Int(b.frameLength)
-            return (0..<n).map { i in i < got ? (0..<ch).reduce(Float(0)) { $0 + b.floatChannelData![$1][i] } / Float(ch) : 0 }
-        }
-        micF.framePosition = start; sysF.framePosition = start; refF.framePosition = start - delay
-        var before: Float = 0, after: Float = 0, activeBlocks = 0
-        let t0 = Date()
-        var done = 0
-        while done < total {
-            let m = monoBlock(micF, block), s = monoBlock(sysF, block), r = monoBlock(refF, block)
-            let out = aec.processAligned(mic: m, reference: r)
-            let sysPow = s.reduce(0) { $0 + $1 * $1 } / Float(block)
-            if done > Int(10 * rate), sysPow > 1e-4 {   // after 10 s of settling, system audible
-                before += m.reduce(0) { $0 + $1 * $1 }; after += out.reduce(0) { $0 + $1 * $1 }; activeBlocks += 1
+        let total = Int(120 * rate), block = 8192
+        var line = "echo filter: \(rec.displayName): delay \(Int(lag * 1000)) ms"
+        for mode in EchoFilterSettings.Suppression.allCases {
+            let micF = try AVAudioFile(forReading: micURL), sysF = try AVAudioFile(forReading: sysURL), refF = try AVAudioFile(forReading: sysURL)
+            let p = EchoProcessor(sampleRate: rate, settings: .init(strength: 1, suppression: mode, adaptation: .fast))
+            var before: Float = 0, after: Float = 0, done = 0
+            while done < total {
+                let at = start + AVAudioFramePosition(done)
+                let m = EchoCleaner.mono(EchoCleaner.read(micF, at: at, block))
+                let s = EchoCleaner.mono(EchoCleaner.read(sysF, at: at, block))
+                let r = EchoCleaner.mono(EchoCleaner.read(refF, at: at - delay, block))
+                let out = p.process(mic: m, reference: r)
+                let sysPow = s.reduce(0) { $0 + $1 * $1 } / Float(block)
+                if done > Int(10 * rate), sysPow > 1e-4 {
+                    before += m.reduce(0) { $0 + $1 * $1 }; after += out.reduce(0) { $0 + $1 * $1 }
+                }
+                done += block
             }
-            done += block
+            line += ", \(mode.rawValue) \(String(format: "%.1f", 10 * log10(before / max(after, 1e-12)))) dB"
         }
-        let secs = Date().timeIntervalSince(t0)
-        print("echo filter: \(rec.displayName): delay \(Int(lag * 1000)) ms, system-active blocks \(activeBlocks), mic energy reduced by \(10 * log10(before / max(after, 1e-12))) dB; 180 s of audio in \(secs) s (debug build)")
+        print(line)
     }
 }
 

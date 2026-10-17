@@ -22,22 +22,27 @@ public struct StudioMetadata: Codable, Sendable, Equatable {
     /// Transcript filenames whose timestamps are exact audio positions
     /// (written by the studio), so no live-timing correction applies.
     public var exactTimingTranscripts: [String]
+    /// The echo filter's delay set by hand (ms), instead of the measured
+    /// one. `nil` = measured automatically.
+    public var echoDelayMs: Double?
 
     public init(
         audioStart: Date? = nil,
         speakerNames: [String: String] = [:],
         syncOffsetSec: Double = 0,
-        exactTimingTranscripts: [String] = []
+        exactTimingTranscripts: [String] = [],
+        echoDelayMs: Double? = nil
     ) {
         self.version = Self.currentVersion
         self.audioStart = audioStart
         self.speakerNames = speakerNames
         self.syncOffsetSec = syncOffsetSec
         self.exactTimingTranscripts = exactTimingTranscripts
+        self.echoDelayMs = echoDelayMs
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, audioStart, speakerNames, syncOffsetSec, exactTimingTranscripts
+        case version, audioStart, speakerNames, syncOffsetSec, exactTimingTranscripts, echoDelayMs
     }
 
     public init(from decoder: Decoder) throws {
@@ -47,6 +52,7 @@ public struct StudioMetadata: Codable, Sendable, Equatable {
         speakerNames = try c.decodeIfPresent([String: String].self, forKey: .speakerNames) ?? [:]
         syncOffsetSec = try c.decodeIfPresent(Double.self, forKey: .syncOffsetSec) ?? 0
         exactTimingTranscripts = try c.decodeIfPresent([String].self, forKey: .exactTimingTranscripts) ?? []
+        echoDelayMs = try c.decodeIfPresent(Double.self, forKey: .echoDelayMs)
     }
 
     /// Display name for a raw speaker id: the user's name, else `S1`-style.

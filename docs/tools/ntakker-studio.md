@@ -128,6 +128,25 @@
           three real recordings: the mic is 15–16 dB quieter while the
           system side talks on two of them, about 3 dB on the third, which
           is mostly speech in the room (kept, as it should be).
+        - **Echo filter settings** (the sliders button next to Remove
+          echo; they also apply to Export Copy with echo removal):
+          - *Strength* 0–100 %: out = (1 − s)·mic + s·filtered.
+          - *Extra suppression* off / low / high: a second stage
+            (`ResidualEchoSuppressor`, 512-sample frames, 10.7 ms of
+            delay) that turns each frequency down by how much of it is the
+            echo the canceller estimated, catching what the canceller
+            cannot model (reverb, speaker distortion). Measured on two
+            echo-heavy recordings (two minutes, system side talking):
+            off 16 dB, low 23 dB, high 28 dB. Local speech over the echo
+            loses at most 1.5 dB (low) / 3 dB (high) in tests.
+          - *Adaptation* stable / fast: the canceller's learning speed
+            (fast = μ 0.3; stable = μ 0.05, smaller steps). Changing it
+            restarts the learning.
+          - *Echo delay by hand* 0–400 ms: replaces the measured delay for
+            this recording; saved as `echoDelayMs` in `<stem>.studio.json`.
+          Strength, suppression and adaptation are app-wide
+          (`studio.echo.*` preferences); unset means full strength, off,
+          fast.
         - Space plays / pauses and Left / Right skip 5 s, but only while
           no text field has keyboard focus. The Playback menu offers the
           same actions as Option-Space, Option-Left, Option-Right, which

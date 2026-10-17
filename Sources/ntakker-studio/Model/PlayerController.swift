@@ -38,6 +38,16 @@ final class PlayerController {
     var echoFilter = false {
         didSet { reader?.setEchoFilter(echoFilter) }
     }
+    /// Strength, second-stage suppression and adaptation speed.
+    var echoSettings = EchoFilterSettings.load() {
+        didSet { if echoSettings != oldValue { reader?.setSettings(echoSettings) } }
+    }
+    /// The echo delay set by hand (seconds); `nil` = the measured one.
+    var echoDelayOverride: Double? {
+        didSet { if echoDelayOverride != oldValue { applyEchoDelay() } }
+    }
+    /// The delay in use: the override, else the measured one.
+    var effectiveEchoDelay: Double? { echoDelayOverride ?? echoDelay }
     /// Measured delay of the echo behind the system track, once known.
     private(set) var echoDelay: Double?
     var rate: Float = 1 {
@@ -87,14 +97,18 @@ final class PlayerController {
                 }
             }
             r.setEchoFilter(echoFilter)
+            r.setSettings(echoSettings)
+            applyEchoDelay()
             if r.hasEchoReference, let mic = tracks.first(where: { $0.role == .microphone }),
                let sys = tracks.first(where: { $0.role == .system }) {
                 let length = duration
                 Task.detached(priority: .utility) { [weak self] in
                     let lag = (try? EchoDelayEstimator.estimate(micURL: mic.url, systemURL: sys.url, duration: length)) ?? nil
                     guard let lag else { return }
-                    r.setReferenceDelay(seconds: lag - EchoDelayEstimator.referenceMargin)
-                    await MainActor.run { self?.echoDelay = lag }
+                    await MainActor.run {
+                        self?.echoDelay = lag
+                        if self?.echoDelayOverride == nil { self?.applyEchoDelay() }
+                    }
                 }
             }
         } catch {
@@ -103,6 +117,11 @@ final class PlayerController {
         timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
+    }
+
+    private func applyEchoDelay() {
+        guard let d = effectiveEchoDelay else { return }
+        reader?.setReferenceDelay(seconds: d - EchoDelayEstimator.referenceMargin)
     }
 
     func togglePlay() { isPlaying ? pause() : play() }
@@ -183,7 +202,7 @@ final class BlockReader: @unchecked Sendable {
 
     private let queue = DispatchQueue(label: "ntakker-studio.player.reader", qos: .userInitiated)
     private let files: [(file: AVAudioFile, role: AudioTrackRole)]
-    private let aec: SoftwareAECProcessor?
+    private let echo: EchoProcessor?
     /// A second reader of the system track for the echo reference, read
     /// `referenceDelay` frames behind the playback position.
     private let referenceFile: AVAudioFile?
@@ -208,7 +227,8 @@ final class BlockReader: @unchecked Sendable {
         length = opened.map(\.file.length).max() ?? 0
         hasEchoReference = opened.contains { $0.role == .microphone } && opened.contains { $0.role == .system }
         let echo = opened.contains { $0.role == .microphone } && opened.contains { $0.role == .system }
-        aec = echo ? SoftwareAECProcessor(config: SoftwareAECProcessor.playbackConfiguration(sampleRate: rate)) : nil
+
+        self.echo = echo ? EchoProcessor(sampleRate: rate, settings: .standard) : nil
         referenceFile = echo ? try tracks.first { $0.role == .system }.map { try AVAudioFile(forReading: $0.url) } : nil
     }
 
@@ -218,8 +238,12 @@ final class BlockReader: @unchecked Sendable {
     func setReferenceDelay(seconds: Double) {
         queue.async {
             self.referenceDelay = AVAudioFramePosition(max(0, seconds) * self.format.sampleRate)
-            self.aec?.resetAlignedTimeline(clearingEchoPath: true)
+            self.echo?.resetEchoPath()
         }
+    }
+
+    func setSettings(_ settings: EchoFilterSettings) {
+        queue.async { self.echo?.update(settings) }
     }
 
     func setEchoFilter(_ on: Bool) { queue.async { self.echoFilter = on } }
@@ -230,7 +254,7 @@ final class BlockReader: @unchecked Sendable {
             running = true
             position = max(0, min(frame, length))
             queued = 0
-            aec?.resetAlignedTimeline()
+            echo?.resetTimeline()
             for _ in 0..<Self.targetQueued { produce() }
         }
     }
@@ -287,10 +311,10 @@ final class BlockReader: @unchecked Sendable {
             // The reference is the system track `referenceDelay` frames
             // earlier, so the echo falls inside the filter's window.
             let reference = referenceFile.map { mono(read($0, frames: n, at: position - referenceDelay), n) } ?? system
-            if let aec, let reference {
-                let cleaned = aec.processAligned(mic: mic, reference: reference)
+            if let echo, let reference {
                 // While the filter is off it keeps learning, so switching
                 // it on is instant.
+                let cleaned = echo.process(mic: mic, reference: reference, produceOutput: echoFilter)
                 add(echoFilter ? [cleaned] : micStereo, to: out, n)
             } else {
                 add(micStereo, to: out, n)
