@@ -1511,6 +1511,19 @@ install snippet (`cd tools/convo-coach && npm install && npm link`).
 - **Clicking the menu-bar icon while the window is open** docks the UI back: the window closes and the popover opens under the icon. The window's header button ("Return to the menu bar") does the same.
 - Level meters keep running while the window is shown.
 
+#### FR-STU-1..10 — ntakker-studio, the recordings explorer
+**Status:** IMPLEMENTED (2026-10-17, plan-024, user request; see `docs/refined_requests/refined-request-001-ntakker-studio.md`). A separate Dock app next to ntakker (`com.giorgosmarinos.ntakker-studio`).
+- **FR-STU-1 Library.** Lists every recording under a library folder (the studio's own setting; first launch adopts ntakker's recording folder; otherwise the user must choose one), grouped by month. A recording is the audio and transcripts sharing a stem; each `.partNN` is its own entry.
+- **FR-STU-2 Player.** Plays the recording; a split recording plays mic and system together. Speeds 0.75–2×. Space and ←/→ when no text field has focus.
+- **FR-STU-3 Transcript study.** All transcripts of the recording on one timeline with time, speaker and source; the line being played is highlighted and followed; text and speaker filters; several transcripts can be shown at once.
+- **FR-STU-4 Jump to moment.** Clicking a line (or its time) seeks the player to where the line was spoken. A per-recording offset corrects live-transcript timing.
+- **FR-STU-5 Cut.** Ranges selected on the waveform or from lines are removed in a new copy (audio in the same format, transcripts re-timed, lines mostly inside a cut dropped). The originals are never modified. Cut preview skips the ranges during playback.
+- **FR-STU-6 Ask.** Questions over the whole transcript through ntakker's Ask provider; answers cite `[mm:ss]` moments that are clickable; saved to `<stem>.studio-qa.md`.
+- **FR-STU-7 Minutes.** Summary, topics, decisions, action items and open questions with timecodes, optionally in a chosen language; saved to `<stem>.minutes.md`.
+- **FR-STU-8 Speakers.** Rename diarized speakers per recording (`<stem>.studio.json`); names are used everywhere in the studio.
+- **FR-STU-9 Edit text.** Fix a line's text; saved back to the JSONL, with a one-time `.orig` backup.
+- **FR-STU-10 Re-transcribe and search.** Re-transcribe a recording with a batch provider (parakeet, whisperkit, gemini, azure, elevenlabs) into a new exact-timed transcript. Search every transcript in the library (case- and accent-insensitive, all words) and open a result at its moment.
+
 ---
 
 ## 2. Non-functional requirements

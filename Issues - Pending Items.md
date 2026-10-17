@@ -6,6 +6,14 @@
 
 ## Pending items (most critical first)
 
+### plan-024 — ntakker-studio v1: open items (2026-10-17)
+- **Live checks still to do by the user:** a first Ask question and a set of minutes against the configured provider (sends the whole transcript); exporting a cut of a real split recording from the app; a re-transcription with Parakeet. Unit tests cover all three paths, and an M4A cut was checked on a real file.
+- **Audio start is estimated** from the audio file's creation date (≈±1 s), and batch-provider lines also carry the provider's round-trip delay. The Info tab's line offset corrects it per recording. Proper fix: ntakker writes the exact first-sample time into a session sidecar at record time, and the studio reads it as `audioStart`.
+- **Streaming providers cannot re-transcribe** (Soniox, Apple, Apple Cloud, Azure Realtime). Soniox has an async file API that would also bring diarization to re-transcriptions; not implemented.
+- **Mic and system transcripts both show by default**, so speech the system side also captured appears twice (seen on bancassurance 2026-10-16). Use the transcript picker to show one; a dedupe view could merge them.
+- SRT / VTT / TXT sidecars are not read; JSONL is the source.
+
+
 ### EVAL-2026-10-16 — Quality / speed / resource-efficiency scan: 74 new findings registered
 **RESOLUTION UPDATE (2026-10-17) — plan-023 hygiene wave landed** ([docs/plans/plan-023-eval-2026-10-16-hygiene.md](docs/plans/plan-023-eval-2026-10-16-hygiene.md)):
 - **Fixed, one commit each:**

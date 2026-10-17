@@ -12,6 +12,7 @@ let package = Package(
         .executable(name: "ntakker-cli", targets: ["ntakker-cli"]),
         .library(name: "NtakkerCore", targets: ["NtakkerCore"]),
         .executable(name: "ntakker", targets: ["ntakker"]),
+        .executable(name: "ntakker-studio", targets: ["ntakker-studio"]),
     ],
     dependencies: [
         .package(
@@ -168,6 +169,60 @@ let package = Package(
             name: "NtakkerUITests",
             dependencies: ["NtakkerUIKit"],
             path: "Tests/NtakkerUITests",
+            swiftSettings: [
+                .unsafeFlags([
+                    "-F",
+                    "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
+                ])
+            ],
+            linkerSettings: [
+                .unsafeFlags([
+                    "-F",
+                    "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
+                    "-Xlinker",
+                    "-rpath",
+                    "-Xlinker",
+                    "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
+                    "-Xlinker",
+                    "-rpath",
+                    "-Xlinker",
+                    "/Library/Developer/CommandLineTools/Library/Developer/usr/lib",
+                ])
+            ]
+        ),
+        // -- ntakker-studio (plan-024) --
+        // Testable logic for the recordings explorer: library scan,
+        // timing, cut + retime, Ask prompts, search, re-transcribe.
+        .target(
+            name: "NtakkerStudioKit",
+            dependencies: [
+                "NtakkerCore",
+                .product(name: "Logging", package: "swift-log"),
+            ],
+            path: "Sources/NtakkerStudioKit"
+        ),
+        // The Dock app. Own plist and bundle id (com.giorgosmarinos.ntakker-studio).
+        .executableTarget(
+            name: "ntakker-studio",
+            dependencies: [
+                "NtakkerCore",
+                "NtakkerStudioKit",
+                .product(name: "Logging", package: "swift-log"),
+            ],
+            path: "Sources/ntakker-studio",
+            linkerSettings: [
+                .unsafeFlags([
+                    "-Xlinker", "-sectcreate",
+                    "-Xlinker", "__TEXT",
+                    "-Xlinker", "__info_plist",
+                    "-Xlinker", "Resources/NtakkerStudio-Info.plist",
+                ])
+            ]
+        ),
+        .testTarget(
+            name: "NtakkerStudioTests",
+            dependencies: ["NtakkerStudioKit", "NtakkerCore"],
+            path: "Tests/NtakkerStudioTests",
             swiftSettings: [
                 .unsafeFlags([
                     "-F",

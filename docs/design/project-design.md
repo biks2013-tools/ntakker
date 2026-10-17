@@ -13053,3 +13053,42 @@ overridden by the user. None are blockers.
 
 ---
 
+
+## ntakker-studio — Recordings Explorer (plan-024)
+
+Added 2026-10-17. Request: `docs/refined_requests/refined-request-001-ntakker-studio.md`. Plan: `docs/plans/plan-024-ntakker-studio.md`. User guide: `docs/tools/ntakker-studio.md`.
+
+### STU-1 — Targets
+
+| Target | Kind | Role |
+|---|---|---|
+| `NtakkerStudioKit` | library (`Sources/NtakkerStudioKit`) | All testable logic. Depends on `NtakkerCore` only. |
+| `ntakker-studio` | executable (`Sources/ntakker-studio`) | SwiftUI Dock app; embeds `Resources/NtakkerStudio-Info.plist` (`com.giorgosmarinos.ntakker-studio`). |
+| `NtakkerStudioTests` | Swift Testing | Kit suites; real-file timing/cut suites run only with `STUDIO_WAVEFORM_FILE` / `STUDIO_CUT_FILE` set. |
+
+Packaging mirrors ntakker: `scripts/package-ntakker-studio-app.sh`, `scripts/redeploy-ntakker-studio.sh`.
+
+### STU-2 — Kit modules
+
+- `Library/` — `Recording`, `AudioTrack`, `TranscriptFile`; `RecordingLibraryScanner` groups one folder's files by stem (longest stem claims `.partNN` transcripts first; `.mic`/`.system` → split tracks; a folder with one base stem is a session folder and lends its name).
+- `Transcript/` — `StudioMetadata` (`<stem>.studio.json`; a corrupt file throws rather than being replaced), `SegmentTiming`, `TranscriptDocument` (load via `JSONLTranscriptReader`; save by writing every segment with `JSONLTranscriptWriter` to a temp file, `.orig` backup once, atomic replace).
+- `Cutting/` — `CutPlan` (clamp, merge, kept ranges, time mapping), `TranscriptRetimer` (drop a line when < 50 % survives; new timestamp = audio start + mapped offset), `AudioCutter` (AVAudioFile copy of the kept frame ranges in the source's own settings; AAC stays AAC), `RecordingCutExporter` (destination folder rules; removes the half-written folder on failure).
+- `Ask/` — `StudioAsk` (Q&A and minutes prompts; transcript as `[hh:mm:ss] Speaker: text`, same-speaker lines < 3 s apart merged; 6 exchanges of history), `StudioNotes` (append Q&A, replace minutes), `TimecodeLinks` (`[mm:ss]` → `ntakker-studio://seek?t=N`).
+- `Search/` — `TranscriptSearchIndex` actor: folded (case, diacritics, width) lines; re-reads a transcript only when its modification date changes.
+- `Retranscribe/` — `Retranscriber`: provider from `ConfigResolver(toolName: "ntakker")` with `NTAKKER_TRANSCRIBE` (and languages) overridden, built by `TranscriptionProviderFactory` through the shared `TranscriptionProviderFactoryInput(options:logger:)` (moved out of `RecordingSession`); decode to 16 kHz mono with `AVAudioConverter` (downmix); cut at the first quiet 50 ms frame after the target, else the quietest before the maximum (cloud: 20/30 s; on-device: the provider's `chunkPolicy`); `TranscriptSanitizer.clean` per chunk; one segment per chunk at `audioStart + chunk start`.
+- `Audio/` — `WaveformPeaks`: per-1024-frame `vDSP_maxmgv` peaks folded into N buckets (≈1.3 s per 1.6 h AAC track).
+
+### STU-3 — Timing model
+
+ntakker stamps segments with wall-clock time. The studio places a line at `timestamp − audioStart`, where `audioStart` is `studio.json`'s value or the first audio file's creation date. Streaming providers (`soniox`, `apple`, `apple-cloud`, `azure-openai-realtime`, `gemini-live`) stamp the utterance start; the batch pipeline stamps the result's arrival, so `durationSec` is subtracted. A per-recording `syncOffsetSec` nudges live transcripts. Studio-written transcripts (cuts, re-transcriptions) are listed in `exactTimingTranscripts` and placed without correction.
+
+### STU-4 — App
+
+`LibraryStore` (folder, scan, index, search, selection) → `RecordingWorkspace` per open recording (documents, entries, filters, cuts, Ask/minutes/re-transcribe tasks) → `PlayerController` (AVPlayer over an `AVMutableComposition` of all tracks, 20 Hz time, skip ranges for cut preview). Views: `LibrarySidebar`, `RecordingDetailView` (header, `PlayerBar`, `WaveformStrip`), `TranscriptPane`, `InspectorPane` (Ask, Minutes, Speakers, Cut, Re-transcribe, Info), `MarkdownText`. The tools column is fixed-width in an HStack: an `HSplitView` sized panes by unwrapped text and pushed the content past the window edges.
+
+### STU-5 — Decisions
+
+- **STU-ADR-1** Cuts write a new copy; originals are read-only to the studio except for explicit text edits (backed up) and the studio's own sidecars. (User decision, 2026-10-17.)
+- **STU-ADR-2** Ask/minutes use ntakker's Ask configuration; the studio loads `~/.tool-agents/ntakker/.env` at launch and has no configuration folder of its own. (User decision.)
+- **STU-ADR-3** No silent library default: the studio adopts ntakker's folder setting or asks.
+- **STU-ADR-4** Re-transcription is batch-only in v1; streaming providers would need a faster-than-real-time feed and file-relative timestamps.

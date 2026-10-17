@@ -270,6 +270,12 @@ macOS menu-bar status item app that drives the same `NtakkerCore` engine as the 
 
 Documentation: [docs/tools/ntakker.md](docs/tools/ntakker.md)
 
+### ntakker-studio
+
+macOS Dock app (`com.giorgosmarinos.ntakker-studio`, plan-024) for exploring finished recordings: library and full-text search across every transcript, playback with the transcript followed line by line and click-to-jump, cutting ranges into a new copy with re-timed transcripts, Ask and meeting minutes over the whole transcript (ntakker's Ask settings), speaker renaming, transcript text edits, and re-transcription with ntakker's batch providers.
+
+Documentation: [docs/tools/ntakker-studio.md](docs/tools/ntakker-studio.md)
+
 ### convo-coach
 
 TypeScript CLI that reads a `ntakker-cli` transcript sidecar and streams live conversational coaching advice from any of the eight standard LLM providers (OpenAI, Anthropic, Google Gemini, Azure OpenAI, Azure AI Inference, Ollama, LiteLLM, MLX-LM) via LangChain (`@langchain/*`), writing every response to a dated `.advice-*.md` sidecar. Defaults to `azure-openai` when neither `--provider` nor `COACH_PROVIDER` is set (Project Memory Exception 003); four operational parameters fall back to documented defaults (Exception 004).
