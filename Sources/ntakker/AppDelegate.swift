@@ -208,8 +208,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         //     `setenv(..., overwrite=1)`), matching the canonical
         //     chain order where the user `.env` (tier 2) sits above
         //     the shell env (tier 1).
-        let merged = EnvFileStore.loadIntoProcess(toolName: AppDelegate.toolAgentsName)
-        logger.info("merged \(merged.count) env-file key(s) into process environment")
+        //     A9: a malformed file is logged as an error rather than
+        //     silently ignored; nothing is loaded from it, matching
+        //     what the CLI does with the same file.
+        do {
+            let merged = try EnvFileStore.loadIntoProcess(toolName: AppDelegate.toolAgentsName)
+            logger.info("merged \(merged.count) env-file key(s) into process environment")
+        } catch {
+            logger.error("could not load ~/.tool-agents/\(AppDelegate.toolAgentsName)/.env — none of its keys are in effect: \(error.localizedDescription)")
+        }
 
         logger.info("ntakker launching (bundle id=\(Bundle.main.bundleIdentifier ?? "<nil>"))")
 

@@ -747,6 +747,14 @@
         3. **Local `.env`** — `./.env` in the current working directory.
         4. **CLI flags** — *n/a in v1* (`ntakker` accepts no command-line arguments).
 
+        The app parses `.env` files with the same parser as the CLI:
+        `KEY="a b"` and `KEY='a b'` both mean `a b`, and an unquoted
+        ` # …` starts a comment. If the user `.env` is malformed (for
+        example a line without `=`), the app loads none of it and logs
+        an error naming the file and line. Before 2026-10-17 it kept
+        the quotes and silently skipped bad lines. Values saved from
+        Settings are quoted when they need it.
+
         ### Environment variables
 
         | Variable                            | Purpose                                                                                                                                                                                                       | Allowed values                          | Default               |

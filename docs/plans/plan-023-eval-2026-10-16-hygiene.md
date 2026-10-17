@@ -15,7 +15,8 @@ Approved: 2026-10-17. The user said "Do the cleanup items". One commit per task.
   - Seen once under full-suite load: two `FakeAudioSource` timing tests ("skipNextEmission…", "injectPTSJump…") failed and then passed 3 of 3 when run alone. They are timing-sensitive (5 ms buffers and semaphores) and flaky; this is not a regression.
 - [x] **T2 (F33)** The four transcript writers (JSONL, TXT, SRT, VTT) each copy the byte-range index, the short-grow padding and the long-grow tombstone-and-append code. Extract one rewriting file writer; the format writers keep only their rendering.
   - Done. `RewritableSegmentFile` owns the handle, the byte index and both grow paths; each format writer supplies its rendering, terminator and tombstone. New short-grow and long-grow tests for TXT, SRT and VTT (only JSONL had them) pass on both the old and the new writers, so the bytes on disk are unchanged.
-- [ ] **T3 (A9)** `EnvFileStore` (the app) has its own minimal `.env` parser that keeps quotes and silently ignores a malformed file. Delegate to `DotEnvParser`, log parse failures, and quote values on write when needed.
+- [x] **T3 (A9)** `EnvFileStore` (the app) has its own minimal `.env` parser that keeps quotes and silently ignores a malformed file. Delegate to `DotEnvParser`, log parse failures, and quote values on write when needed.
+  - Done. `loadIntoProcess` now throws, and `AppDelegate` logs the error at launch; a malformed file loads nothing, as in the CLI. `read` still returns nil on a bad file. `upsert` quotes values with surrounding whitespace, a `#`, or a leading quote.
 - [ ] **T4 (UI-2 / UI-3)** Pause, Resume and Split are unreachable in the popover. Expose them in the status bar while recording, and stop a pause from tearing down the level meters or flashing the stopped UI.
 - [ ] **T5 (convo-coach B1 / B5 / B10 / CC-10 / CC-11)**
   - Parse stdin records incrementally instead of re-parsing the whole history on every trigger.

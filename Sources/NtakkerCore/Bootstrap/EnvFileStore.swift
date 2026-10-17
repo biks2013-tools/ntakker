@@ -29,11 +29,14 @@
 //      callers reading from `ProcessInfo` immediately see the change
 //      without an app restart.
 //
-// The parse is intentionally minimal: `KEY=VALUE` per line, optional
-// surrounding whitespace, comments start with `#`. No quoting, no
-// multi-line values, no `${VAR}` expansion. Matches what the project's
-// docs show as the on-disk shape (see `~/.tool-agents/ntakker/.env`
-// header comment).
+// Parsing is delegated to `DotEnvParser`, the parser the CLI's
+// `ConfigResolver` uses (EVAL-2026-06-12 A9, plan-023 T3). The store
+// used to carry its own minimal parser that kept quotes, so
+// `KEY="a b"` meant `a b` to the CLI and `"a b"` (quotes included) to
+// the app, and it skipped malformed lines silently. Now both surfaces
+// read the file identically, a malformed file is reported instead of
+// ignored, and `upsert` quotes values that would otherwise be read
+// back differently.
 
 import Foundation
 #if canImport(Darwin)
@@ -62,12 +65,14 @@ public enum EnvFileStore {
     /// Settings panel and the popover diverge (real bug observed
     /// 2026-04-29: shell-exported `AZURE_OPENAI_DEPLOYMENT=gpt-5.1`
     /// shadowed a freshly-saved `.env` value).
+    ///
+    /// - Throws: `NtakkerError.dotEnvParseError` / `.ioError` when the
+    ///   file exists but cannot be read or parsed. Nothing is loaded in
+    ///   that case — the same answer the CLI gives for the same file.
     @discardableResult
-    public static func loadIntoProcess(toolName: String) -> [String: String] {
+    public static func loadIntoProcess(toolName: String) throws -> [String: String] {
         let url = ToolAgentsBootstrap.userEnvPath(toolName: toolName)
-        guard let parsed = try? parse(at: url) else {
-            return [:]
-        }
+        let parsed = try parse(at: url)
         for (k, v) in parsed {
             setenv(k, v, /*overwrite*/ 1)
         }
@@ -109,7 +114,7 @@ public enum EnvFileStore {
             original = ""
         }
 
-        let updated = rewrite(source: original, key: key, value: value)
+        let updated = rewrite(source: original, key: key, value: try quoted(value))
         do {
             try updated.write(to: url, atomically: true, encoding: .utf8)
         } catch {
@@ -139,26 +144,31 @@ public enum EnvFileStore {
 
     // MARK: - Parsing helpers (internal — exposed for tests)
 
-    /// Parse the file at `url` into a `[KEY: VALUE]` dictionary.
-    /// Throws if the file exists but cannot be read; returns empty if
-    /// the file is missing.
+    /// Parse the file at `url` into a `[KEY: VALUE]` dictionary with
+    /// `DotEnvParser`. Returns empty if the file is missing; throws if
+    /// it exists but cannot be read or parsed.
     static func parse(at url: URL) throws -> [String: String] {
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            return [:]
-        }
-        let raw = try String(contentsOf: url, encoding: .utf8)
-        var out: [String: String] = [:]
-        for line in raw.split(separator: "\n", omittingEmptySubsequences: false) {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
-            guard let eq = trimmed.firstIndex(of: "=") else { continue }
-            let key = String(trimmed[..<eq]).trimmingCharacters(in: .whitespaces)
-            let value = String(trimmed[trimmed.index(after: eq)...])
-                .trimmingCharacters(in: .whitespaces)
-            if key.isEmpty { continue }
-            out[key] = value
-        }
-        return out
+        try DotEnvParser.parseFile(at: url)
+    }
+
+    /// `value` as it must be written so `DotEnvParser` reads it back
+    /// unchanged. Plain values are written as-is. A value with leading
+    /// or trailing whitespace, a `#`, or a leading quote is wrapped in
+    /// double quotes, or in single quotes when it contains a double
+    /// quote. A value containing both quote kinds and needing quotes
+    /// cannot be represented and throws.
+    static func quoted(_ value: String) throws -> String {
+        let needsQuotes = value != value.trimmingCharacters(in: .whitespaces)
+            || value.contains("#")
+            || value.first == "\"" || value.first == "'"
+        guard needsQuotes else { return value }
+        if !value.contains("\"") { return "\"\(value)\"" }
+        if !value.contains("'") { return "'\(value)'" }
+        throw NtakkerError.invalidConfigValue(
+            key: "(.env value)",
+            value: "<redacted>",
+            expected: "a value without both single and double quotes (it needs quoting)"
+        )
     }
 
     /// Pure-string transform: take the original file content and
