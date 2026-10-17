@@ -7,7 +7,7 @@ cask "ntakker-studio" do
   desc "Explore ntakker recordings: transcripts, playback, cuts, Q&A and minutes"
   homepage "https://github.com/biks2013-tools/ntakker"
 
-  depends_on macos: ">= :tahoe"
+  depends_on macos: :tahoe
 
   app "ntakker-studio.app"
 
