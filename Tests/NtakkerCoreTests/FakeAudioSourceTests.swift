@@ -220,15 +220,19 @@ struct FakeAudioSourceTests {
             return
         }
 
-        // The PTS gap between buffer[1] and buffer[2] should be ~2 × step
-        // because one tick was skipped (emittedFrames advanced but no buffer
-        // was emitted).
-        let pts1 = CMSampleBufferGetPresentationTimeStamp(collected[1].buffer)
-        let pts2 = CMSampleBufferGetPresentationTimeStamp(collected[2].buffer)
-        let gap = CMTimeGetSeconds(CMTimeSubtract(pts2, pts1))
-        // Must be substantially more than one normal step.
-        #expect(gap > expectedStep * 1.5,
-                "Expected gap ~\(expectedStep * 2)s after skip, got \(gap)s")
+        // Exactly one consecutive pair is ~2 × step apart, because one
+        // tick was skipped (emittedFrames advanced but no buffer was
+        // emitted). Which pair depends on how many 5 ms ticks fired
+        // between buffer 2 arriving and the skip being injected — under
+        // a loaded test run that can be one or two more, so the test
+        // no longer pins it to buffers 1→2.
+        let gaps = zip(collected, collected.dropFirst()).map { a, b in
+            CMTimeGetSeconds(CMTimeSubtract(
+                CMSampleBufferGetPresentationTimeStamp(b.buffer),
+                CMSampleBufferGetPresentationTimeStamp(a.buffer)))
+        }
+        let skipped = gaps.filter { $0 > expectedStep * 1.5 }
+        #expect(skipped.count == 1, "Expected one ~\(expectedStep * 2)s gap after the skip, got gaps \(gaps)")
     }
 
     // MARK: - injectPTSJump
@@ -279,13 +283,17 @@ struct FakeAudioSourceTests {
             return
         }
 
-        // Buffer[1] → buffer[2]: expected diff ≈ jumpSeconds + normalStep.
-        let pts1 = CMSampleBufferGetPresentationTimeStamp(collected[1].buffer)
-        let pts2 = CMSampleBufferGetPresentationTimeStamp(collected[2].buffer)
-        let diff = CMTimeGetSeconds(CMTimeSubtract(pts2, pts1))
+        // Exactly one consecutive pair differs by ≈ jumpSeconds +
+        // normalStep — not pinned to buffers 1→2, for the same reason as
+        // the skip test above.
+        let diffs = zip(collected, collected.dropFirst()).map { a, b in
+            CMTimeGetSeconds(CMTimeSubtract(
+                CMSampleBufferGetPresentationTimeStamp(b.buffer),
+                CMSampleBufferGetPresentationTimeStamp(a.buffer)))
+        }
         let expectedDiff = jumpSeconds + normalStep
-        #expect(abs(diff - expectedDiff) < 0.01,
-                "Expected PTS diff ~\(expectedDiff)s after jump, got \(diff)s")
+        let jumps = diffs.filter { abs($0 - expectedDiff) < 0.01 }
+        #expect(jumps.count == 1, "Expected one PTS diff ~\(expectedDiff)s after the jump, got \(diffs)")
     }
 
     // MARK: - stop()
