@@ -7,11 +7,29 @@
 ## Pending items (most critical first)
 
 ### EVAL-2026-10-16 — Quality / speed / resource-efficiency scan: 74 new findings registered
+**RESOLUTION UPDATE (2026-10-17) — plan-023 hygiene wave landed** ([docs/plans/plan-023-eval-2026-10-16-hygiene.md](docs/plans/plan-023-eval-2026-10-16-hygiene.md)):
+- **Fixed, one commit each:**
+  - F31 + TR-10 + TR-16: shared HTTP retry policy, `Retry-After` capped at 30 s, half-open breaker re-opens on a failed probe, and Gemini 401/403 trip the breaker.
+  - F33: one rewrite engine for the four transcript writers.
+  - A9: the app reads `.env` with the CLI's parser.
+  - UI-2 / UI-3: Pause, Resume and Split in the popover, with no stopped-state flash on pause.
+  - convo-coach B1 / B5 / B10 / CC-10 / CC-11.
+  - L3: dead views deleted.
+  - C6: M4A stall cap.
+  - C7: split completes forward when the old part fails to finalize.
+  - CAP-18: mic disconnect handled.
+  - The `--transcribe-source mic` resolver bug from plan-022.
+- **Baseline test failures 11 → 5.**
+  - The five Gemini REST failures were test bugs: the stub handler was reset after being set.
+  - Two `FakeAudioSource` timing tests were racy and are fixed.
+  - Remaining: gemini-live API-key test, partNN sidecar naming, SonioxConfigBuilder V1, AudioDownsampler:144, UIErrorPresenter:220.
+- Manual checks pending: popover Pause/Resume/Split; unplugging a mic mid-recording.
+
 **RESOLUTION UPDATE (2026-10-17) — plan-022 CPU / energy wave landed** ([docs/plans/plan-022-eval-2026-10-16-cpu-energy.md](docs/plans/plan-022-eval-2026-10-16-cpu-energy.md)):
 - **Fixed, one commit each:** TR-14 / F1 (ordered, bounded transcription fan-out), A6 / A7 (batched, rotating log file; quieter hot logs), M1 / M2 / UI-5 (meters), CAP-3 / CAP-11 and the AEC part of CAP-6, TR-11 + F28 / F29 (on-device model cache and warm-up), TR-2 (10–14 s silence-cut chunks for on-device models).
 - **New, fixed:** the AEC's reference window was misaligned, so the opt-in echo canceller never cancelled echo. It now converges on a synthetic echo and costs about 3.3× less CPU.
 - **New, fixed:** the CLI rejected `--transcribe parakeet` and `--transcribe apple-cloud`.
-- **New, open (Medium):** `--transcribe-source mic` fails with "requires a microphone (current --mic is disabled)" unless `--mic-device` is given, because `ConfigResolver` (Step 8) treats an unset device (system default) as disabled. This is the cause of the baseline failure "Shell env supplies transcription keys". Workaround: pass `--mic-device`.
+- **New, fixed in plan-023 T10:** `--transcribe-source mic` failed with "requires a microphone (current --mic is disabled)" unless `--mic-device` was given, because `ConfigResolver` (Step 8) treated an unset device (system default) as disabled. This was the cause of the baseline failure "Shell env supplies transcription keys".
 - Still open from this wave's scope: moving the mic upmix from capture to the encoder (rest of CAP-6).
 - No new test failures; the same 11 pre-existing ones remain.
 

@@ -31,7 +31,7 @@
 | 17 | **CAP-10** | Med | `SCKitSystemAudioSource.swift:419-436, 527` | `restartStream` has no in-progress latch → overlapping restarts can leak a live SCStream. | S |
 | 18 | **INF-2** | Med | `SonioxStreamingSession.swift:330-342`, `SonioxKeepaliveTimer.swift:49` | `finish()` racing a reconnect leaves a fresh socket + a 10 s keepalive loop alive forever. | S |
 | 19 | **INF-7** | Med | `Asking/AskConfig.swift:125,134,149,211` | Force-unwrapped `URL(string: env…)!` — a malformed `*_BASE_URL`/`OLLAMA_HOST` crashes the menu-bar app. | S |
-| 20 | **UI-2 / UI-3** | Med | `PopoverStatusBar.swift:108-129`, `RecordingController.swift:682-689` | Pause/Resume/Split are unreachable in the popover (ControlBar only shown idle/failed). Once exposed, pause tears down level meters and flashes the "stopped" UI. | S |
+| 20 | **UI-2 / UI-3** *(fixed, plan-023)* | Med | `PopoverStatusBar.swift:108-129`, `RecordingController.swift:682-689` | Pause/Resume/Split are unreachable in the popover (ControlBar only shown idle/failed). Once exposed, pause tears down level meters and flashes the "stopped" UI. | S |
 
 ## 2. Highest-leverage speed & resource-efficiency improvements
 
@@ -53,7 +53,7 @@
 | 14 | **Smaller hot-path allocs** | CAP-12, CAP-15, CAP-16, CAP-17, C3, TR-18/INF-11 | Per-buffer `[[Float]]`/malloc in AEC extraction; mix computed twice in `.mixed`; stereo-split builds 4 arrays + new format description per frame, `pending.removeFirst()` O(n); `stateQueue.async`+`Date()` heartbeat per buffer (~94 closures/s); `PCMConvert.floatToInt16LE` 3 allocations/chunk; `JSONDecoder` per Soniox frame | Pointer access + `CMMemoryPool`, share the mix, cache format description + Deque, atomic `mach_absolute_time` heartbeat, in-place clamp into `Data(count:)`, static decoders. | S each |
 | 15 | **UI-7 / UI-8 / M3 / M8** | `AskingModeView.swift`, `ResizeHandle.swift`, `LiveTranscriptPanel.swift`, `RecordingStarter.swift` | Per-token main-actor publish + full-string `onChange` (O(L²)); `@AppStorage` write + sync layout per drag tick; non-lazy transcript list with animated scroll per partial; `.env` parsed up to 7× per Start click | Batch tokens ~50 ms; commit size on drag end; `LazyVStack`; read once from `ProcessInfo`. | S |
 | 16 | **INF-9 / A13** | `Asking/AskPromptBuilder.swift:104-116` | `.full` context: repeated `removeFirst()` + full `joined()` — ~300 MB copied per question on a 3 h meeting (50–150 ms on main) | Walk newest→oldest summing `utf8.count`, join once. | S |
-| 17 | **convo-coach B1/B5/CC-10/CC-11** | `stdin.ts:140,206`, `budget.ts:15-122`, `factory.ts` | Unbounded buffer + full re-parse and re-tokenize (~99 ms / 3k records) per trigger; first tiktoken call 111 ms; `--help` 160 ms due to eager LangChain/provider imports | Incremental parse with cached token counts; `js-tiktoken/lite` + o200k (also fixes B10); lazy `import()` of the selected provider. | S–M |
+| 17 | **convo-coach B1/B5/CC-10/CC-11** *(fixed, plan-023)* | `stdin.ts:140,206`, `budget.ts:15-122`, `factory.ts` | Unbounded buffer + full re-parse and re-tokenize (~99 ms / 3k records) per trigger; first tiktoken call 111 ms; `--help` 160 ms due to eager LangChain/provider imports | Incremental parse with cached token counts; `js-tiktoken/lite` + o200k (also fixes B10); lazy `import()` of the selected provider. | S–M |
 
 ## 3. Resilience / safety items (non-perf, worth bundling)
 
@@ -85,7 +85,7 @@
 2. **Transcript correctness:** INF-1 + INF-2 (Soniox reconnect), TR-13, TR-4, TR-5/6/7, UI-1 + UI-6, CC-2/CC-3.
 3. **Aligner rewrite (one unit):** fix stress-test baseline → CAP-1 + CAP-2 + C1 + C5 + flush padding.
 4. **CPU/energy wave:** CAP-3 + CAP-6 + CAP-11 (AEC), TR-2 + TR-11 (on-device chunking + model cache), M1/M2/UI-5 (meters), TR-14/F1 (ordered fan-out), A6/A7 (logging).
-5. **Hygiene:** shared retry policy (F31) + TR-10/TR-16, F33 writer consolidation, A9 `.env` parser unification, UI-2/UI-3 pause controls, convo-coach perf (B1/B5/CC-10/CC-11), dead views (L3).
+5. **Hygiene** *(done, plan-023)*: shared retry policy (F31) + TR-10/TR-16, F33 writer consolidation, A9 `.env` parser unification, UI-2/UI-3 pause controls, convo-coach perf (B1/B5/CC-10/CC-11), dead views (L3).
 
 ---
 
