@@ -1,0 +1,19 @@
+ntakker
+=======
+
+Install: drag "ntakker" onto "Applications", then open it from Applications.
+It appears as an icon in the menu bar (there is no Dock icon).
+
+First recording: macOS asks for Microphone and Screen Recording. Allow both;
+Screen Recording is how macOS lets an app capture system audio (no video is
+recorded). If you choose Apple Cloud transcription, macOS also asks for Speech
+Recognition.
+
+Transcription providers and their keys, and the Ask (Q&A) provider, are set in
+ntakker's Settings; they are saved in ~/.tool-agents/ntakker/.env.
+
+Companion apps from the same release page:
+  ntakker studio  - study finished recordings (transcripts, cuts, minutes)
+  ntakker-cli     - the same recorder from the terminal
+
+Requires macOS 26 or later.

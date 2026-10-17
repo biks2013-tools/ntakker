@@ -12,7 +12,7 @@
 #     prompt only works from inside a `.app` bundle that TCC can
 #     attach the grant to.
 #   * The Microphone + Screen Recording grants the user has already
-#     given are scoped to the `com.local.ntakker` bundle id; running
+#     given are scoped to the `com.giorgosmarinos.ntakker` bundle id; running
 #     the raw CLI binary uses the same id and inherits those grants,
 #     but Speech Recognition has never been requested from this
 #     binary so it isn't on the TCC allow-list.
@@ -27,7 +27,7 @@
 #   dist/ntakker.app/Contents/{Info.plist, MacOS/ntakker, Resources/, _CodeSignature/}
 #
 # Notes:
-#   * The bundle id (`com.local.ntakker`) must match what the app
+#   * The bundle id (`com.giorgosmarinos.ntakker`) must match what the app
 #     references at runtime so the existing Microphone + Screen
 #     Recording TCC grants carry over.
 #   * The Info.plist source is `Resources/Ntakker-Info.plist` —
@@ -47,7 +47,7 @@ cd "${REPO_ROOT}"
 
 CONFIG="${SWIFT_CONFIG:-release}"
 APP_NAME="ntakker"
-BUNDLE_ID="com.local.ntakker"
+BUNDLE_ID="com.giorgosmarinos.ntakker"
 DIST_DIR="${REPO_ROOT}/dist"
 APP_BUNDLE="${DIST_DIR}/${APP_NAME}.app"
 PLIST_SRC="${REPO_ROOT}/Resources/Ntakker-Info.plist"
@@ -92,12 +92,20 @@ cp "${ICON_SRC}" "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"
 # PkgInfo is conventional but not strictly required.
 printf 'APPL????' > "${APP_BUNDLE}/Contents/PkgInfo"
 
-# Sign. Default = ad-hoc (sufficient for TCC bundle metadata, and the
-# only option without a paid Developer ID); override via env var to
-# use a real identity.
+# Sign. Default = ad-hoc (local builds). With a real identity (a release:
+# CODESIGN_IDENTITY = Developer ID Application SHA-1) the hardened runtime,
+# a secure timestamp and Resources/ntakker.entitlements (microphone) are
+# added, which notarization requires.
 IDENTITY="${CODESIGN_IDENTITY:--}"
-echo "==> codesign --force --deep --sign '${IDENTITY}'"
-codesign --force --deep --sign "${IDENTITY}" "${APP_BUNDLE}"
+if [[ "${IDENTITY}" == "-" ]]; then
+  echo "==> codesign --force --deep --sign - (ad-hoc)"
+  codesign --force --deep --sign - "${APP_BUNDLE}"
+else
+  echo "==> codesign --force --options runtime --timestamp --entitlements <ntakker.entitlements> --sign <identity>"
+  codesign --force --options runtime --timestamp \
+    --entitlements "${REPO_ROOT}/Resources/ntakker.entitlements" \
+    --sign "${IDENTITY}" "${APP_BUNDLE}"
+fi
 
 echo "==> verifying signature"
 codesign -dv "${APP_BUNDLE}" 2>&1 | head -10

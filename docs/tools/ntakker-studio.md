@@ -71,7 +71,7 @@
           `UserDefaults` (suite `com.giorgosmarinos.ntakker-studio`) under
           `studio.libraryFolder`. On the very first launch, if that key
           is unset, the studio adopts ntakker's output folder
-          (`com.ntakker-cli.ui.outputFolder` in the `com.local.ntakker`
+          (`com.ntakker-cli.ui.outputFolder` in the `com.giorgosmarinos.ntakker`
           suite). If neither is set the user must choose a folder
           (File > Choose Library Folder..., Cmd-Shift-O, or Settings);
           there is no default folder. Cmd-R rescans.
@@ -278,18 +278,18 @@
 
         ## Releasing
 
-        A public release is Developer ID signed with the hardened runtime, notarized and stapled.
+        A public release is Developer ID signed with the hardened runtime and notarized by Apple.
 
-        1. Set the version: `CFBundleShortVersionString` / `CFBundleVersion` in `Resources/NtakkerStudio-Info.plist`.
+        1. Set the version in `Resources/NtakkerStudio-Info.plist` (`CFBundleShortVersionString`, `CFBundleVersion`).
         2. Build, sign, notarize and package (both variables are required; there are no defaults):
            ```sh
-           NTAKKER_STUDIO_SIGN_IDENTITY=<Developer ID Application SHA-1> \
+           NTAKKER_SIGN_IDENTITY=<Developer ID Application SHA-1> \
            NOTARY_PROFILE=<notarytool keychain profile> \
-             bash scripts/release-ntakker-studio.sh
+             bash scripts/release.sh ntakker-studio
            ```
-           Two identities share the name "Developer ID Application: GEORGIOS MARINOS", so pass the SHA-1 (`security find-identity -v -p codesigning`). The script runs the studio tests, verifies the Developer ID signature and hardened runtime, notarizes the zip and the DMG, and writes `dist/release/ntakker-studio-<version>.zip`, `.dmg`, `SHA256SUMS` and `homebrew-tap/Casks/ntakker-studio.rb`.
-        3. Tag `ntakker-studio-v<version>` and create the GitHub release on `biks2013-tools/ntakker` with the zip, DMG and `SHA256SUMS`.
-        4. Copy `homebrew-tap/Casks/ntakker-studio.rb` into `biks2013-tools/homebrew-ntakker-studio` (`Casks/`) and push. Users install with `brew install --cask biks2013-tools/ntakker-studio/ntakker-studio`.
+           Two identities share the name "Developer ID Application: GEORGIOS MARINOS", so pass the SHA-1 (`security find-identity -v -p codesigning`). The script runs the tests (only the failures listed in `scripts/release-known-failures.txt` are tolerated), verifies the Developer ID signature and hardened runtime, notarizes, and writes `ntakker-studio-<version>.zip`, a stapled `.dmg` and `SHA256SUMS` to `dist/release/ntakker-studio/`, plus `homebrew-tap/Casks/ntakker-studio.rb`.
+        3. Tag `ntakker-studio-v<version>` and create the GitHub release on `biks2013-tools/ntakker` with those files.
+        4. Copy `homebrew-tap/Casks/ntakker-studio.rb` into `biks2013-tools/homebrew-ntakker` (`Casks/`) and push. Users install with `brew install --cask biks2013-tools/ntakker/ntakker-studio`.
 
         ## Cross-references
 

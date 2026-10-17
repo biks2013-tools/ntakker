@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for ntakker and ntakker-cli (Developer ID
+  releases). The hardened runtime blocks microphone access unless the app
+  declares audio-input. Screen Recording (system audio) and Speech
+  Recognition need no entitlement outside the App Sandbox.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+</dict>
+</plist>

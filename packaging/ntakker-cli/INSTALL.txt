@@ -1,0 +1,20 @@
+ntakker-cli
+===========
+
+Install: copy the binary onto your PATH, e.g.
+
+    sudo mkdir -p /usr/local/bin
+    sudo cp ntakker-cli /usr/local/bin/
+    ntakker-cli --help
+
+Or with Homebrew: brew install --cask biks2013-tools/ntakker/ntakker-cli
+
+Record:  ntakker-cli start --output ~/Recordings/test.m4a     (Ctrl-C stops)
+Devices: ntakker-cli list-devices
+Check:   ntakker-cli check-permissions
+
+The first recording makes macOS ask your terminal app for Microphone and
+Screen Recording (system audio) access. Settings and provider keys:
+~/.tool-agents/ntakker-cli/.env (see `ntakker-cli start --help`).
+
+Requires macOS 26 or later.

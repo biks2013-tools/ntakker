@@ -1214,5 +1214,21 @@
           and `NTAKKER_SONIOX_KEY_EXPIRES_AT`).
         - `Issues - Pending Items.md` — open risks (R-1 .. R-19) and
           completed items.
+
+        ## Releasing
+
+        A public release is Developer ID signed with the hardened runtime and notarized by Apple.
+
+        1. Set the version in `Resources/Info.plist` (`CFBundleShortVersionString`, `CFBundleVersion`) and the matching `version:` in `Sources/ntakker-cli/Commands/RootCommand.swift` (the script refuses a mismatch).
+        2. Build, sign, notarize and package (both variables are required; there are no defaults):
+           ```sh
+           NTAKKER_SIGN_IDENTITY=<Developer ID Application SHA-1> \
+           NOTARY_PROFILE=<notarytool keychain profile> \
+             bash scripts/release.sh ntakker-cli
+           ```
+           Two identities share the name "Developer ID Application: GEORGIOS MARINOS", so pass the SHA-1 (`security find-identity -v -p codesigning`). The script runs the tests (only the failures listed in `scripts/release-known-failures.txt` are tolerated), verifies the Developer ID signature and hardened runtime, notarizes, and writes `ntakker-cli-<version>.zip` (the signed binary and INSTALL.txt; a bare binary cannot be stapled, so Gatekeeper checks the ticket online) and `SHA256SUMS` to `dist/release/ntakker-cli/`, plus `homebrew-tap/Casks/ntakker-cli.rb`.
+        3. Tag `ntakker-cli-v<version>` and create the GitHub release on `biks2013-tools/ntakker` with those files.
+        4. Copy `homebrew-tap/Casks/ntakker-cli.rb` into `biks2013-tools/homebrew-ntakker` (`Casks/`) and push. Users install with `brew install --cask biks2013-tools/ntakker/ntakker-cli`.
+
     </info>
 </ntakker-cli>

@@ -17,7 +17,7 @@
         summary. Targets macOS 14 (Sonoma) or later and ships as a separate
         SwiftPM
         executable target (`ntakker`) under its own bundle id
-        `com.local.ntakker` so its TCC grants are independent of the
+        `com.giorgosmarinos.ntakker` so its TCC grants are independent of the
         CLI's. There are no CLI arguments in v1 — the binary launches the
         menu-bar app directly.
     </objective>
@@ -113,9 +113,9 @@
         `EX_NOPERM`) when Start is pressed; the recording itself is
         not started so no audio file is created.
 
-        All three prompts are bound to the `com.local.ntakker`
+        All three prompts are bound to the `com.giorgosmarinos.ntakker`
         bundle id (the UI's identity), which is **separate** from the
-        CLI's `com.local.ntakker-cli` bundle id. Granting any permission
+        CLI's `com.giorgosmarinos.ntakker-cli` bundle id. Granting any permission
         to the CLI does **not** carry over to the UI (R-23) — this
         isolation is intentional, lets each tool be revoked
         independently, and is a deliberate consequence of FR-42's
@@ -478,7 +478,7 @@
         subsequent launches once accepted. Reset for a fresh demo via:
 
         ```sh
-        defaults delete com.local.ntakker com.local.ntakker.transcription.hasAcceptedSonioxDisclosure
+        defaults delete com.giorgosmarinos.ntakker com.local.ntakker.transcription.hasAcceptedSonioxDisclosure
         ```
 
         Cancelling reverts the picker to its previous selection
@@ -751,7 +751,7 @@
         done by deleting that one defaults key:
 
         ```sh
-        defaults delete com.local.ntakker com.ntakker-cli.ui.transcribePrivacyAcknowledged
+        defaults delete com.giorgosmarinos.ntakker com.ntakker-cli.ui.transcribePrivacyAcknowledged
         ```
 
         ## Configuration
@@ -760,7 +760,7 @@
         four-tier chain the CLI uses (see "Resolution chain" below).
         Recording-engine UI state (selected format, layout, mic UID,
         output folder bookmark) is stored in `UserDefaults` under the
-        `com.local.ntakker` bundle id and is **not** part of the
+        `com.giorgosmarinos.ntakker` bundle id and is **not** part of the
         env-var configuration chain — it is UI state, not
         configuration.
 
@@ -823,7 +823,7 @@
         ### `@AppStorage` UserDefaults keys
 
         Persisted UI state (FR-35, FR-36, FR-38, FR-39) is keyed under
-        the `com.local.ntakker` bundle id at
+        the `com.giorgosmarinos.ntakker` bundle id at
         `~/Library/Preferences/com.local.ntakker.plist`. All five keys
         share the reverse-DNS prefix `com.ntakker-cli.ui.*` (matching the
         bundle id family without the `local.` infix):
@@ -872,7 +872,7 @@
         and survives app restarts. Read it manually with:
 
         ```bash
-        defaults read com.local.ntakker com.ntakker-cli.ui.appearance
+        defaults read com.giorgosmarinos.ntakker com.ntakker-cli.ui.appearance
         ```
 
         **Propagation chain.** Both the popover (hosted via
@@ -932,13 +932,13 @@
         ### Viewing logs in Console.app
 
         The UI registers its log subsystem as
-        `com.local.ntakker`. To stream logs live in macOS
+        `com.giorgosmarinos.ntakker`. To stream logs live in macOS
         Console.app:
 
         1. Open **Console** (`/System/Applications/Utilities/Console.app`).
         2. Pick your Mac in the left sidebar.
         3. Click **Start Streaming**.
-        4. In the search bar, filter by `subsystem:com.local.ntakker`.
+        4. In the search bar, filter by `subsystem:com.giorgosmarinos.ntakker`.
 
         You can also tail the file directly:
 
@@ -1051,8 +1051,8 @@
           on a CI image with full Xcode (or install Xcode locally)
           before declaring plan-002 Phase I complete.
         - **R-23 — Separate TCC grants on every UI rebuild.** The
-          UI's `com.local.ntakker` bundle id is distinct from the
-          CLI's `com.local.ntakker-cli`. Granting Screen Recording /
+          UI's `com.giorgosmarinos.ntakker` bundle id is distinct from the
+          CLI's `com.giorgosmarinos.ntakker-cli`. Granting Screen Recording /
           Microphone to one does **not** grant it to the other; both
           must be approved independently. Furthermore, ad-hoc-signed
           SPM builds (continuation of R-2) re-prompt on every
@@ -1098,7 +1098,7 @@
         __info_plist Resources/NtakkerUI-Info.plist` flag so the UI's
         Info.plist (with `LSUIElement=true`,
         `NSMicrophoneUsageDescription`, `NSScreenCaptureUsageDescription`,
-        `CFBundleIdentifier=com.local.ntakker`) is embedded into
+        `CFBundleIdentifier=com.giorgosmarinos.ntakker`) is embedded into
         the binary's `__TEXT,__info_plist` section.
 
         ### Packaging as a typical macOS `.app` bundle
@@ -1106,7 +1106,7 @@
         The recommended way to run `ntakker` like a normal Mac app
         (Dock / Spotlight visibility, Apple Cloud Speech Recognition
         prompt, persistent TCC grants under bundle id
-        `com.local.ntakker`) is to package it as an `.app` bundle
+        `com.giorgosmarinos.ntakker`) is to package it as an `.app` bundle
         and `open` it:
 
         ```sh
@@ -1160,7 +1160,7 @@
 
         Notes:
 
-        - The bundle id (`com.local.ntakker`) is identical between
+        - The bundle id (`com.giorgosmarinos.ntakker`) is identical between
           `dist/…` and `/Applications/…`, so existing Microphone,
           Screen Recording, and Speech Recognition TCC grants carry
           over — no need to re-approve permissions after deploying.
@@ -1224,5 +1224,21 @@
         - [Issues - Pending Items.md](../../Issues%20-%20Pending%20Items.md)
           — risk register; **R-22**, **R-23**, **R-29** in
           particular.
+
+        ## Releasing
+
+        A public release is Developer ID signed with the hardened runtime and notarized by Apple.
+
+        1. Set the version in `Resources/Ntakker-Info.plist` (`CFBundleShortVersionString`, `CFBundleVersion`).
+        2. Build, sign, notarize and package (both variables are required; there are no defaults):
+           ```sh
+           NTAKKER_SIGN_IDENTITY=<Developer ID Application SHA-1> \
+           NOTARY_PROFILE=<notarytool keychain profile> \
+             bash scripts/release.sh ntakker
+           ```
+           Two identities share the name "Developer ID Application: GEORGIOS MARINOS", so pass the SHA-1 (`security find-identity -v -p codesigning`). The script runs the tests (only the failures listed in `scripts/release-known-failures.txt` are tolerated), verifies the Developer ID signature and hardened runtime, notarizes, and writes `ntakker-<version>.zip`, a stapled `.dmg` and `SHA256SUMS` to `dist/release/ntakker/`, plus `homebrew-tap/Casks/ntakker.rb`.
+        3. Tag `ntakker-v<version>` and create the GitHub release on `biks2013-tools/ntakker` with those files.
+        4. Copy `homebrew-tap/Casks/ntakker.rb` into `biks2013-tools/homebrew-ntakker` (`Casks/`) and push. Users install with `brew install --cask biks2013-tools/ntakker/ntakker`.
+
     </info>
 </ntakker-cliUi>

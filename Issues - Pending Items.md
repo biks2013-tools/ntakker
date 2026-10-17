@@ -6,6 +6,13 @@
 
 ## Pending items (most critical first)
 
+### Public release (2026-10-17): bundle ids changed, permissions must be granted again
+- ntakker, ntakker-cli and ntakker studio are published from `biks2013-tools/ntakker` as Developer ID signed, notarized releases (`scripts/release.sh`), with casks in `biks2013-tools/homebrew-ntakker`.
+- The bundle ids changed to `com.giorgosmarinos.ntakker` and `com.giorgosmarinos.ntakker-cli` (user decision). macOS ties Microphone, Screen Recording and Speech Recognition grants to the id, so **every existing install must grant them again** after upgrading. ntakker copies its in-app settings from the old `com.local.ntakker` preferences on first launch (`LegacyDefaultsMigration`, once); the studio reads ntakker's folder from either id.
+- The old grants can be removed with `tccutil reset Microphone com.local.ntakker` and `tccutil reset ScreenCapture com.local.ntakker`.
+- Settings key names keep their `com.local.ntakker.*` / `com.ntakker-cli.ui.*` prefixes on purpose; renaming them would lose settings.
+- Release gate: `scripts/release-known-failures.txt` lists the five baseline test failures a release tolerates; remove a line when its test is fixed.
+
 ### plan-024 — ntakker-studio v1: open items (2026-10-17)
 - **Live checks still to do by the user:** a first Ask question and a set of minutes against the configured provider (sends the whole transcript); exporting a cut of a real split recording from the app; a re-transcription with Parakeet. Unit tests cover all three paths, and an M4A cut was checked on a real file.
 - **Audio start is estimated** from the audio file's creation date (≈±1 s), and batch-provider lines also carry the provider's round-trip delay. The Info tab's line offset corrects it per recording. Proper fix: ntakker writes the exact first-sample time into a session sidecar at record time, and the studio reads it as `audioStart`.

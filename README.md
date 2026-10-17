@@ -15,46 +15,51 @@ Local-first by design — audio capture is fully on-device; only the streams you
 
 ---
 
-## Quickstart
+## Install
 
-### 1. Build everything
+All three are signed with a Developer ID and notarized by Apple, so macOS opens them without warnings. They need **macOS 26 (Tahoe) or later** on Apple Silicon.
 
-```sh
-swift build -c release --product ntakker-cli
-swift build -c release --product ntakker
-```
-
-### 2. Launch the menu-bar app
-
-The recommended path — package it as a proper `.app` so TCC grants stick and Apple Cloud Speech works:
+### With Homebrew (recommended)
 
 ```sh
-bash scripts/package-ntakker-app.sh
-open dist/ntakker.app
+brew tap biks2013-tools/ntakker
+brew install --cask ntakker          # menu-bar recorder
+brew install --cask ntakker-studio   # study finished recordings
+brew install --cask ntakker-cli      # recorder for the terminal
 ```
 
-(Or install system-wide — see [`docs/tools/ntakker.md`](docs/tools/ntakker.md) for the `/Applications/` deploy recipe.)
+Upgrade later with `brew upgrade --cask ntakker ntakker-studio ntakker-cli`.
 
-A speaker-icon should appear in the menu bar. Click it → grant Microphone + Screen Recording when macOS prompts → press the red record button.
+### From the release page
 
-### 3. (Optional) Use the CLI
+Open [Releases](https://github.com/biks2013-tools/ntakker/releases) and download the latest of each:
+
+| App | File | How to install |
+|---|---|---|
+| **ntakker** | `ntakker-<version>.dmg` | Open the DMG and drag **ntakker** onto **Applications**. |
+| **ntakker studio** | `ntakker-studio-<version>.dmg` | Open the DMG and drag **ntakker-studio** onto **Applications**. |
+| **ntakker-cli** | `ntakker-cli-<version>.zip` | Unzip, then `sudo mkdir -p /usr/local/bin && sudo cp ntakker-cli /usr/local/bin/`. |
+
+Each release also lists `SHA256SUMS`; check a download with `shasum -a 256 <file>`.
+
+### First run
+
+1. **ntakker** — open it from Applications; a speaker icon appears in the menu bar (there is no Dock icon). Press record. macOS asks for **Microphone** and **Screen Recording**: allow both. Screen Recording is how macOS lets an app capture system audio; no video is recorded. If you choose Apple Cloud transcription, macOS also asks for **Speech Recognition**.
+2. **Transcription and Ask (optional)** — in ntakker's Settings pick a transcription provider and enter its key, and choose an Ask (Q&A) provider. On-device providers (Apple, Parakeet, WhisperKit) need no key. Settings are saved in `~/.tool-agents/ntakker/.env`.
+3. **ntakker studio** — open it from Applications. It finds ntakker's recording folder by itself (or asks you to pick one) and uses ntakker's Ask settings for questions and minutes.
+4. **ntakker-cli** — `ntakker-cli start --output ~/Recordings/test.m4a`, Ctrl-C to stop. macOS asks your terminal app for Microphone and Screen Recording on the first recording. Its settings live in `~/.tool-agents/ntakker-cli/.env`; see [`docs/tools/ntakker-cli.md`](docs/tools/ntakker-cli.md).
+
+### Build from source
 
 ```sh
-swift run ntakker-cli --help
-swift run ntakker-cli list-devices
-swift run ntakker-cli start --output ~/Recordings/test.m4a
-# Ctrl-C to stop
+swift build -c release                     # everything
+bash scripts/redeploy-ntakker.sh           # ntakker → /Applications (ad-hoc signed)
+bash scripts/redeploy-ntakker-studio.sh    # ntakker studio → /Applications (ad-hoc signed)
+bash scripts/build-ntakker-cli.sh          # ntakker-cli, offers to copy it to /usr/local/bin
+cd tools/convo-coach && npm install && npm link   # convo-coach (optional)
 ```
 
-### 4. Install ntakker studio
-
-Download the notarized `ntakker-studio-<version>.dmg` from [Releases](https://github.com/biks2013-tools/ntakker/releases) and drag the app to Applications, or:
-
-```sh
-brew install --cask biks2013-tools/ntakker-studio/ntakker-studio
-```
-
-From source: `bash scripts/redeploy-ntakker-studio.sh` (ad-hoc signed, installs to `/Applications`).
+Signed, notarized release builds: `bash scripts/release.sh ntakker|ntakker-studio|ntakker-cli` (see [`docs/tools/ntakker.md`](docs/tools/ntakker.md), "Releasing").
 
 ---
 

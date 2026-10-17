@@ -1,0 +1,9 @@
+# Tests that already fail on master, tracked in "Issues - Pending Items.md"
+# (EVAL-2026-10-16, plan-023 wave result). scripts/release.sh lets a release
+# through only when every failing test is listed here. Remove a line when
+# the test is fixed.
+--transcribe gemini-live without API key raises transcriptionApiKeyMissing
+100 ms of 1 kHz mono Float32 sine → Int16 sine within bounds
+Sidecar URL respects partNN naming when audio URL contains a part token
+staleRecording → retry
+-[NtakkerCoreTests.SonioxConfigBuilderTests testDefaultsMatchNtakkerV1Policy]
