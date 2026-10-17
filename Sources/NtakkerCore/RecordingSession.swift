@@ -163,6 +163,11 @@ public final class RecordingSession: @unchecked Sendable {
     /// post-finalize.
     private var _transcriptionTapToken: HostClockAligner.TapToken?
 
+    /// Ordered, bounded per-source lanes between the live tap and the
+    /// dispatcher (TR-14 / F1). Drained on teardown before the
+    /// dispatcher stops.
+    private var _transcriptionFeeder: TranscriptionFrameFeeder?
+
     /// Forwarder Task that drains the manager's events stream into the
     /// public `transcriptEvents` stream consumed by the UI. Sidecar
     /// writes are owned inside the manager itself (plan-004 Phase E).
@@ -1272,8 +1277,8 @@ public final class RecordingSession: @unchecked Sendable {
         // Step 3: install the live tap on the aligner. The closure
         // is mode-agnostic — it routes frames into the dispatcher
         // through the protocol method `ingestFrame(_:from:)`. Both
-        // implementations are `async`, so the sync tap closure spawns
-        // a fire-and-forget Task per dispatch.
+        // implementations are `async`, so the sync tap closure hands
+        // each frame to a `TranscriptionFrameFeeder` lane.
         //
         // `.mixed` deserves the long comment: previously this case
         // fell through to `manager.ingestFrame(frame, from: .system)`,
@@ -1298,12 +1303,20 @@ public final class RecordingSession: @unchecked Sendable {
         // frames emitted during `aligner.flush()` could observe a
         // nil dispatcher and silently vanish — losing the last
         // ~100–200 ms of every transcript.
+        // TR-14 / F1 (EVAL 2026-10-16): the tap hands frames to one
+        // bounded, ordered lane per source instead of spawning a Task
+        // per frame. Teardown drains the lanes before stopping the
+        // dispatcher, so the last frames are never lost.
+        let feederSources: [SourceTag] = trSource == .mic
+            ? [.microphone]
+            : (trSource == .both ? [.system, .microphone] : [.system])
+        let feeder = TranscriptionFrameFeeder(dispatcher: dispatcher, sources: feederSources)
         let token = aligner.addLiveTap { frame in
             switch trSource {
             case .system:
-                Task { await dispatcher.ingestFrame(frame, from: .system) }
+                feeder.feed(frame, to: .system)
             case .mic:
-                Task { await dispatcher.ingestFrame(frame, from: .microphone) }
+                feeder.feed(frame, to: .microphone)
             case .mixed:
                 // `BufferSummer.sum(_:_:)` is nil-tolerant: nil+nil
                 // returns nil, side+nil returns the side untouched,
@@ -1322,10 +1335,10 @@ public final class RecordingSession: @unchecked Sendable {
                     systemBuffer: mixed,
                     micBuffer: nil
                 )
-                Task { await dispatcher.ingestFrame(mixedFrame, from: .system) }
+                feeder.feed(mixedFrame, to: .system)
             case .both:
-                Task { await dispatcher.ingestFrame(frame, from: .system) }
-                Task { await dispatcher.ingestFrame(frame, from: .microphone) }
+                feeder.feed(frame, to: .system)
+                feeder.feed(frame, to: .microphone)
             }
         }
 
@@ -1333,6 +1346,7 @@ public final class RecordingSession: @unchecked Sendable {
             self._transcriptionDispatcher = dispatcher
             self._transcriptionForwarderTask = forwarder
             self._transcriptionTapToken = token
+            self._transcriptionFeeder = feeder
         }
 
         logger.info("transcription pipeline ready: \(summary)")
@@ -1564,14 +1578,17 @@ public final class RecordingSession: @unchecked Sendable {
         let dispatcher: (any TranscriptionDispatcher)?
         let token: HostClockAligner.TapToken?
         let forwarder: Task<Void, Never>?
-        (dispatcher, token, forwarder) = serialQueue.sync {
+        let feeder: TranscriptionFrameFeeder?
+        (dispatcher, token, forwarder, feeder) = serialQueue.sync {
             let d = self._transcriptionDispatcher
             let t = self._transcriptionTapToken
             let f = self._transcriptionForwarderTask
+            let q = self._transcriptionFeeder
             self._transcriptionDispatcher = nil
             self._transcriptionTapToken = nil
             self._transcriptionForwarderTask = nil
-            return (d, t, f)
+            self._transcriptionFeeder = nil
+            return (d, t, f, q)
         }
 
         guard dispatcher != nil || token != nil else {
@@ -1581,6 +1598,12 @@ public final class RecordingSession: @unchecked Sendable {
         // 1. Detach the tap so no more frames flow into the dispatcher.
         if let token {
             aligner.removeLiveTap(token)
+        }
+
+        // 1b. Let the feeder lanes deliver the frames already queued,
+        // in order, before the dispatcher drains (TR-14 / F1).
+        if let feeder {
+            await feeder.finish()
         }
 
         // 2. Stop the dispatcher — final-drains buffers, awaits
