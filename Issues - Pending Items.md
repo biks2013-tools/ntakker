@@ -7,6 +7,14 @@
 ## Pending items (most critical first)
 
 ### EVAL-2026-10-16 — Quality / speed / resource-efficiency scan: 74 new findings registered
+**RESOLUTION UPDATE (2026-10-17) — plan-022 CPU / energy wave landed** ([docs/plans/plan-022-eval-2026-10-16-cpu-energy.md](docs/plans/plan-022-eval-2026-10-16-cpu-energy.md)):
+- **Fixed, one commit each:** TR-14 / F1 (ordered, bounded transcription fan-out), A6 / A7 (batched, rotating log file; quieter hot logs), M1 / M2 / UI-5 (meters), CAP-3 / CAP-11 and the AEC part of CAP-6, TR-11 + F28 / F29 (on-device model cache and warm-up), TR-2 (10–14 s silence-cut chunks for on-device models).
+- **New, fixed:** the AEC's reference window was misaligned, so the opt-in echo canceller never cancelled echo. It now converges on a synthetic echo and costs about 3.3× less CPU.
+- **New, fixed:** the CLI rejected `--transcribe parakeet` and `--transcribe apple-cloud`.
+- **New, open (Medium):** `--transcribe-source mic` fails with "requires a microphone (current --mic is disabled)" unless `--mic-device` is given, because `ConfigResolver` (Step 8) treats an unset device (system default) as disabled. This is the cause of the baseline failure "Shell env supplies transcription keys". Workaround: pass `--mic-device`.
+- Still open from this wave's scope: moving the mic upmix from capture to the encoder (rest of CAP-6).
+- No new test failures; the same 11 pre-existing ones remain.
+
 **RESOLUTION UPDATE (2026-10-17) — plan-021 aligner rewrite landed** ([docs/plans/plan-021-eval-2026-10-16-aligner-rewrite.md](docs/plans/plan-021-eval-2026-10-16-aligner-rewrite.md)):
 - **Fixed:** CAP-1, CAP-2, C1, C5 and the flush tail padding. Both baseline `HostClockAlignerStress` failures are fixed.
 - **New, fixed:** the M4A recorder's `requestMediaDataWhenReady` busy loop. It cost about 100 % CPU in every default-format recording, against about 3 % for WAV; after the fix, 4.2 %.

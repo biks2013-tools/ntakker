@@ -37,3 +37,18 @@ Approved: 2026-10-17. The user said "yes proceed with the CPU/energy wave". One 
 - `swift build` clean, release build green.
 - New tests pass; the full `swift test` shows no failures beyond the 11 baseline ones.
 - Measure CPU before and after where a real recording can show it (AEC on).
+
+## Wave result (2026-10-17)
+
+- All six tasks landed, one commit each, plus one extra fix: the CLI accepting `parakeet` and `apple-cloud`.
+- **Found and fixed:** the AEC never cancelled echo, because its reference window was misaligned (T4).
+- **Found, left open:** `--transcribe-source mic` is refused unless `--mic-device` is set (the resolver treats "system default" as disabled). This is the cause of the baseline failure "Shell env supplies transcription keys". It is registered in the issue register.
+- Tests: 504 Swift Testing + 216 UI + 70 XCTest. The only failures are the same 11 pre-existing ones. The release build is green.
+- Measured:
+  - AEC: 0.053 → 0.016 s of CPU per second of audio (release build, L = 4096).
+  - Parakeet in source-split mode: one model load instead of two, started at pipeline start.
+  - Parakeet chunks: 10.2 s and 10.0 s, cut at pauses, with a word-perfect transcript.
+- Not measured: the meters' main-actor savings and the log batching, both of which are visible only in the app.
+- Manual checks:
+  - Open and close the popover while recording; the bars should move with the audio and sit flat in silence.
+  - Try `--mic-aec on` with speakers playing.
