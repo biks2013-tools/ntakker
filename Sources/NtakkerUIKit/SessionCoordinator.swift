@@ -371,7 +371,15 @@ public actor SessionCoordinator {
         }
         let next = seg + 1
         let url = SegmentNamer.next(after: firstSegmentURL, segment: next)
-        try await current.split(nextOutput: url)
+        // C7: a `SplitPreviousSegmentError` means the split itself
+        // happened (audio and transcript are on the new part); only the
+        // old part's file is suspect. Do the bookkeeping, then report it.
+        var previousSegmentError: SplitPreviousSegmentError?
+        do {
+            try await current.split(nextOutput: url)
+        } catch let error as SplitPreviousSegmentError {
+            previousSegmentError = error
+        }
         // Emit a segment-boundary marker for the transcript panel.
         // AC-LT-20: the panel renders this as a horizontal-rule
         // separator with the next part's index.
@@ -388,6 +396,10 @@ public actor SessionCoordinator {
         emit(.segmentCompleted(completedURL))
         segmentCounter = next
         state = .recording(segment: next)
+        if let previousSegmentError {
+            logger.error("split: \(previousSegmentError.description)")
+            throw previousSegmentError
+        }
     }
 
     /// Stop the session entirely. From `.recording` it triggers the

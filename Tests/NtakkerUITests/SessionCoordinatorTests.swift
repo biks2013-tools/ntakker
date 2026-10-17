@@ -73,11 +73,16 @@ final class MockRecordingSession: RecordingSessionLike, @unchecked Sendable {
         stopRequested = true
     }
 
+    /// When set, `split` completes and then throws this (C7: the
+    /// previous segment failed to finalize).
+    var splitError: Error?
+
     func split(nextOutput: URL) async throws {
         // The engine emits .splitting then .recording on a successful
         // split. Reproduce that.
         emit(.splitting)
         emit(.recording)
+        if let splitError { throw splitError }
     }
 
     func setLevelTapSink(_ sink: (@Sendable (CaptureBuffer) -> Void)?) {
@@ -471,6 +476,31 @@ struct SessionCoordinatorTests {
             let between = states[(pausing + 1)..<paused]
             #expect(!between.contains { $0.hasPrefix("stop") }, "states between pausing and paused: \(Array(between))")
         }
+    }
+
+    @Test("C7: a split whose old segment fails to finalize still moves to the next part")
+    func splitWithPreviousSegmentFailureKeepsBookkeeping() async throws {
+        struct FinalizeFailed: Error {}
+        let mock = MockRecordingSession()
+        mock.splitError = SplitPreviousSegmentError(underlying: FinalizeFailed())
+        let coordinator = SessionCoordinator(
+            baseOptions: baseOptions(),
+            logger: .init(label: "test.c7"),
+            factory: { _ in mock }
+        )
+        try await coordinator.start()
+        await #expect(throws: SplitPreviousSegmentError.self) {
+            try await coordinator.split()
+        }
+        #expect(await coordinator.segmentCounter == 2)
+        #expect(await coordinator.state == SessionCoordinator.CoordinatorState.recording(segment: 2))
+        await coordinator.teardown()
+
+        var completed = 0
+        for await event in coordinator.events {
+            if case .segmentCompleted = event { completed += 1 }
+        }
+        #expect(completed == 1, "the finished part is still reported")
     }
 
     @Test("UI-1: first pause renames segment 1's transcript sidecars to .part01")

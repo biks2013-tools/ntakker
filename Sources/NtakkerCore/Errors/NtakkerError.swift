@@ -392,3 +392,21 @@ public enum NtakkerError: Error, LocalizedError, CustomStringConvertible {
         return stripped.lowercased().replacingOccurrences(of: "_", with: "-")
     }
 }
+
+/// EVAL-2026-06-12 C7: `RecordingSession.split(nextOutput:)` completed —
+/// the new segment is recording and the transcript follows it — but the
+/// previous segment's file failed to finalize and may be incomplete.
+/// Callers should treat the split as done and report the error.
+public struct SplitPreviousSegmentError: Error, LocalizedError, CustomStringConvertible {
+    public let underlying: Error
+
+    public init(underlying: Error) {
+        self.underlying = underlying
+    }
+
+    public var errorDescription: String? { description }
+
+    public var description: String {
+        "split: the new segment is recording, but the previous segment failed to finalize and may be incomplete: \(underlying.localizedDescription)"
+    }
+}

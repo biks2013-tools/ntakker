@@ -818,18 +818,21 @@ public final class RecordingSession: @unchecked Sendable {
 
         // 4. Finalize the old recorder OFF the serial queue. m4a
         // finalize writes the moov atom and can take seconds; the
-        // 5 s timeout matches the post-pid-write-failure path. Any
-        // finalize error is logged but does not roll the swap back —
-        // the new recorder is already accepting frames.
+        // 5 s timeout matches the post-pid-write-failure path. A
+        // finalize error cannot roll the swap back — the new recorder
+        // is already accepting frames — so the split is completed
+        // (sidecar rotation included) and the error is reported
+        // afterwards as `SplitPreviousSegmentError` (C7). Before, the
+        // throw skipped the sidecar rotation and the caller's segment
+        // bookkeeping, leaving audio in part N+1 and the transcript and
+        // coordinator still on part N.
+        var finalizeError: Error?
         if let oldRecorder {
             do {
                 try await oldRecorder.finalize(timeout: 5)
             } catch {
-                logger.error("split: old recorder finalize failed: \(error.localizedDescription)")
-                // Swallow — the partial file is on disk; the new
-                // segment is fine. Surface to caller via throw.
-                emitState(.recording)
-                throw error
+                logger.error("split: old recorder finalize failed (the new segment is recording): \(error.localizedDescription)")
+                finalizeError = error
             }
         }
 
@@ -862,6 +865,10 @@ public final class RecordingSession: @unchecked Sendable {
         // 5. Emit `.recording` after the swap settles. The state
         // machine is back at the steady state.
         emitState(.recording)
+
+        if let finalizeError {
+            throw SplitPreviousSegmentError(underlying: finalizeError)
+        }
     }
 
     // MARK: - Private — state-stream helpers
