@@ -446,6 +446,33 @@ struct SessionCoordinatorTests {
         #expect(transcriptCount == 40)
     }
 
+    @Test("UI-3: pause goes .pausing → .paused with no .stopping/.stopped in between")
+    func pauseDoesNotEmitStopped() async throws {
+        let mock = MockRecordingSession()
+        let coordinator = SessionCoordinator(
+            baseOptions: baseOptions(),
+            logger: .init(label: "test.ui3"),
+            factory: { _ in mock }
+        )
+        try await coordinator.start()
+        mock.emit(.recording)
+        try await Task.sleep(for: .milliseconds(50))
+        try await coordinator.pause()
+        await coordinator.teardown()
+
+        var states: [String] = []
+        for await event in coordinator.events {
+            if case let .stateChanged(s) = event { states.append("\(s)") }
+        }
+        let pausing = states.firstIndex(where: { $0.hasPrefix("pausing") })
+        let paused = states.firstIndex(where: { $0.hasPrefix("paused") })
+        #expect(pausing != nil && paused != nil, "states: \(states)")
+        if let pausing, let paused {
+            let between = states[(pausing + 1)..<paused]
+            #expect(!between.contains { $0.hasPrefix("stop") }, "states between pausing and paused: \(Array(between))")
+        }
+    }
+
     @Test("UI-1: first pause renames segment 1's transcript sidecars to .part01")
     func pauseRenamesFirstSegmentTranscriptSidecars() async throws {
         let (tmp, cleanup) = try makeTempDir()

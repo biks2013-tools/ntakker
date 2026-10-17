@@ -626,6 +626,13 @@
 
         ### Stop-and-stitch pause produces multiple files
 
+        While recording, the popover status bar shows Pause (⏸) and
+        Split (✂) next to Stop; while paused it shows Resume (▶).
+        (Before plan-023 these lived only in the legacy control bar,
+        which the popover never showed during a recording.) A pause
+        keeps the level meters and goes straight from "Pausing…" to
+        "Paused", without the stopped-session buttons flashing.
+
         Pause/Resume is implemented as **stop-and-stitch** (locked
         decision OQ-CORE-1; A-UI-2). Pressing Pause finalises the
         current segment file as a complete, playable artefact;

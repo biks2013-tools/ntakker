@@ -288,8 +288,8 @@ public actor SessionCoordinator {
     /// the run-task to complete (so the file is finalized on disk),
     /// then parks in `.paused`.
     ///
-    /// Emits: synth `.pausing` → forwarded `.stopping` / `.stopped` →
-    /// synth `.paused`.
+    /// Emits: synth `.pausing` → synth `.paused`. The engine's own
+    /// `.stopping` / `.stopped` are not forwarded (UI-3).
     ///
     /// FR-34 first-segment rename: when this is the first pause of a
     /// recording (i.e. transitioning from segment 1 → segment 2 on
@@ -307,7 +307,13 @@ public actor SessionCoordinator {
         }
         emit(.stateChanged(.pausing))
         let bareLastFile = SegmentNamer.next(after: firstSegmentURL, segment: seg)
+        // UI-3: the engine's `.stopping` / `.stopped` belong to the
+        // segment change, not to the session — keep them off `events`
+        // so the UI goes `.pausing` → `.paused` without a `.stopped`
+        // in between (which tore the meters down and flashed Save).
+        relayingPauseStop = true
         await stopCurrentAndAwait()
+        relayingPauseStop = false
         // FR-34 first-segment rename: if this was segment 1, rename the
         // finalized file(s) so segment 2 is a `.part02` sibling.
         let lastFile: URL
@@ -317,7 +323,7 @@ public actor SessionCoordinator {
             lastFile = bareLastFile
         }
         // The session's stateStream has already emitted `.stopping`
-        // and `.stopped`; the forwarder relayed those onto `events`.
+        // and `.stopped`; `relay(state:)` held them back (UI-3).
         emit(.segmentCompleted(lastFile))
         emit(.stateChanged(.paused))
         state = .paused(segment: seg, lastFile: lastFile)
@@ -539,8 +545,19 @@ public actor SessionCoordinator {
         }
     }
 
+    /// UI-3: true while `pause()` stops the current segment's engine.
+    private var relayingPauseStop = false
+
     /// Push a `SessionState` onto `events`. Called from the forwarder.
     private func relay(state: SessionState) {
+        if relayingPauseStop {
+            switch state {
+            case .stopping, .stopped:
+                return
+            default:
+                break
+            }
+        }
         emit(.stateChanged(state))
         if case let .failed(err) = state {
             self.state = .failed(err)

@@ -17,7 +17,8 @@ Approved: 2026-10-17. The user said "Do the cleanup items". One commit per task.
   - Done. `RewritableSegmentFile` owns the handle, the byte index and both grow paths; each format writer supplies its rendering, terminator and tombstone. New short-grow and long-grow tests for TXT, SRT and VTT (only JSONL had them) pass on both the old and the new writers, so the bytes on disk are unchanged.
 - [x] **T3 (A9)** `EnvFileStore` (the app) has its own minimal `.env` parser that keeps quotes and silently ignores a malformed file. Delegate to `DotEnvParser`, log parse failures, and quote values on write when needed.
   - Done. `loadIntoProcess` now throws, and `AppDelegate` logs the error at launch; a malformed file loads nothing, as in the CLI. `read` still returns nil on a bad file. `upsert` quotes values with surrounding whitespace, a `#`, or a leading quote.
-- [ ] **T4 (UI-2 / UI-3)** Pause, Resume and Split are unreachable in the popover. Expose them in the status bar while recording, and stop a pause from tearing down the level meters or flashing the stopped UI.
+- [x] **T4 (UI-2 / UI-3)** Pause, Resume and Split are unreachable in the popover. Expose them in the status bar while recording, and stop a pause from tearing down the level meters or flashing the stopped UI.
+  - Done. Cause of UI-3: `SessionCoordinator.pause()` relayed the engine's own `.stopping` / `.stopped`, and the controller treats `.stopped` as the end of the session (meters torn down, Save / Discard shown) until `.paused` arrives. Those two states are now held back while a pause stops the segment; a new test fails on the old coordinator. The buttons are build-verified only (SwiftUI view in the app target). Manual check: Pause, Resume and Split from the popover.
 - [ ] **T5 (convo-coach B1 / B5 / B10 / CC-10 / CC-11)**
   - Parse stdin records incrementally instead of re-parsing the whole history on every trigger.
   - Cache token counts per record and for the system prompt.

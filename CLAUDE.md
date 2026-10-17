@@ -266,7 +266,7 @@ Documentation: [docs/tools/ntakker-cli.md](docs/tools/ntakker-cli.md)
 
 ### ntakker
 
-macOS menu-bar status item app that drives the same `NtakkerCore` engine as the CLI under a separate bundle id (`com.local.ntakker`) for independent TCC grants. Popover surface exposes start / stop (pause / resume / split exist in `ControlBar` but are not currently reachable from the popover — EVAL-2026-10-16 UI-2), format / layout / folder / mic selectors, permission status, per-source level meters, opt-in live transcription with inline panel, and the opt-in mic echo-cancellation toggle (plan-014).
+macOS menu-bar status item app that drives the same `NtakkerCore` engine as the CLI under a separate bundle id (`com.local.ntakker`) for independent TCC grants. Popover surface exposes start / stop / pause / resume / split (the status bar shows Pause and Split while recording, Resume while paused — EVAL-2026-10-16 UI-2, fixed in plan-023), format / layout / folder / mic selectors, permission status, per-source level meters, opt-in live transcription with inline panel, and the opt-in mic echo-cancellation toggle (plan-014).
 
 Documentation: [docs/tools/ntakker.md](docs/tools/ntakker.md)
 

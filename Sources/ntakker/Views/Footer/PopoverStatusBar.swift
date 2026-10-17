@@ -14,8 +14,10 @@
 //   6. Elapsed `mm:ss` clock
 //   7. Flexible spacer
 //   8. Action area:
-//      - While `recording | paused | pausing | resuming | splitting`:
-//        a single red `Stop` button (mirrors `.record-btn` gradient).
+//      - While `recording`: Pause and Split icon buttons, then Stop.
+//      - While `paused`: a Resume icon button, then Stop.
+//      - While `pausing | resuming | splitting | stopping`: a single red
+//        `Stop` button (mirrors `.record-btn` gradient).
 //      - While `stopped | idle | failed`: a two-button pair
 //        `[ New Session ] [ Save… ]` (FR-IRQ-48). New Session is a
 //        transparent-fill button with a 1pt accent stroke + accent
@@ -107,7 +109,27 @@ struct PopoverStatusBar: View {
     @ViewBuilder
     private var actionArea: some View {
         switch state {
-        case .recording, .paused, .pausing, .resuming, .splitting, .stopping:
+        case .recording:
+            // UI-2 (EVAL 2026-10-16): pause and split were only in the
+            // legacy ControlBar, which the popover shows idle/failed
+            // only — so they were unreachable while recording.
+            HStack(spacing: 6) {
+                iconButton("pause.fill", help: String(localized: "Pause — finalize this part; Resume starts the next one.")) {
+                    recordingController?.pause()
+                }
+                iconButton("scissors", help: String(localized: "Split — start a new part without stopping.")) {
+                    recordingController?.split()
+                }
+                stopButton
+            }
+        case .paused:
+            HStack(spacing: 6) {
+                iconButton("play.fill", help: String(localized: "Resume recording into a new part.")) {
+                    recordingController?.resume()
+                }
+                stopButton
+            }
+        case .pausing, .resuming, .splitting, .stopping:
             stopButton
         case .starting:
             // Transient — show a disabled stop placeholder so the slot
@@ -127,6 +149,21 @@ struct PopoverStatusBar: View {
             // Pattern-C-specific Start chrome is a Phase 6 polish.
             ControlBar()
         }
+    }
+
+    /// Compact round icon button (pause / split / resume), sized to sit
+    /// next to the Stop capsule without crowding the status row.
+    private func iconButton(_ systemImage: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(palette.secondary)
+                .frame(width: 24, height: 24)
+                .overlay(Circle().strokeBorder(palette.separator, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityLabel(help)
     }
 
     private var stopButton: some View {
