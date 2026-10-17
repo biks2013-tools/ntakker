@@ -1525,6 +1525,9 @@ install snippet (`cd tools/convo-coach && npm install && npm link`).
 - **FR-STU-11 Echo filter.** On a split recording, a player switch removes the system audio that leaked into the microphone, in real time during playback; the echo delay is measured per recording. Files are not changed; the Cut tab's export can write a copy with the echo removed from the mic track, with or without cuts. Adjustable: strength, extra suppression (off / low / high), adaptation (stable / fast) and a per-recording echo delay override. (Added 2026-10-17.)
 - **FR-STU-10 Re-transcribe and search.** Re-transcribe a recording with a batch provider (parakeet, whisperkit, gemini, azure, elevenlabs) into a new exact-timed transcript. Search every transcript in the library (case- and accent-insensitive, all words) and open a result at its moment.
 
+#### FR-SET-1 — One settings file and one Settings window for all three tools
+**Status:** IMPLEMENTED (2026-10-17, plan-025, user request). ntakker, ntakker-cli and ntakker studio share `~/.tool-agents/ntakker/.env`; both apps' Settings windows show every shared setting, grouped (Recording, Transcription, Asking, providers, Studio), and follow changes made elsewhere at once. Earlier per-tool values are migrated once. UI state stays per app.
+
 ---
 
 ## 2. Non-functional requirements

@@ -26,6 +26,7 @@
 import NtakkerCore
 import NtakkerUIKit
 import SwiftUI
+import NtakkerSettingsUI
 
 /// SecureField + Save row for the Soniox API key. Only the user-
 /// initiated Save persists; typing into the field does NOT touch
@@ -44,7 +45,7 @@ struct SonioxKeyField: View {
     /// Provider id slot — same `@AppStorage` key the picker writes to.
     /// Used to gate visibility (we only render when the user has
     /// selected the Soniox provider).
-    @AppStorage("com.ntakker-cli.ui.transcribeProvider")
+    @SharedTranscriptionProvider
     private var providerRaw: String = "apple"
 
     /// Cached on-disk value used by `ApiKeyStatusRow` to decide

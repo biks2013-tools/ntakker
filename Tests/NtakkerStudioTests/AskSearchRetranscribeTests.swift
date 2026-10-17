@@ -266,3 +266,15 @@ struct EchoProcessorTests {
         #expect(fast > stable, "fast \(fast) dB vs stable \(stable) dB after 2 s")
     }
 }
+
+@Suite("Echo settings in the shared file")
+struct EchoSettingsFileTests {
+    @Test("round-trip through the shared-file values; unset or bad values mean the defaults")
+    func roundTrip() {
+        let s = EchoFilterSettings(strength: 0.75, suppression: .high, adaptation: .stable)
+        #expect(EchoFilterSettings.from(s.fileValues) == s)
+        #expect(EchoFilterSettings.from([:]) == .standard)
+        #expect(EchoFilterSettings.from([SharedSettings.Keys.studioEchoSuppression: "loud"]) == .standard)
+        #expect(s.fileValues[SharedSettings.Keys.studioEchoStrength] == "0.75")
+    }
+}

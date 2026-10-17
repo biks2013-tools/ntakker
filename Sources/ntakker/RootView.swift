@@ -32,6 +32,7 @@ import AppKit
 import NtakkerCore
 import NtakkerUIKit
 import SwiftUI
+import NtakkerSettingsUI
 
 /// Top-level popover content view. Hosted by
 /// `PopoverController.popover.contentViewController =
@@ -79,7 +80,7 @@ struct RootView: View {
     /// `@AppStorage` slot) so this view can decide whether to show
     /// the privacy disclosure on first opt-in. Default `"apple"` per
     /// plan-005 Phase H.
-    @AppStorage("com.ntakker-cli.ui.transcribeProvider")
+    @SharedTranscriptionProvider
     private var transcribeProviderRaw: String = "apple"
 
     /// Acknowledged-flag for the privacy disclosure (per design
@@ -102,7 +103,7 @@ struct RootView: View {
     private var recordingSettingsExpanded: Bool = true
 
     /// Master enable/disable for live transcription (UR-ADR-7).
-    @AppStorage("com.ntakker-cli.ui.transcriptionEnabled")
+    @SharedTranscriptionEnabled
     private var transcriptionEnabled: Bool = true
 
     /// Pattern-C popover mode — Transcription (default) | Asking.

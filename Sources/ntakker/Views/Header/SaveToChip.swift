@@ -24,6 +24,7 @@ import Logging
 import NtakkerCore
 import NtakkerUIKit
 import SwiftUI
+import NtakkerSettingsUI
 
 /// Metadata-strip chip showing the save folder + a Choose… link.
 /// Reads the same `@AppStorage` slot the legacy `FolderPicker` used so
@@ -37,7 +38,7 @@ struct SaveToChip: View {
     /// Persisted absolute folder path. Empty when the user has not yet
     /// chosen a folder; `onAppear` bootstraps to `~/Recordings/`
     /// (R-32 / FR-36) so the chip always shows a path.
-    @AppStorage("com.ntakker-cli.ui.outputFolder") private var folderPath: String = ""
+    @SharedSetting(SharedSettings.Keys.recordingsDir) private var folderPath: String = ""
 
     private let logger = Logger(label: "ntakker-cli.ui.saveToChip")
 

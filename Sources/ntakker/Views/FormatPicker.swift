@@ -16,6 +16,7 @@
 import NtakkerCore
 import NtakkerUIKit
 import SwiftUI
+import NtakkerSettingsUI
 
 /// Format picker with three options (`m4a`, `wav`, `caf`).
 struct FormatPicker: View {
@@ -23,7 +24,7 @@ struct FormatPicker: View {
 
     /// Persisted format raw value (one of `"m4a"`, `"wav"`, `"caf"`).
     /// Default `.m4a` per FR-1 (AAC is the project's primary codec).
-    @AppStorage("com.ntakker-cli.ui.format") private var formatRaw: String = OutputFormat.m4a.rawValue
+    @SharedSetting(SharedSettings.Keys.format) private var formatRaw: String = OutputFormat.m4a.rawValue
 
     private var isLocked: Bool {
         guard let state = recordingController?.state else { return false }

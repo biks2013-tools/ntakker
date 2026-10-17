@@ -1225,6 +1225,19 @@
           — risk register; **R-22**, **R-23**, **R-29** in
           particular.
 
+        ## Shared settings file (plan-025)
+
+        The Settings window (⌘, or the popover's gear) shows every setting
+        ntakker shares with ntakker-cli and ntakker studio — Recording,
+        Transcription, Asking, each provider, Studio — stored in
+        `~/.tool-agents/ntakker/.env`, plus ntakker's own panes (General,
+        Permissions, Predefined Questions, Privacy, About). The popover's
+        folder, format, layout, microphone, echo-cancellation and transcription
+        pickers read and write the same file (they used to be app preferences;
+        the values are copied over once on first launch). A change in either
+        app or in the file shows up at once. See
+        `docs/design/configuration-guide.md` §0.
+
         ## Releasing
 
         A public release is Developer ID signed with the hardened runtime and notarized by Apple.

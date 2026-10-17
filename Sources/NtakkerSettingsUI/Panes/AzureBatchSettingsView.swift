@@ -7,8 +7,9 @@
 
 import SwiftUI
 
-struct AzureBatchSettingsView: View {
-    var body: some View {
+public struct AzureBatchSettingsView: View {
+    public init() {}
+    public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Azure OpenAI — batch")

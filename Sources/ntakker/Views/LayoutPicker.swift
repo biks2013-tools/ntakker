@@ -9,6 +9,7 @@
 import NtakkerCore
 import NtakkerUIKit
 import SwiftUI
+import NtakkerSettingsUI
 
 /// Layout picker with three options (`mixed`, `split`, `stereo-split`).
 struct LayoutPicker: View {
@@ -16,7 +17,7 @@ struct LayoutPicker: View {
 
     /// Persisted layout raw value (one of `"mixed"`, `"split"`,
     /// `"stereo-split"`). Default `.mixed` per FR-4.
-    @AppStorage("com.ntakker-cli.ui.layout") private var layoutRaw: String = TrackLayout.mixed.rawValue
+    @SharedSetting(SharedSettings.Keys.layout) private var layoutRaw: String = TrackLayout.mixed.rawValue
 
     private var isLocked: Bool {
         guard let state = recordingController?.state else { return false }

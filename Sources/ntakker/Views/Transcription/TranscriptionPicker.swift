@@ -34,6 +34,7 @@
 import NtakkerCore
 import NtakkerUIKit
 import SwiftUI
+import NtakkerSettingsUI
 
 /// Picker for the live-transcription provider. Drives the picker via
 /// the `RecordingController`'s `options.transcriptionProviderId`
@@ -48,7 +49,7 @@ struct TranscriptionPicker: View {
     /// plan-006 cloud streaming provider; `"none"` disables
     /// transcription. Persisted `"gemini-live"` values from a previous
     /// release are accepted by the resolver as a deprecated alias.
-    @AppStorage("com.ntakker-cli.ui.transcribeProvider")
+    @SharedTranscriptionProvider
     private var providerRaw: String = "apple"
 
     /// Whether the picker should be disabled because a session is

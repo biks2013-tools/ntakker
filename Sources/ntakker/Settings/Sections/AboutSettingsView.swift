@@ -2,6 +2,7 @@
 // Static About panel: version, credits, links to docs.
 
 import SwiftUI
+import NtakkerSettingsUI
 
 struct AboutSettingsView: View {
     var body: some View {

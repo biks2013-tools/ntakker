@@ -30,6 +30,7 @@ import Logging
 import NtakkerCore
 import NtakkerUIKit
 import SwiftUI
+import NtakkerSettingsUI
 
 /// Resolves the default output folder used by `FolderPicker` and
 /// `ControlBar` when no folder has been persisted. Pure helper —
@@ -94,7 +95,7 @@ struct FolderPicker: View {
 
     /// Persisted absolute folder path. Empty when the user has not yet
     /// chosen a folder; the controller composes a default at `start()`.
-    @AppStorage("com.ntakker-cli.ui.outputFolder") private var folderPath: String = ""
+    @SharedSetting(SharedSettings.Keys.recordingsDir) private var folderPath: String = ""
 
     /// Component-scoped logger for the side-effect of opening the panel.
     private let logger = Logger(label: "ntakker-cli.ui.folderPicker")

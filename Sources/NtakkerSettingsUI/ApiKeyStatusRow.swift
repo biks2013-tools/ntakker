@@ -24,7 +24,7 @@ import SwiftUI
 /// - Collapsed (default when a key exists): "•••••••••• [Replace…]"
 /// - Editing (after Replace tapped, or when no key exists): editable
 ///   secure field + Save + Cancel buttons.
-struct ApiKeyStatusRow: View {
+public struct ApiKeyStatusRow: View {
 
     /// Display name for the provider section header (e.g. "Soniox", "Gemini").
     let providerDisplayName: String
@@ -44,14 +44,36 @@ struct ApiKeyStatusRow: View {
     /// only entry to editing. Keep the parameter for future use.)
     let onClear: () -> Void
 
+    public init(
+        providerDisplayName: String,
+        resolvedKey: String?,
+        editPlaceholder: String,
+        onSave: @escaping (String) -> Void,
+        onClear: @escaping () -> Void
+    ) {
+        self.providerDisplayName = providerDisplayName
+        self.resolvedKey = resolvedKey
+        self.editPlaceholder = editPlaceholder
+        self.onSave = onSave
+        self.onClear = onClear
+    }
+
     @State private var isEditing = false
     @State private var draftKey: String = ""
 
-    @Environment(\.palette) private var palette
+    /// System colours: the row lives in Settings windows of both apps
+    /// (it used ntakker's popover palette before plan-025).
+    private enum palette {
+        static let secondary = Color.secondary
+        static let tertiary = Color(nsColor: .tertiaryLabelColor)
+        static let value = Color.primary
+        static let fieldBackground = Color(nsColor: .textBackgroundColor)
+        static let controlStroke = Color(nsColor: .separatorColor)
+    }
 
     private var isPresent: Bool { (resolvedKey?.isEmpty == false) }
 
-    var body: some View {
+    public var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("\(providerDisplayName.uppercased()) API KEY")

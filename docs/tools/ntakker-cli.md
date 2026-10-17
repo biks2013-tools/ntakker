@@ -185,7 +185,7 @@
         > and `azure-openai-realtime`, `ELEVENLABS_API_KEY` for `elevenlabs`)
         > is the only accepted source, resolved through the four-tier
         > configuration chain. Recommended storage:
-        > `~/.tool-agents/ntakker-cli/.env` (mode `0600`). See
+        > `~/.tool-agents/ntakker/.env` (mode `0600`). See
         > [docs/design/configuration-guide.md](../design/configuration-guide.md)
         > §2.21 (Gemini), §2.23 (Soniox), §LT-Az (Azure batch),
         > §LT-Az-RT (Azure realtime), §LT-EL (ElevenLabs).
@@ -242,7 +242,7 @@
         ntakker-cli start --output ~/recordings/talk.m4a
 
         # 7. Recording with Gemini transcription writing a JSONL sidecar.
-        #    GOOGLE_API_KEY must be exported (or in ~/.tool-agents/ntakker-cli/.env).
+        #    GOOGLE_API_KEY must be exported (or in ~/.tool-agents/ntakker/.env).
         #    Produces ~/recordings/talk.m4a + ~/recordings/talk.transcript.jsonl.
         export GOOGLE_API_KEY=...   # from https://aistudio.google.com/app/apikey
         ntakker-cli start \
@@ -271,7 +271,7 @@
 
         # 10. Soniox cloud streaming with bilingual Greek + English hints
         #     and a JSONL sidecar.  SONIOX_API_KEY must be exported (or in
-        #     ~/.tool-agents/ntakker-cli/.env). Produces ~/talk.m4a +
+        #     ~/.tool-agents/ntakker/.env). Produces ~/talk.m4a +
         #     ~/talk.transcript.jsonl. Default model: stt-rt-v4.
         export SONIOX_API_KEY=sk_...   # from https://console.soniox.com
         ntakker-cli start --transcribe soniox --transcribe-language el,en \
@@ -296,7 +296,7 @@
 
         # 13. ElevenLabs Scribe v2 batch transcription with diarization
         #     and per-word speaker labels. ELEVENLABS_API_KEY must be
-        #     exported (or in ~/.tool-agents/ntakker-cli/.env).
+        #     exported (or in ~/.tool-agents/ntakker/.env).
         export ELEVENLABS_API_KEY=sk_...   # from https://elevenlabs.io/app/settings/api-keys
         export ELEVENLABS_DIARIZE=true
         export ELEVENLABS_NUM_SPEAKERS=2
@@ -421,7 +421,7 @@
         priority to highest:
 
         1. Shell environment       (`process.env` equivalent — `ProcessInfo.processInfo.environment`).
-        2. User `.env`             (`~/.tool-agents/ntakker-cli/.env`, mode 0600).
+        2. User `.env`             (`~/.tool-agents/ntakker/.env`, mode 0600).
         3. Local `.env`            (`./.env` in the current working directory).
         4. CLI flags               (always win).
 
@@ -609,7 +609,7 @@
 
         AEC is off by default. Turn it on per session with
         `--mic-aec on` (CLI), `NTAKKER_MIC_AEC=on` (env or
-        `~/.tool-agents/ntakker-cli/.env`), or the popover toggle in
+        `~/.tool-agents/ntakker/.env`), or the popover toggle in
         `ntakker`. With AEC off the mic is recorded verbatim and
         the system source feeds the aligner directly, exactly as in
         pre-plan-013 builds.
@@ -939,12 +939,12 @@
         — there is no `--soniox-api-key` CLI flag (avoids leakage into
         shell history). Obtain a key at <https://console.soniox.com>
         (Account → API keys), then add it to
-        `~/.tool-agents/ntakker-cli/.env` (mode `0600`):
+        `~/.tool-agents/ntakker/.env` (mode `0600`):
 
         ```sh
-        chmod 0700 ~/.tool-agents/ntakker-cli
-        echo 'SONIOX_API_KEY=sk_...' >> ~/.tool-agents/ntakker-cli/.env
-        chmod 0600 ~/.tool-agents/ntakker-cli/.env
+        chmod 0700 ~/.tool-agents/ntakker
+        echo 'SONIOX_API_KEY=sk_...' >> ~/.tool-agents/ntakker/.env
+        chmod 0600 ~/.tool-agents/ntakker/.env
         ```
 
         Pair the key with `NTAKKER_SONIOX_KEY_EXPIRES_AT` (ISO-8601 date)
@@ -1127,7 +1127,7 @@
 
         Provider API keys (Gemini, Soniox, Azure, ElevenLabs) are
         read from environment variables, then
-        `~/.tool-agents/ntakker-cli/.env`, then the local `.env`, then CLI
+        `~/.tool-agents/ntakker/.env`, then the local `.env`, then CLI
         flags. See the "Configuration precedence" section above for
         the full resolution chain.
 
@@ -1166,7 +1166,7 @@
         ## File locations
 
         - **Binary:**          `<repo>/.build/<config>/ntakker-cli` after `swift build`.
-        - **User defaults:**   `~/.tool-agents/ntakker-cli/.env`           (mode `0600`, in folder mode `0700`).
+        - **User defaults:**   `~/.tool-agents/ntakker/.env`           (mode `0600`, in folder mode `0700`).
         - **PID file:**        `~/.tool-agents/ntakker-cli/ntakker-cli.pid`     (mode `0600`, only present while a detached recording is running).
         - **Log file:**        `~/.tool-agents/ntakker-cli/ntakker-cli.log`     (mode `0600`, append-only, no rotation).
         - **Bootstrap folder:** `~/.tool-agents/ntakker-cli/`              (mode `0700`; auto-created on every subcommand invocation).
@@ -1214,6 +1214,17 @@
           and `NTAKKER_SONIOX_KEY_EXPIRES_AT`).
         - `Issues - Pending Items.md` — open risks (R-1 .. R-19) and
           completed items.
+
+        ## Shared settings file (plan-025)
+
+        Since 2026-10-17 the CLI's user `.env` is the shared
+        `~/.tool-agents/ntakker/.env`, the same file ntakker and ntakker studio
+        read and write from their Settings windows. A plain `ntakker-cli start
+        --output …` therefore uses the format, layout, microphone and
+        transcription chosen in the apps; flags still override per run. The old
+        `~/.tool-agents/ntakker-cli/.env` is merged in on the first run and
+        renamed to `.env.merged-into-ntakker`; the pid and log files stay in
+        `~/.tool-agents/ntakker-cli/`. See `docs/design/configuration-guide.md` §0.
 
         ## Releasing
 

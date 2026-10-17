@@ -24,7 +24,8 @@
 import NtakkerCore
 import SwiftUI
 
-struct AskingSettingsView: View {
+public struct AskingSettingsView: View {
+    public init() {}
 
     /// Mirrors `NTAKKER_ASK_PROVIDER` so the conditional credential
     /// sub-section can re-render when the user changes the picker.
@@ -42,7 +43,7 @@ struct AskingSettingsView: View {
         ("mlx",                AskProvider.mlx.displayName),
     ]
 
-    var body: some View {
+    public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
 

@@ -4,6 +4,7 @@
 
 import NtakkerCore
 import SwiftUI
+import NtakkerSettingsUI
 
 struct PredefinedQuestionsSettingsView: View {
     @EnvironmentObject private var store: PredefinedQuestionsStore

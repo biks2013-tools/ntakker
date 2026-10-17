@@ -146,6 +146,7 @@ let package = Package(
             dependencies: [
                 "NtakkerCore",
                 "NtakkerUIKit",
+                "NtakkerSettingsUI",
                 .product(name: "Logging", package: "swift-log"),
             ],
             path: "Sources/ntakker",
@@ -190,6 +191,18 @@ let package = Package(
                 ])
             ]
         ),
+        // -- Shared settings UI (plan-025) --
+        // The settings panes and the live store over the shared
+        // ~/.tool-agents/ntakker/.env, embedded by ntakker's and
+        // ntakker studio's Settings windows.
+        .target(
+            name: "NtakkerSettingsUI",
+            dependencies: [
+                "NtakkerCore",
+                .product(name: "Logging", package: "swift-log"),
+            ],
+            path: "Sources/NtakkerSettingsUI"
+        ),
         // -- ntakker-studio (plan-024) --
         // Testable logic for the recordings explorer: library scan,
         // timing, cut + retime, Ask prompts, search, re-transcribe.
@@ -207,6 +220,7 @@ let package = Package(
             dependencies: [
                 "NtakkerCore",
                 "NtakkerStudioKit",
+                "NtakkerSettingsUI",
                 .product(name: "Logging", package: "swift-log"),
             ],
             path: "Sources/ntakker-studio",

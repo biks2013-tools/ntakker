@@ -47,7 +47,7 @@ Each release also lists `SHA256SUMS`; check a download with `shasum -a 256 <file
 1. **ntakker** — open it from Applications; a speaker icon appears in the menu bar (there is no Dock icon). Press record. macOS asks for **Microphone** and **Screen Recording**: allow both. Screen Recording is how macOS lets an app capture system audio; no video is recorded. If you choose Apple Cloud transcription, macOS also asks for **Speech Recognition**.
 2. **Transcription and Ask (optional)** — in ntakker's Settings pick a transcription provider and enter its key, and choose an Ask (Q&A) provider. On-device providers (Apple, Parakeet, WhisperKit) need no key. Settings are saved in `~/.tool-agents/ntakker/.env`.
 3. **ntakker studio** — open it from Applications. It finds ntakker's recording folder by itself (or asks you to pick one) and uses ntakker's Ask settings for questions and minutes.
-4. **ntakker-cli** — `ntakker-cli start --output ~/Recordings/test.m4a`, Ctrl-C to stop. macOS asks your terminal app for Microphone and Screen Recording on the first recording. Its settings live in `~/.tool-agents/ntakker-cli/.env`; see [`docs/tools/ntakker-cli.md`](docs/tools/ntakker-cli.md).
+4. **ntakker-cli** — `ntakker-cli start --output ~/Recordings/test.m4a`, Ctrl-C to stop. macOS asks your terminal app for Microphone and Screen Recording on the first recording. Its settings live in `~/.tool-agents/ntakker/.env`; see [`docs/tools/ntakker-cli.md`](docs/tools/ntakker-cli.md).
 
 ### Build from source
 

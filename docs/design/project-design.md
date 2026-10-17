@@ -13107,3 +13107,15 @@ ntakker stamps segments with wall-clock time. The studio places a line at `times
 - **STU-ADR-3** No silent library default: the studio adopts ntakker's folder setting or asks.
 - **STU-ADR-5** The echo filter never changes files: playback filters on the fly, and a cleaned mic track is only ever written into an exported copy (`EchoCleaner`, via `RecordingCutExporter(removeEcho:)`, warm-up pass + full pass, cleaned before cutting so the echo stays aligned).
 - **STU-ADR-4** Re-transcription is batch-only in v1; streaming providers would need a faster-than-real-time feed and file-relative timestamps.
+
+## Shared settings (plan-025)
+
+Added 2026-10-17. Plan: `docs/plans/plan-025-shared-settings.md`. Configuration: `docs/design/configuration-guide.md` §0.
+
+- **One file**, `~/.tool-agents/ntakker/.env`, for ntakker, ntakker-cli and ntakker studio (`SharedSettings` in NtakkerCore: file location, key names, `adopt` / `migrateLegacyCLIFile` / `valuesFromAppPreferences`). The CLI's `ConfigResolver(toolName:)` uses it as the user tier; its pid/log files stay in `~/.tool-agents/ntakker-cli/`.
+- **`NtakkerSettingsUI`** (new library): `SharedSettingsStore` (main-actor observable; folder watcher for atomic replaces + file watcher for in-place edits, re-armed after each folder event; writes through `EnvFileStore.upsert`, mode 0600, `setenv`), `@SharedSetting` / `@SharedBoolSetting` (drop-in for `@AppStorage`), `@SharedTranscriptionEnabled` / `@SharedTranscriptionProvider` / `@SharedLanguageSlot` (present `NTAKKER_TRANSCRIBE` and the comma-separated language list in the popover's shape), the row helpers and provider/Ask panes moved from the ntakker app, new Recording / Transcription / Studio panes, and `SharedSettingsView` (shared panes + each app's own).
+- **ntakker**: the popover's real settings use the wrappers; `RecordingStarter` reads the store; preferences copied into the file once at launch (`com.giorgosmarinos.ntakker.migratedToSharedSettings`).
+- **ntakker studio**: library = `NTAKKER_RECORDINGS_DIR` (followed live); echo settings `NTAKKER_STUDIO_ECHO_*` (`EchoFilterSettings.from(_:)` / `fileValues`).
+- **Decision (user, 2026-10-17)**: real settings only in the file; UI state stays per app.
+- **Known limit**: `EnvFileStore.upsert` is read-modify-write; two writers at the same instant can lose one change (seen once in testing with a hand edit). Acceptable for settings changed by hand; see the issues register.
+

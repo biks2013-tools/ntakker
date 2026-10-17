@@ -25,6 +25,7 @@ import Logging
 import NtakkerCore
 import NtakkerUIKit
 import SwiftUI
+import NtakkerSettingsUI
 
 /// Sentinel UID used by the picker to mean "system default input".
 /// Empty string is reserved as the storage representation of "no
@@ -39,7 +40,7 @@ struct MicrophonePicker: View {
     /// Persisted device UID. Empty string → no choice yet (controller
     /// uses system default at `start()`). `kDefaultInputSentinel` →
     /// user explicitly picked "Default Input".
-    @AppStorage("com.ntakker-cli.ui.micUID") private var micUID: String = ""
+    @SharedSetting(SharedSettings.Keys.micDevice) private var micUID: String = ""
 
     /// Live device list. Re-populated on appear and on hot-plug.
     @State private var devices: [AudioInputDevice] = []
@@ -62,7 +63,9 @@ struct MicrophonePicker: View {
     private var selectionBinding: Binding<String> {
         Binding(
             get: { micUID.isEmpty ? kDefaultInputSentinel : micUID },
-            set: { micUID = $0 }
+            // The shared file stores "unset" for the system default; the
+            // CLI would take the sentinel for a device name.
+            set: { micUID = $0 == kDefaultInputSentinel ? "" : $0 }
         )
     }
 

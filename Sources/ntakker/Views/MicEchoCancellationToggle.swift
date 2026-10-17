@@ -13,6 +13,8 @@
 // to make that clear.
 
 import SwiftUI
+import NtakkerCore
+import NtakkerSettingsUI
 import NtakkerUIKit
 
 /// Persistent UI default for `RecordingOptions.micAEC`. Read at
@@ -22,7 +24,7 @@ public let kMicAECStorageKey = "com.ntakker-cli.ui.micAEC"
 struct MicEchoCancellationToggle: View {
     @Environment(\.recordingController) private var recordingController
 
-    @AppStorage(kMicAECStorageKey) private var micAEC: Bool = false
+    @SharedBoolSetting(SharedSettings.Keys.micAEC) private var micAEC: Bool = false
 
     private var isLocked: Bool {
         guard let state = recordingController?.state else { return false }

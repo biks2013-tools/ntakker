@@ -20,6 +20,7 @@
 import NtakkerCore
 import NtakkerUIKit
 import SwiftUI
+import NtakkerSettingsUI
 
 struct LiveTranscriptPanel: View {
     @Environment(\.recordingController) private var recordingController
@@ -31,7 +32,7 @@ struct LiveTranscriptPanel: View {
     /// SourceSplitTranscriptView when single-mode + `.both` is
     /// selected. Matches the same key used by ControlBar /
     /// TranscriptionSourcePicker so they stay in sync.
-    @AppStorage("com.ntakker-cli.ui.transcribeSource")
+    @SharedSetting(SharedSettings.Keys.transcribeSource)
     private var transcribeSourceRaw: String = TranscriptionSource.mixed.rawValue
 
     private var transcribeSource: TranscriptionSource {

@@ -320,6 +320,18 @@
         - **Configuration:** none of its own; reads `~/.tool-agents/ntakker/.env`.
         - **Sources:** `Sources/ntakker-studio/` (app), `Sources/NtakkerStudioKit/` (kit), `Tests/NtakkerStudioTests/`.
 
+        ## Shared settings file (plan-025)
+
+        The Settings window (⌘,) is the same shared settings view as
+        ntakker's: Recording, Transcription, Asking, each provider and Studio,
+        all stored in `~/.tool-agents/ntakker/.env`. The library is the shared
+        recordings folder `NTAKKER_RECORDINGS_DIR` (the one ntakker records
+        into; a folder chosen in an earlier version is carried over once), and
+        the echo filter's strength, suppression and adaptation are
+        `NTAKKER_STUDIO_ECHO_*` there; the per-recording echo delay stays in
+        `<stem>.studio.json`. Changes made in ntakker or in the file show up at
+        once.
+
         ## Releasing
 
         A public release is Developer ID signed with the hardened runtime and notarized by Apple.

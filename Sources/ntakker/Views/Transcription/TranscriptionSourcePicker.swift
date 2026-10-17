@@ -12,13 +12,14 @@
 import NtakkerCore
 import NtakkerUIKit
 import SwiftUI
+import NtakkerSettingsUI
 
 /// Source-routing picker for live transcription.
 struct TranscriptionSourcePicker: View {
     @Environment(\.recordingController) private var recordingController
 
     /// Persisted source raw value. Default `"mixed"`.
-    @AppStorage("com.ntakker-cli.ui.transcribeSource")
+    @SharedSetting(SharedSettings.Keys.transcribeSource)
     private var sourceRaw: String = TranscriptionSource.mixed.rawValue
 
     private var isLocked: Bool {

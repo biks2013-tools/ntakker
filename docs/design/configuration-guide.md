@@ -7,6 +7,36 @@
 
 ---
 
+## 0. One settings file for all three tools (plan-025, 2026-10-17)
+
+`ntakker`, `ntakker-cli` and `ntakker studio` read and write **one** file,
+`~/.tool-agents/ntakker/.env`. Both apps' Settings windows show every shared
+setting (Recording, Transcription, Asking, each provider, Studio) and write it
+there; the CLI reads the same file as its "user `.env`" tier, so a choice made
+in an app is the CLI's default too, and flags still override it per run.
+
+- The CLI's previous `~/.tool-agents/ntakker-cli/.env` is merged into the
+  shared file on the first run (keys the shared file lacks) and renamed to
+  `.env.merged-into-ntakker`. The CLI's pid and log files stay in
+  `~/.tool-agents/ntakker-cli/`.
+- ntakker's recording choices, previously app preferences, are copied into the
+  file once on first launch: `NTAKKER_RECORDINGS_DIR`, `NTAKKER_FORMAT`,
+  `NTAKKER_LAYOUT`, `NTAKKER_MIC_DEVICE` (unset = system default),
+  `NTAKKER_MIC_AEC`, `NTAKKER_TRANSCRIBE` (`none` = off),
+  `NTAKKER_TRANSCRIBE_SOURCE`, `NTAKKER_TRANSCRIBE_FORMAT`,
+  `NTAKKER_TRANSCRIBE_LANGUAGE` (comma-separated).
+- New keys: `NTAKKER_RECORDINGS_DIR` (folder ntakker records into, the studio's
+  library, convo-coach's recordings folder) and `NTAKKER_STUDIO_ECHO_STRENGTH`
+  (0–1), `NTAKKER_STUDIO_ECHO_SUPPRESSION` (`off` / `low` / `high`),
+  `NTAKKER_STUDIO_ECHO_ADAPTATION` (`stable` / `fast`). Unset echo keys mean
+  1 / off / fast.
+- UI state stays in each app's own preferences: window sizes, expanded
+  sections, appearance, the last Settings pane, privacy acknowledgements, the
+  next recording's base name, the provider remembered while transcription is
+  off.
+- The apps watch the file, so a change made in the other app, by the CLI's
+  migration or by hand is picked up at once.
+
 ## 1. Configuration sources and precedence
 
 `ntakker-cli` resolves every configuration value from up to four sources. Higher-
@@ -15,7 +45,7 @@ priority sources override lower-priority sources on a per-key basis:
 | Priority | Source                                        | Notes                                                                                                                                                              |
 |----------|-----------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | 1 (lowest)  | Shell environment                          | Anything exported in the current shell (`export OUTPUT_PATH=…`). Read via `ProcessInfo.processInfo.environment`.                                                   |
-| 2          | User `.env` at `~/.tool-agents/ntakker-cli/.env` | Per-user durable defaults. Folder is auto-created at mode `0700`, file at mode `0600`. Same `KEY=VALUE` syntax as a typical `.env`; `#` comments and quoted values supported. |
+| 2          | User `.env` at `~/.tool-agents/ntakker/.env` | Per-user durable defaults. Folder is auto-created at mode `0700`, file at mode `0600`. Same `KEY=VALUE` syntax as a typical `.env`; `#` comments and quoted values supported. |
 | 3          | Local `.env` in the current working dir    | `./.env`. Highest of the env-variable sources. Same syntax.                                                                                                        |
 | 4 (highest) | CLI flag                                  | Always wins.                                                                                                                                                       |
 
@@ -86,7 +116,7 @@ How to obtain it: pick a path on local disk. There is no acquisition step.
 | Type                   | enum string                                                        |
 | Default                | `m4a`                                                              |
 | Allowed values         | `m4a` (AAC), `wav` (linear PCM, little-endian), `caf` (linear PCM, big-endian) |
-| Recommended storage    | user `.env` (`~/.tool-agents/ntakker-cli/.env`) for a personal default, or CLI flag |
+| Recommended storage    | user `.env` (`~/.tool-agents/ntakker/.env`) for a personal default, or CLI flag |
 
 Pick `m4a` for size; `wav`/`caf` for archival or downstream DSP work that
 prefers PCM.
@@ -253,7 +283,7 @@ live-transcription side-channel (FR-45 .. FR-58, FR-AS-1 .. FR-AS-12,
 project-design §LT-5 + §AS). All seven keys resolve through the same
 four-tier chain documented in §1 and apply equally to the `ntakker-cli` CLI
 and the `ntakker` menu-bar app (with the user `.env` tier scoped to
-`~/.tool-agents/ntakker-cli/.env` for the CLI and
+`~/.tool-agents/ntakker/.env` for the CLI and
 `~/.tool-agents/ntakker/.env` for the UI). Setting
 `NTAKKER_TRANSCRIBE=none` makes every other key in this section a no-op
 — note that plan-005 (2026-04-28) flipped the default from `none` to
@@ -355,7 +385,7 @@ prompt (no key, no network).
 | Type                   | API key string                                                     |
 | Default                | unset                                                              |
 | Allowed values         | any valid Google AI Studio API key                                 |
-| Recommended storage    | `~/.tool-agents/ntakker-cli/.env` (mode `0600`) for the CLI and `~/.tool-agents/ntakker/.env` (mode `0600`) for the UI |
+| Recommended storage    | `~/.tool-agents/ntakker/.env` (mode `0600`) for the CLI and `~/.tool-agents/ntakker/.env` (mode `0600`) for the UI |
 | Notes                  | resolved only when `NTAKKER_TRANSCRIBE=gemini` (or the deprecated alias `gemini-live`). **Missing key with provider != `none` raises `NtakkerError.transcriptionApiKeyMissing` (exit 78) — no audio file is created.** No `--google-api-key` CLI flag exists; keys are never accepted on the command line (avoids leakage into shell history and `ps` output). Pair with `NTAKKER_TRANSCRIBE_KEY_EXPIRES_AT` (§2.22) for proactive expiry warnings. |
 
 How to obtain it:
@@ -364,9 +394,9 @@ How to obtain it:
 2. Sign in with a Google account.
 3. Click **Create API key** (optionally inside an existing GCP project).
 4. Copy the key.
-5. Append it to `~/.tool-agents/ntakker-cli/.env` (and / or
+5. Append it to `~/.tool-agents/ntakker/.env` (and / or
    `~/.tool-agents/ntakker/.env`) as `GOOGLE_API_KEY=…`. Verify the
-   file is mode `0600` (`chmod 0600 ~/.tool-agents/ntakker-cli/.env`).
+   file is mode `0600` (`chmod 0600 ~/.tool-agents/ntakker/.env`).
 
 > **Privacy reminder.** Enabling Gemini transcription causes the
 > captured audio to be uploaded to Google's servers (see
@@ -415,7 +445,7 @@ configurable via `NTAKKER_TRANSCRIBE_KEY_EXPIRY_WARN_DAYS`.
 | Type                   | API key string                                                     |
 | Default                | _none — required when `NTAKKER_TRANSCRIBE=soniox`_                  |
 | Allowed values         | any non-empty string returned by the Soniox console                |
-| Recommended storage    | `~/.tool-agents/ntakker-cli/.env` (mode `0600`) for the CLI and `~/.tool-agents/ntakker/.env` (mode `0600`) for the UI; **never commit; never pass on CLI** |
+| Recommended storage    | `~/.tool-agents/ntakker/.env` (mode `0600`) for the CLI and `~/.tool-agents/ntakker/.env` (mode `0600`) for the UI; **never commit; never pass on CLI** |
 | Notes                  | resolved only when `NTAKKER_TRANSCRIBE=soniox`. Per the CLAUDE.md no-fallback rule, **transcription with `--transcribe soniox` raises `NtakkerError.transcriptionApiKeyMissing(provider: "soniox")` (exit 78) if the key is unset** — no audio file is created and no WebSocket handshake is attempted (AC-SX-4). No `--soniox-api-key` CLI flag exists; keys are never accepted on the command line (avoids leakage into shell history and `ps` output). Pair with `NTAKKER_SONIOX_KEY_EXPIRES_AT` (§2.25) for proactive expiry warnings. |
 
 How to obtain it:
@@ -424,9 +454,9 @@ How to obtain it:
 2. Sign in or create an account.
 3. Navigate to **Account → API keys** and click **Create API key**.
 4. Copy the key.
-5. Append it to `~/.tool-agents/ntakker-cli/.env` (and / or
+5. Append it to `~/.tool-agents/ntakker/.env` (and / or
    `~/.tool-agents/ntakker/.env`) as `SONIOX_API_KEY=…`. Verify the
-   file is mode `0600` (`chmod 0600 ~/.tool-agents/ntakker-cli/.env`).
+   file is mode `0600` (`chmod 0600 ~/.tool-agents/ntakker/.env`).
 
 **Expiration handling.** Soniox keys do not auto-expire by default;
 users may rotate manually. If your team rotates on a schedule, pair
@@ -449,7 +479,7 @@ date.
 | Type                   | URL string (`ws://` or `wss://`)                                   |
 | Default                | `wss://stt-rt.soniox.com/transcribe-websocket` (US)                |
 | Allowed values         | `wss://stt-rt.soniox.com/transcribe-websocket` (US, default), `wss://stt-rt.eu.soniox.com/transcribe-websocket` (EU), `wss://stt-rt.jp.soniox.com/transcribe-websocket` (JP) — see <https://soniox.com/docs/stt/data-residency> |
-| Recommended storage    | `~/.tool-agents/ntakker-cli/.env` (or per-project `./.env` when a single project is bound to a region) |
+| Recommended storage    | `~/.tool-agents/ntakker/.env` (or per-project `./.env` when a single project is bound to a region) |
 | Notes                  | only consulted when `NTAKKER_TRANSCRIBE=soniox`. The resolver validates that the value parses as a `ws://` or `wss://` URL and raises `NtakkerError.invalidConfigValue` (exit 64) otherwise. The same hostname/path is reused for both production and EU/JP regional variants — only the FQDN differs. |
 
 How to obtain it: pick the regional URL aligned with your data
@@ -466,9 +496,9 @@ endpoint is appropriate when no residency requirement applies.
 | Env-var name           | `NTAKKER_PARAKEET_MODEL`                                            |
 | Type                   | string                                                             |
 | Default                | `parakeet-tdt-0.6b-v3` (FluidAudio's `AsrModelVersion.v3`)         |
-| Resolution chain       | shell env → `~/.tool-agents/ntakker-cli/.env` → `./.env` → `--parakeet-model` CLI flag |
+| Resolution chain       | shell env → `~/.tool-agents/ntakker/.env` → `./.env` → `--parakeet-model` CLI flag |
 | UI override            | Settings → Parakeet → "Model id" (writes the env var into `~/.tool-agents/ntakker/.env` via `EnvFileStore`) |
-| Recommended storage    | leave at default; project-wide override possible via `~/.tool-agents/ntakker-cli/.env` |
+| Recommended storage    | leave at default; project-wide override possible via `~/.tool-agents/ntakker/.env` |
 | Notes                  | Parakeet-specific override; wins over the shared `NTAKKER_TRANSCRIBE_MODEL` (which wins over the provider default). FluidAudio v0.8.x exposes the model only via the `AsrModelVersion` enum, not a free-form string — the value is informational; the loader clamps to v3 internally. Kept for parity with WhisperKit and forward-compat with future FluidAudio versions. |
 
 ### 2.24c `NTAKKER_PARAKEET_LANGUAGE` — Parakeet language hint (plan-012)
@@ -479,7 +509,7 @@ endpoint is appropriate when no residency requirement applies.
 | Env-var name           | `NTAKKER_PARAKEET_LANGUAGE`                                         |
 | Type                   | string (bare ISO-639-1, e.g. `el`, `en`, `tr`)                     |
 | Default                | unset (auto-detect)                                                |
-| Resolution chain       | shell env → `~/.tool-agents/ntakker-cli/.env` → `./.env` → `--parakeet-language` CLI flag |
+| Resolution chain       | shell env → `~/.tool-agents/ntakker/.env` → `./.env` → `--parakeet-language` CLI flag |
 | UI override            | Settings → Parakeet → "Language hint" |
 | Notes                  | **Informational only** — FluidAudio v0.8.x has no per-call language hint API; the multilingual TDT V3 model auto-detects per chunk. Kept so the env-var convention stays consistent with WhisperKit and forward-compat with future FluidAudio versions that expose the surface. |
 
@@ -491,9 +521,9 @@ endpoint is appropriate when no residency requirement applies.
 | Env-var name           | `NTAKKER_SONIOX_DIARIZE`                                            |
 | Type                   | `Bool` (`true` \| `false`; case-insensitive; `1`/`0` and `yes`/`no` also accepted by `parseOptionalBool`) |
 | Default                | `true` (matches `SonioxConfigBuilder.defaultDiarize`)              |
-| Resolution chain       | shell env → `~/.tool-agents/ntakker-cli/.env` → `./.env` → `--soniox-diarize` CLI flag (lowest to highest priority) |
+| Resolution chain       | shell env → `~/.tool-agents/ntakker/.env` → `./.env` → `--soniox-diarize` CLI flag (lowest to highest priority) |
 | UI override            | Settings → Soniox → "Diarize speakers" (writes the env var into `~/.tool-agents/ntakker/.env` via `EnvFileStore`) |
-| Recommended storage    | project-wide setting; keep in `~/.tool-agents/ntakker-cli/.env` for consistent CLI + UI behaviour |
+| Recommended storage    | project-wide setting; keep in `~/.tool-agents/ntakker/.env` for consistent CLI + UI behaviour |
 | Notes                  | controls the Soniox `enable_speaker_diarization` field on the first WebSocket frame. When `true`, Soniox tags each token with a `speaker` value (`spk:N`); the aggregator splits the active partial whenever the incoming speaker changes, producing one `TranscriptSegment.speaker` per speaker turn. JSONL carries the raw `spk:N`; TXT/SRT/VTT render via `SpeakerSidecarLabel` (`SN`). Garbage values raise `NtakkerError.invalidConfigValue` (exit 64). |
 
 ### 2.25 `NTAKKER_SONIOX_KEY_EXPIRES_AT` — Soniox key expiry override (plan-006)
@@ -505,7 +535,7 @@ endpoint is appropriate when no residency requirement applies.
 | Type                   | ISO-8601 date string (e.g. `2026-12-31` or `2026-12-31T00:00:00Z`) |
 | Default                | unset — falls back to shared `NTAKKER_TRANSCRIBE_KEY_EXPIRES_AT`     |
 | Allowed values         | any parseable ISO-8601 date                                        |
-| Recommended storage    | next to `SONIOX_API_KEY` in `~/.tool-agents/ntakker-cli/.env` (so the pair is updated together) |
+| Recommended storage    | next to `SONIOX_API_KEY` in `~/.tool-agents/ntakker/.env` (so the pair is updated together) |
 | Notes                  | introduced per the CLAUDE.md configuration-guide rule for expiring credentials. Per plan-006 D-SX-3, **per-provider precedence** is the locked behaviour: `NTAKKER_SONIOX_KEY_EXPIRES_AT > NTAKKER_TRANSCRIBE_KEY_EXPIRES_AT > unset`. The 7-day soft-warn behaviour described in §2.22 applies identically. |
 
 Precedence detail:
@@ -603,7 +633,7 @@ providers).
 | Type                   | string                                                             |
 | Default                | _(none — required when the active provider is `azure` or `azure-openai-realtime`)_ |
 | Allowed values         | the API key from Azure portal → Resource → Keys & Endpoint         |
-| Recommended storage    | `~/.tool-agents/ntakker-cli/.env` (CLI) or `~/.tool-agents/ntakker/.env` (UI), mode `0600` |
+| Recommended storage    | `~/.tool-agents/ntakker/.env` (CLI) or `~/.tool-agents/ntakker/.env` (UI), mode `0600` |
 | Notes                  | vendor-canonical name (no `NTAKKER_*` prefix) so the value is shareable with other Azure SDK consumers in the user's shell. Per the project no-fallback rule, missing → `NtakkerError.transcriptionApiKeyMissing(provider:)` (exit 78) at config-load time. |
 
 ### LT-Az.2 `AZURE_OPENAI_ENDPOINT` — Azure OpenAI resource endpoint
@@ -639,7 +669,7 @@ providers).
 | Type                   | string                                                             |
 | Default                | `2025-04-01-preview` (documented starter — covers both batch and realtime per plan-007 §A2.4) |
 | Allowed values         | any Azure OpenAI api-version string matching `^\d{4}-\d{2}-\d{2}(-preview)?$` |
-| Recommended storage    | `~/.tool-agents/ntakker-cli/.env`                                       |
+| Recommended storage    | `~/.tool-agents/ntakker/.env`                                       |
 | Notes                  | per Open Decision Az-1, the default is a **config-guide-documented starter**, not a silent fallback for missing secrets. The factory logs the resolved value at `info` level so the user always sees which version is in play. Bump when Microsoft publishes a GA api-version that covers `gpt-4o-mini-transcribe` realtime. |
 
 ### LT-Az.5 `AZURE_OPENAI_API_KEY_EXPIRES_AT` — Azure key expiry
@@ -738,7 +768,7 @@ Required when `NTAKKER_TRANSCRIBE=elevenlabs`.
 | Type                   | string                                                             |
 | Default                | _(none — required)_                                                |
 | Allowed values         | API key from <https://elevenlabs.io/app/settings/api-keys>         |
-| Recommended storage    | `~/.tool-agents/ntakker-cli/.env` (CLI) or `~/.tool-agents/ntakker/.env` (UI), mode `0600` |
+| Recommended storage    | `~/.tool-agents/ntakker/.env` (CLI) or `~/.tool-agents/ntakker/.env` (UI), mode `0600` |
 | Notes                  | vendor-canonical name. Sent in the `xi-api-key` header. Missing → `NtakkerError.transcriptionApiKeyMissing(provider: "elevenlabs")` (exit 78). |
 
 ### LT-EL.2 `ELEVENLABS_MODEL_ID`
@@ -867,14 +897,14 @@ A typical setup blends all four sources:
 export NTAKKER_LOG_LEVEL=info
 
 # 2. Per-user durable defaults — apply across all working directories.
-cat > ~/.tool-agents/ntakker-cli/.env <<'EOF'
+cat > ~/.tool-agents/ntakker/.env <<'EOF'
 NTAKKER_FORMAT=m4a
 NTAKKER_SAMPLE_RATE=48000
 NTAKKER_BITRATE=192
 NTAKKER_MIC_DEVICE=BuiltInMicrophoneDevice
 NTAKKER_STOP_TIMEOUT=60
 EOF
-chmod 0600 ~/.tool-agents/ntakker-cli/.env
+chmod 0600 ~/.tool-agents/ntakker/.env
 
 # 3. Per-project override — drop a .env in the project working directory.
 cd ~/projects/podcast
@@ -911,7 +941,7 @@ Common failure modes and their stderr cues:
 
 | Symptom (stderr line)                                                                  | Likely cause                                                     | Fix                                                                                              |
 |----------------------------------------------------------------------------------------|------------------------------------------------------------------|--------------------------------------------------------------------------------------------------|
-| `missing required config: OUTPUT_PATH (checked: …)`                                     | no `--output` flag and no `OUTPUT_PATH` in any `.env` / shell    | pass `--output <path>`, or define `OUTPUT_PATH` in `~/.tool-agents/ntakker-cli/.env` or `./.env`.      |
+| `missing required config: OUTPUT_PATH (checked: …)`                                     | no `--output` flag and no `OUTPUT_PATH` in any `.env` / shell    | pass `--output <path>`, or define `OUTPUT_PATH` in `~/.tool-agents/ntakker/.env` or `./.env`.      |
 | `invalid value for NTAKKER_BITRATE: '999' (expected: kbps in [64, 320] or bps in …)`     | bitrate outside the AAC range                                    | choose a value in `[64, 320]` kbps.                                                              |
 | `output file already exists: <path>`                                                    | path exists and `--overwrite` not passed                         | pass `--overwrite`, or pick a different `--output`.                                              |
 | `Screen Recording permission not yet granted; system prompt has been triggered`         | first run; user has not yet approved the prompt                  | approve in System Settings, then re-run (same-process state can't be re-read).                   |
@@ -921,8 +951,8 @@ Common failure modes and their stderr cues:
 | `No active ntakker-cli recording found (PID file at … does not exist).`                      | `stop` invoked without a prior `start --detach`                  | start one first; or check that `--pid-file` matches what `start` used.                           |
 | `Stale PID file at … referenced PID … which is no longer running. The file has been removed.` | previous detached recording crashed without cleanup              | safe to start a new recording immediately.                                                       |
 | `ntakker-cli process … did not exit within …s of SIGTERM.`                                   | finalization is slow or hung                                     | wait, then `ps -p <pid>`; if hung, `kill -KILL <pid>` (loses the recording).                     |
-| `transcription api key missing for provider 'gemini-live': checked GOOGLE_API_KEY in …`  | `--transcribe gemini-live` (or `NTAKKER_TRANSCRIBE=gemini-live`) without `GOOGLE_API_KEY` set anywhere in the chain | obtain a key at <https://aistudio.google.com/app/apikey> and add `GOOGLE_API_KEY=…` to `~/.tool-agents/ntakker-cli/.env` (mode `0600`); see §2.21. |
-| `transcription api key missing for provider 'soniox': checked SONIOX_API_KEY in …`       | `--transcribe soniox` (or `NTAKKER_TRANSCRIBE=soniox`) without `SONIOX_API_KEY` set anywhere in the chain | obtain a key at <https://console.soniox.com> (Account → API keys) and add `SONIOX_API_KEY=…` to `~/.tool-agents/ntakker-cli/.env` (mode `0600`); see §2.23. |
+| `transcription api key missing for provider 'gemini-live': checked GOOGLE_API_KEY in …`  | `--transcribe gemini-live` (or `NTAKKER_TRANSCRIBE=gemini-live`) without `GOOGLE_API_KEY` set anywhere in the chain | obtain a key at <https://aistudio.google.com/app/apikey> and add `GOOGLE_API_KEY=…` to `~/.tool-agents/ntakker/.env` (mode `0600`); see §2.21. |
+| `transcription api key missing for provider 'soniox': checked SONIOX_API_KEY in …`       | `--transcribe soniox` (or `NTAKKER_TRANSCRIBE=soniox`) without `SONIOX_API_KEY` set anywhere in the chain | obtain a key at <https://console.soniox.com> (Account → API keys) and add `SONIOX_API_KEY=…` to `~/.tool-agents/ntakker/.env` (mode `0600`); see §2.23. |
 | `invalid value for NTAKKER_SONIOX_ENDPOINT: '…' (expected: ws:// or wss:// URL)`           | `NTAKKER_SONIOX_ENDPOINT` (or `--soniox-endpoint`) is not a valid `ws://` or `wss://` URL | use one of the documented regional endpoints (US/EU/JP) — see §2.24 and <https://soniox.com/docs/stt/data-residency>. |
 | `--detach is incompatible with --transcribe <provider != none>`                          | combined `--detach` + a non-`none` provider                       | run the recording in foreground (drop `--detach`) or set `--transcribe none`. Detach-mode transcription is excluded in v1 (OQ-LT-5). |
 | `Your GOOGLE_API_KEY expired on YYYY-MM-DD; recording will start but transcription may fail` | `NTAKKER_TRANSCRIBE_KEY_EXPIRES_AT` is in the past                | renew the key at <https://aistudio.google.com/app/apikey>, update `GOOGLE_API_KEY`, and bump `NTAKKER_TRANSCRIBE_KEY_EXPIRES_AT`. See §2.22. |

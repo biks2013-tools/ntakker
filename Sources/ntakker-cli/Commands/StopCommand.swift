@@ -53,6 +53,11 @@ public struct StopCommand: AsyncParsableCommand {
         // safe to run from a fresh user account.
         do {
             _ = try ToolAgentsBootstrap.ensure(toolName: "ntakker-cli")
+            // plan-025: settings live in the shared ~/.tool-agents/ntakker/.env
+            // (with ntakker and ntakker studio); the CLI's old file is merged
+            // into it once.
+            _ = try ToolAgentsBootstrap.ensure(toolName: SharedSettings.toolName)
+            try SharedSettings.migrateLegacyCLIFile()
         } catch let err as NtakkerError {
             err.printToStderr()
             throw ExitCode(err.exitCode)
@@ -81,7 +86,7 @@ public struct StopCommand: AsyncParsableCommand {
             {
                 overrides[ConfigResolver.Keys.output] = "/dev/null"
             }
-            resolved = try ConfigResolver(toolName: "ntakker-cli").resolve(cliOverrides: overrides)
+            resolved = try ConfigResolver(toolName: SharedSettings.toolName).resolve(cliOverrides: overrides)
         } catch let err as NtakkerError {
             err.printToStderr()
             throw ExitCode(err.exitCode)

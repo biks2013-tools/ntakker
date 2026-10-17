@@ -14,6 +14,7 @@ import Foundation
 import Logging
 import NtakkerCore
 import NtakkerUIKit
+import NtakkerSettingsUI
 
 @MainActor
 enum RecordingStarter {
@@ -29,13 +30,14 @@ enum RecordingStarter {
     /// composition.
     static func start(controller: RecordingController) {
         let d = UserDefaults.standard
+        let store = SharedSettingsStore.shared
 
         // FR-36 default-folder fallback (R-32).
         let folderPath: String = {
-            let stored = d.string(forKey: "com.ntakker-cli.ui.outputFolder") ?? ""
+            let stored = store.string(SharedSettings.Keys.recordingsDir) ?? ""
             if stored.isEmpty {
                 let resolved = DefaultRecordingFolder.resolve()
-                d.set(resolved, forKey: "com.ntakker-cli.ui.outputFolder")
+                store.set(SharedSettings.Keys.recordingsDir, resolved)
                 logger.debug("resolved default folder on Start: \(resolved)")
                 return resolved
             }
@@ -44,10 +46,10 @@ enum RecordingStarter {
 
         let folder = URL(fileURLWithPath: folderPath, isDirectory: true)
         let format = OutputFormat(
-            rawValue: d.string(forKey: "com.ntakker-cli.ui.format") ?? OutputFormat.m4a.rawValue
+            rawValue: store.string(SharedSettings.Keys.format) ?? OutputFormat.m4a.rawValue
         ) ?? .m4a
         let layout = TrackLayout(
-            rawValue: d.string(forKey: "com.ntakker-cli.ui.layout") ?? TrackLayout.mixed.rawValue
+            rawValue: store.string(SharedSettings.Keys.layout) ?? TrackLayout.mixed.rawValue
         ) ?? .mixed
 
         let basenameStored = d.string(forKey: "com.ntakker-cli.ui.basename") ?? ""
@@ -62,16 +64,19 @@ enum RecordingStarter {
             .appendingPathComponent(resolvedBasename)
             .appendingPathExtension(format.rawValue)
 
-        let micUID = d.string(forKey: "com.ntakker-cli.ui.micUID") ?? ""
+        let micUID = store.string(SharedSettings.Keys.micDevice) ?? ""
         let micDevice: String? = {
             if micUID.isEmpty || micUID == "__default__" { return nil }
             return micUID
         }()
 
-        let micAEC: Bool = d.object(forKey: kMicAECStorageKey) as? Bool ?? false
+        let micAEC: Bool = store.bool(SharedSettings.Keys.micAEC) ?? false
 
-        let transcribeProviderRaw = d.string(forKey: "com.ntakker-cli.ui.transcribeProvider") ?? "apple"
-        let transcriptionEnabled: Bool = d.object(forKey: "com.ntakker-cli.ui.transcriptionEnabled") as? Bool ?? true
+        // plan-025: one NTAKKER_TRANSCRIBE in the shared file (provider id,
+        // or "none" = off; unset = apple, as in the CLI).
+        let transcribeRawShared = store.string(SharedSettings.Keys.transcribe) ?? "apple"
+        let transcriptionEnabled = transcribeRawShared.lowercased() != "none"
+        let transcribeProviderRaw = transcribeRawShared
 
         let effectiveProvider: String = transcriptionEnabled ? transcribeProviderRaw : "none"
         let normalizedProvider = effectiveProvider.lowercased()
@@ -80,10 +85,10 @@ enum RecordingStarter {
             && normalizedProvider != "noop"
         let resolvedProviderId: String? = transcriptionActive ? normalizedProvider : nil
         let resolvedTranscriptionSource = TranscriptionSource(
-            rawValue: d.string(forKey: "com.ntakker-cli.ui.transcribeSource") ?? TranscriptionSource.mixed.rawValue
+            rawValue: store.string(SharedSettings.Keys.transcribeSource) ?? TranscriptionSource.mixed.rawValue
         ) ?? .mixed
         let resolvedTranscriptionFormat = TranscriptFormat(
-            rawValue: d.string(forKey: "com.ntakker-cli.ui.transcriptFormat") ?? TranscriptFormat.jsonl.rawValue
+            rawValue: store.string(SharedSettings.Keys.transcribeFormat) ?? TranscriptFormat.jsonl.rawValue
         ) ?? .jsonl
 
         let resolvedTranscriptionApiKey: String? = {
@@ -117,12 +122,8 @@ enum RecordingStarter {
             guard transcriptionActive else { return [] }
             var seen: Set<String> = []
             var out: [String] = []
-            for key in [
-                "com.ntakker-cli.ui.transcribeLanguage",
-                "com.ntakker-cli.ui.transcribeLanguage2",
-                "com.ntakker-cli.ui.transcribeLanguage3",
-            ] {
-                let raw = d.string(forKey: key) ?? ""
+            let list = (store.string(SharedSettings.Keys.transcribeLanguage) ?? "").split(separator: ",")
+            for raw in list {
                 let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { continue }
                 if seen.insert(trimmed).inserted { out.append(trimmed) }

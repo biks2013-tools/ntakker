@@ -12,8 +12,9 @@
 
 import SwiftUI
 
-struct ParakeetSettingsView: View {
-    var body: some View {
+public struct ParakeetSettingsView: View {
+    public init() {}
+    public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Parakeet (on-device, multilingual)")

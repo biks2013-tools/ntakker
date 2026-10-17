@@ -49,6 +49,7 @@ import NtakkerCore
 import NtakkerUIKit
 import Speech
 import SwiftUI
+import NtakkerSettingsUI
 
 /// Sentinel raw value persisted when the user wants the engine to
 /// resolve `Locale.current` at session start instead of pinning a
@@ -63,13 +64,13 @@ struct TranscriptionLanguagePicker: View {
 
     /// Persisted primary locale id. Empty string OR the sentinel mean
     /// "use Locale.current".
-    @AppStorage("com.ntakker-cli.ui.transcribeLanguage")
+    @SharedLanguageSlot(0)
     private var primaryRaw: String = ""
 
     /// Persisted optional secondary locale id. Empty string means
     /// "single-locale" (or, for ElevenLabs, that the user has only
     /// picked one language so far).
-    @AppStorage("com.ntakker-cli.ui.transcribeLanguage2")
+    @SharedLanguageSlot(1)
     private var secondaryRaw: String = ""
 
     /// 2026-05-01 — third optional locale slot. Used by the ElevenLabs
@@ -77,13 +78,13 @@ struct TranscriptionLanguagePicker: View {
     /// `ControlBar.startTapped` reads this via the same
     /// `transcribeLanguage3` `@AppStorage` slot so picker writes flow
     /// straight into `RecordingOptions.transcriptionLanguageHints`.
-    @AppStorage("com.ntakker-cli.ui.transcribeLanguage3")
+    @SharedLanguageSlot(2)
     private var tertiaryRaw: String = ""
 
     /// Mirrors `TranscriptionPicker`'s slot — used so this picker only
     /// shows the extra-locale toggles for providers that actually
     /// consume them.
-    @AppStorage("com.ntakker-cli.ui.transcribeProvider")
+    @SharedTranscriptionProvider
     private var providerRaw: String = "apple"
 
     /// On-device-installable locale set, populated on appear. Empty

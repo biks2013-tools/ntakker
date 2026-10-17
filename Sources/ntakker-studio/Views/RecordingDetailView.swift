@@ -3,6 +3,7 @@
 // Header, player and waveform on top; transcript on the left and the
 // tools (Ask, Minutes, Speakers, Cut, Re-transcribe, Info) on the right.
 
+import NtakkerSettingsUI
 import NtakkerStudioKit
 import SwiftUI
 
@@ -33,6 +34,11 @@ struct RecordingDetailView: View {
                 InspectorPane(workspace: workspace)
                     .frame(width: 390)
             }
+        }
+        // The echo settings live in the shared file: follow changes made in
+        // either app's Settings window.
+        .onChange(of: SharedSettingsStore.shared.values) { _, values in
+            workspace.player.echoSettings = EchoFilterSettings.from(values)
         }
         .environment(\.openURL, OpenURLAction { url in
             if let t = TimecodeLinks.seconds(from: url) {
@@ -276,7 +282,10 @@ struct EchoSettingsView: View {
         let player = workspace.player
         let settings = Binding(
             get: { player.echoSettings },
-            set: { player.echoSettings = $0; $0.save() }
+            set: { new in
+                player.echoSettings = new
+                for (k, v) in new.fileValues { SharedSettingsStore.shared.set(k, v) }
+            }
         )
         VStack(alignment: .leading, spacing: 14) {
             Text("Echo filter").font(.headline)

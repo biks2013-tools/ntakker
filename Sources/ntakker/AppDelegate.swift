@@ -47,6 +47,7 @@ import AppKit
 import Logging
 import NtakkerCore
 import NtakkerUIKit
+import NtakkerSettingsUI
 import SwiftUI
 
 @MainActor
@@ -191,6 +192,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Before any view reads @AppStorage: carry the settings over from
         // the pre-release bundle id (com.local.ntakker), once.
         LegacyDefaultsMigration.run()
+        // plan-025: recording settings moved from the app preferences into
+        // the shared ~/.tool-agents/ntakker/.env; copy them over once, never
+        // overwriting a value the file already has.
+        let migratedKey = "com.giorgosmarinos.ntakker.migratedToSharedSettings"
+        if !UserDefaults.standard.bool(forKey: migratedKey) {
+            do {
+                let written = try SharedSettings.adopt(SharedSettings.valuesFromAppPreferences(.standard))
+                UserDefaults.standard.set(true, forKey: migratedKey)
+                Logger(label: "ntakker-cli.ui.settings").info("moved \(written.count) settings into the shared file: \(written.joined(separator: ", "))")
+            } catch {
+                Logger(label: "ntakker-cli.ui.settings").error("could not move settings into the shared file: \(error)")
+            }
+        }
+        SharedSettingsStore.shared.reload()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {

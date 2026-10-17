@@ -12,12 +12,20 @@ import SwiftUI
 /// Compact status chip rendered to the right of an API-key section header.
 /// v1.6 surfaces presence-only state ("Configured" / "Not configured").
 /// A future plan adds an `expires: Date?` parameter for expiration text.
-struct ApiKeyStatusChip: View {
+public struct ApiKeyStatusChip: View {
     let present: Bool
 
-    @Environment(\.palette) private var palette
+    public init(present: Bool) { self.present = present }
 
-    var body: some View {
+    /// System colours (the chip moved into the shared settings module, plan-025).
+    private enum palette {
+        static let successDot = Color.green
+        static let successForeground = Color.green
+        static let tertiary = Color(nsColor: .tertiaryLabelColor)
+        static let secondary = Color.secondary
+    }
+
+    public var body: some View {
         HStack(spacing: 4) {
             Circle()
                 .fill(present ? palette.successDot : palette.tertiary)

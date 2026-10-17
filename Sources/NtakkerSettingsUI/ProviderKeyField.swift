@@ -26,13 +26,12 @@
 // key-resolution and persistence calls below are unchanged.
 
 import NtakkerCore
-import NtakkerUIKit
 import SwiftUI
 
 /// SecureField + Save / Clear row for a provider's API key. Renders
 /// only the secure input + status chip + buttons; visibility gating
 /// (e.g. "only when picker == 'azure'") is the parent's job.
-struct ProviderKeyField: View {
+public struct ProviderKeyField: View {
 
     /// `AppDelegate.toolAgentsName`. Re-declared here so the view
     /// does not have to reach across the app target boundary.
@@ -60,9 +59,16 @@ struct ProviderKeyField: View {
     /// Cached on-disk value used by `ApiKeyStatusRow` to decide
     /// "Configured" vs "Not configured". Refreshed on appear and
     /// after every Save / Clear.
+    public init(providerId: String, envVarName: String, displayLabel: String, helpURL: URL?) {
+        self.providerId = providerId
+        self.envVarName = envVarName
+        self.displayLabel = displayLabel
+        self.helpURL = helpURL
+    }
+
     @State private var resolvedKey: String?
 
-    var body: some View {
+    public var body: some View {
         ApiKeyStatusRow(
             providerDisplayName: providerDisplayName,
             resolvedKey: resolvedKey,

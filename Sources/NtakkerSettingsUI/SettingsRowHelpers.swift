@@ -12,8 +12,8 @@ import SwiftUI
 
 /// Tool name passed to every `EnvFileStore` call. Re-declared here so
 /// the Settings views do not have to reach into the AppDelegate target.
-enum SettingsConstants {
-    static let toolAgentsName = "ntakker"
+public enum SettingsConstants {
+    public static let toolAgentsName = SharedSettings.toolName
 }
 
 // MARK: - Generic single-line text row
@@ -25,7 +25,7 @@ enum SettingsConstants {
 /// names, model ids, language codes). For secrets use
 /// `ProviderKeyField` instead — secrets must NOT auto-save partial
 /// keystrokes.
-struct SettingsTextRow: View {
+public struct SettingsTextRow: View {
 
     let label: String
     let envVarName: String
@@ -40,7 +40,7 @@ struct SettingsTextRow: View {
     @State private var saveCounter: Int = 0
     @State private var feedback: String?
 
-    init(
+    public init(
         label: String,
         envVarName: String,
         placeholder: String,
@@ -75,7 +75,7 @@ struct SettingsTextRow: View {
             : .dirty
     }
 
-    var body: some View {
+    public var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 12) {
                 Text(label)
@@ -176,7 +176,7 @@ struct SettingsTextRow: View {
 
 // MARK: - Boolean toggle row
 
-struct SettingsToggleRow: View {
+public struct SettingsToggleRow: View {
 
     let label: String
     let envVarName: String
@@ -185,7 +185,7 @@ struct SettingsToggleRow: View {
 
     @State private var value: Bool = false
 
-    init(
+    public init(
         label: String,
         envVarName: String,
         helpText: String? = nil,
@@ -197,7 +197,7 @@ struct SettingsToggleRow: View {
         self.defaultValue = defaultValue
     }
 
-    var body: some View {
+    public var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 12) {
                 Text(label)
@@ -246,7 +246,7 @@ struct SettingsToggleRow: View {
 
 // MARK: - Enum picker row
 
-struct SettingsPickerRow: View {
+public struct SettingsPickerRow: View {
 
     let label: String
     let envVarName: String
@@ -254,14 +254,18 @@ struct SettingsPickerRow: View {
     let helpText: String?
     let defaultValue: String
 
-    struct PickerOption: Identifiable, Hashable {
-        let id: String        // env-var value
-        let displayName: String
+    public struct PickerOption: Identifiable, Hashable {
+        public let id: String        // env-var value
+        public let displayName: String
+        public init(id: String, displayName: String) {
+            self.id = id
+            self.displayName = displayName
+        }
     }
 
     @State private var selection: String = ""
 
-    init(
+    public init(
         label: String,
         envVarName: String,
         options: [PickerOption],
@@ -275,7 +279,7 @@ struct SettingsPickerRow: View {
         self.defaultValue = defaultValue
     }
 
-    var body: some View {
+    public var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 12) {
                 Text(label)
@@ -325,7 +329,7 @@ struct SettingsPickerRow: View {
 
 // MARK: - Numeric (Int) row
 
-struct SettingsIntRow: View {
+public struct SettingsIntRow: View {
 
     let label: String
     let envVarName: String
@@ -339,7 +343,7 @@ struct SettingsIntRow: View {
     @State private var errorText: String?
     @State private var savedFlash: Bool = false
 
-    init(
+    public init(
         label: String,
         envVarName: String,
         range: ClosedRange<Int>,
@@ -353,7 +357,7 @@ struct SettingsIntRow: View {
         self.defaultValue = defaultValue
     }
 
-    var body: some View {
+    public var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 12) {
                 Text(label)
@@ -458,7 +462,7 @@ struct SettingsIntRow: View {
 
 // MARK: - Numeric (Float) row
 
-struct SettingsFloatRow: View {
+public struct SettingsFloatRow: View {
 
     let label: String
     let envVarName: String
@@ -472,7 +476,7 @@ struct SettingsFloatRow: View {
     @State private var errorText: String?
     @State private var savedFlash: Bool = false
 
-    init(
+    public init(
         label: String,
         envVarName: String,
         range: ClosedRange<Float>,
@@ -486,7 +490,7 @@ struct SettingsFloatRow: View {
         self.defaultValue = defaultValue
     }
 
-    var body: some View {
+    public var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 12) {
                 Text(label)
@@ -591,20 +595,20 @@ struct SettingsFloatRow: View {
 
 // MARK: - Section header / footer
 
-struct SettingsSectionHeader: View {
+public struct SettingsSectionHeader: View {
     let title: String
-    init(_ title: String) { self.title = title }
-    var body: some View {
+    public init(_ title: String) { self.title = title }
+    public var body: some View {
         Text(title)
             .font(.headline)
             .padding(.top, 8)
     }
 }
 
-struct SettingsHelperText: View {
+public struct SettingsHelperText: View {
     let text: String
-    init(_ text: String) { self.text = text }
-    var body: some View {
+    public init(_ text: String) { self.text = text }
+    public var body: some View {
         Text(text)
             .font(.caption)
             .foregroundStyle(.secondary)

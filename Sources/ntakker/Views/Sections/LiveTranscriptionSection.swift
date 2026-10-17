@@ -13,13 +13,14 @@
 import NtakkerCore
 import NtakkerUIKit
 import SwiftUI
+import NtakkerSettingsUI
 
 /// Body of the Live Transcription section. Wrapped in a `Section` so it
 /// composes cleanly inside the parent `Form` (UR-ADR-1).
 struct LiveTranscriptionSection: View {
     @Environment(\.palette) private var palette
 
-    @AppStorage("com.ntakker-cli.ui.transcriptionEnabled")
+    @SharedTranscriptionEnabled
     private var transcriptionEnabled: Bool = true
 
     var body: some View {

@@ -35,6 +35,7 @@
 // "none" do NOT render a key row.
 
 import SwiftUI
+import NtakkerSettingsUI
 
 /// Live-transcription control set. Wraps the four-row block
 /// (Transcribe / Source / Transcript format / Language) plus the
@@ -46,7 +47,7 @@ struct SingleTranscriptionControls: View {
     /// used here exclusively to decide which provider-specific
     /// API-key row to render (or none, for on-device / `none`
     /// providers). Same key, same default as the picker itself.
-    @AppStorage("com.ntakker-cli.ui.transcribeProvider")
+    @SharedTranscriptionProvider
     private var providerRaw: String = "apple"
 
     var body: some View {

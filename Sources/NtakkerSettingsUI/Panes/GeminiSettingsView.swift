@@ -3,8 +3,9 @@
 
 import SwiftUI
 
-struct GeminiSettingsView: View {
-    var body: some View {
+public struct GeminiSettingsView: View {
+    public init() {}
+    public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Gemini")

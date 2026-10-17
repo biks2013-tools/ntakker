@@ -18,6 +18,7 @@
 // Button.
 
 import SwiftUI
+import NtakkerSettingsUI
 
 /// Section header for the Live Transcription block — uppercased title
 /// on the leading edge, NSSwitch on the trailing edge.
@@ -27,7 +28,7 @@ struct LiveTranscriptionSectionHeader: View {
     /// Master enable/disable switch — UR-ADR-7. Re-declared here so the
     /// Toggle binds locally and the `RootView` does not have to thread
     /// a Binding through.
-    @AppStorage("com.ntakker-cli.ui.transcriptionEnabled")
+    @SharedTranscriptionEnabled
     private var transcriptionEnabled: Bool = true
 
     /// Optional collapsibility binding (added 2026-05-02). When non-nil

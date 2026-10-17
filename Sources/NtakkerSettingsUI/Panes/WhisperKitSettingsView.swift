@@ -18,7 +18,8 @@
 
 import SwiftUI
 
-struct WhisperKitSettingsView: View {
+public struct WhisperKitSettingsView: View {
+    public init() {}
 
     /// Curated WhisperKit model variants. Each id matches the
     /// HuggingFace model-name convention WhisperKit's loader expects.
@@ -46,7 +47,7 @@ struct WhisperKitSettingsView: View {
               displayName: "translate (translate to English)")
     ]
 
-    var body: some View {
+    public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Text("WhisperKit (on-device)")

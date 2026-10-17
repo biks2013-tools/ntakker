@@ -6,6 +6,12 @@
 
 ## Pending items (most critical first)
 
+### plan-025 shared settings — open items (2026-10-17)
+- **Concurrent writes can lose a change.** `EnvFileStore.upsert` reads, edits and rewrites the whole file; two writers at the same instant (two apps, or an app and an editor) can drop one update. Seen once in testing. Fix if it matters: a file lock (`flock`) around read-modify-write.
+- **Behaviour change for the CLI:** it now follows the apps' choices (format, layout, mic, transcription provider) because it reads the shared file. Flags still override.
+- **Provider panes read the file when shown**, not live; a change made in the other app shows after switching panes. The Recording / Transcription / Studio panes and the popover update live.
+- Manual check pending: launch the new ntakker once (it copies its preferences into the file), then confirm the popover, the studio's Settings and `ntakker-cli start` agree.
+
 ### Public release (2026-10-17): bundle ids changed, permissions must be granted again
 - ntakker, ntakker-cli and ntakker studio are published from `biks2013-tools/ntakker` as Developer ID signed, notarized releases (`scripts/release.sh`), with casks in `biks2013-tools/homebrew-ntakker`.
 - The bundle ids changed to `com.giorgosmarinos.ntakker` and `com.giorgosmarinos.ntakker-cli` (user decision). macOS ties Microphone, Screen Recording and Speech Recognition grants to the id, so **every existing install must grant them again** after upgrading. ntakker copies its in-app settings from the old `com.local.ntakker` preferences on first launch (`LegacyDefaultsMigration`, once); the studio reads ntakker's folder from either id.

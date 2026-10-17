@@ -11,6 +11,8 @@
 
 import AppKit
 import Foundation
+import NtakkerCore
+import NtakkerSettingsUI
 import NtakkerStudioKit
 import Observation
 
@@ -40,15 +42,31 @@ final class LibraryStore {
     @ObservationIgnored private var pendingSeek: (id: String, time: Double, transcript: URL?)?
 
     init() {
-        let d = UserDefaults.standard
-        if let stored = d.string(forKey: Self.folderKey), !stored.isEmpty {
-            root = URL(fileURLWithPath: stored, isDirectory: true)
-        } else if let ntakker = [Self.ntakkerDefaultsSuite, Self.legacyNtakkerDefaultsSuite].lazy
-                    .compactMap({ UserDefaults(suiteName: $0)?.string(forKey: Self.ntakkerFolderKey) })
-                    .first(where: { !$0.isEmpty }) {
-            root = URL(fileURLWithPath: ntakker, isDirectory: true)
-            d.set(ntakker, forKey: Self.folderKey)
+        // plan-025: the library is the shared recordings folder
+        // (NTAKKER_RECORDINGS_DIR in ~/.tool-agents/ntakker/.env), the one
+        // ntakker records into. Carry over a folder chosen before, once.
+        let store = SharedSettingsStore.shared
+        if store.string(SharedSettings.Keys.recordingsDir) == nil {
+            let d = UserDefaults.standard
+            let previous = [d.string(forKey: Self.folderKey)]
+                + [Self.ntakkerDefaultsSuite, Self.legacyNtakkerDefaultsSuite].map {
+                    UserDefaults(suiteName: $0)?.string(forKey: Self.ntakkerFolderKey)
+                }
+            if let folder = previous.compactMap({ $0 }).first(where: { !$0.isEmpty }) {
+                store.set(SharedSettings.Keys.recordingsDir, folder)
+            }
         }
+        root = store.string(SharedSettings.Keys.recordingsDir).map { URL(fileURLWithPath: $0, isDirectory: true) }
+    }
+
+    /// The shared recordings folder changed (here, in ntakker, or by hand).
+    func followSharedFolder() {
+        let path = SharedSettingsStore.shared.string(SharedSettings.Keys.recordingsDir)
+        let url = path.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        guard url?.standardizedFileURL != root?.standardizedFileURL else { return }
+        root = url
+        selectedID = nil
+        Task { await rescan() }
     }
 
     func chooseFolder() {
@@ -60,10 +78,8 @@ final class LibraryStore {
         panel.message = "Choose the folder that holds your ntakker recordings."
         if let root { panel.directoryURL = root }
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        UserDefaults.standard.set(url.path, forKey: Self.folderKey)
-        root = url
-        selectedID = nil
-        Task { await rescan() }
+        SharedSettingsStore.shared.set(SharedSettings.Keys.recordingsDir, url.path)
+        followSharedFolder()
     }
 
     func rescan() async {

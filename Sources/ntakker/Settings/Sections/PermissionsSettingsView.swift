@@ -6,6 +6,7 @@
 // the popover variant (`.onlyWhenIssues`) has hidden itself.
 
 import SwiftUI
+import NtakkerSettingsUI
 
 struct PermissionsSettingsView: View {
     var body: some View {

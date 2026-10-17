@@ -434,8 +434,8 @@ struct AskingModeView: View {
                     }
                     Button(String(localized: "Manage…")) {
                         UserDefaults.standard.set(
-                            SettingsCategory.predefinedQuestions.rawValue,
-                            forKey: "com.ntakker.ui.settings.selectedCategory"
+                            "predefinedQuestions",
+                            forKey: "com.ntakker-cli.ui.settings.selectedPane"
                         )
                         openSettings()
                     }

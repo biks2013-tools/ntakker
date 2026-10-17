@@ -36,6 +36,7 @@ import Logging
 import NtakkerCore
 import NtakkerUIKit
 import SwiftUI
+import NtakkerSettingsUI
 
 /// Lifecycle controls for the active recording.
 struct ControlBar: View {
@@ -44,18 +45,18 @@ struct ControlBar: View {
     // Persisted UI state read here so we can compose `RecordingOptions`
     // when the user clicks Start. Each control owns the writes; the
     // ControlBar only reads at action time.
-    @AppStorage("com.ntakker-cli.ui.outputFolder") private var folderPath: String = ""
+    @SharedSetting(SharedSettings.Keys.recordingsDir) private var folderPath: String = ""
     @AppStorage("com.ntakker-cli.ui.basename") private var basename: String = ""
-    @AppStorage("com.ntakker-cli.ui.format") private var formatRaw: String = OutputFormat.m4a.rawValue
-    @AppStorage("com.ntakker-cli.ui.layout") private var layoutRaw: String = TrackLayout.mixed.rawValue
-    @AppStorage("com.ntakker-cli.ui.micUID") private var micUID: String = ""
+    @SharedSetting(SharedSettings.Keys.format) private var formatRaw: String = OutputFormat.m4a.rawValue
+    @SharedSetting(SharedSettings.Keys.layout) private var layoutRaw: String = TrackLayout.mixed.rawValue
+    @SharedSetting(SharedSettings.Keys.micDevice) private var micUID: String = ""
 
     // plan-013 / plan-014 — Microphone AEC toggle. Default `false`
     // (opt-in): when enabled, `RecordingSession` routes mic buffers
     // through `SoftwareAECProcessor`. Read at `start()` and forwarded
     // into `RecordingOptions(micAEC:)`. The user-facing control lives
     // in `MicEchoCancellationToggle` (in the popover's General section).
-    @AppStorage(kMicAECStorageKey) private var micAEC: Bool = false
+    @SharedBoolSetting(SharedSettings.Keys.micAEC) private var micAEC: Bool = false
 
     // Transcription persisted state (plan-003 Phase G; read here so the
     // composed `RecordingOptions` carries the user's picker selection
@@ -63,7 +64,7 @@ struct ControlBar: View {
     // Default `"apple"` per plan-005 Phase H — Apple Speech is the
     // on-device default; the user can opt back to "none" or to the
     // Gemini cloud provider via `TranscriptionPicker`.
-    @AppStorage("com.ntakker-cli.ui.transcribeProvider")
+    @SharedTranscriptionProvider
     private var transcribeProviderRaw: String = "apple"
     // plan-008 Unit I: master enable/disable switch for transcription.
     // Defaults `true` so existing users do not lose transcription on
@@ -72,19 +73,19 @@ struct ControlBar: View {
     // `"none"` while the persisted `transcribeProviderRaw` is preserved
     // so re-toggling ON restores the user's last engine choice
     // (UR-ADR-7).
-    @AppStorage("com.ntakker-cli.ui.transcriptionEnabled")
+    @SharedTranscriptionEnabled
     private var transcriptionEnabled: Bool = true
-    @AppStorage("com.ntakker-cli.ui.transcribeSource")
+    @SharedSetting(SharedSettings.Keys.transcribeSource)
     private var transcribeSourceRaw: String = TranscriptionSource.mixed.rawValue
-    @AppStorage("com.ntakker-cli.ui.transcriptFormat")
+    @SharedSetting(SharedSettings.Keys.transcribeFormat)
     private var transcriptFormatRaw: String = TranscriptFormat.jsonl.rawValue
     // Language hints for the Apple Speech provider (and the
     // first-hint-only prompt for Gemini). Persisted by
     // `TranscriptionLanguagePicker`. Empty = engine falls back to
     // `Locale.current` per `AppleSpeechTranscriptionProvider`.
-    @AppStorage("com.ntakker-cli.ui.transcribeLanguage")
+    @SharedLanguageSlot(0)
     private var transcribeLanguagePrimaryRaw: String = ""
-    @AppStorage("com.ntakker-cli.ui.transcribeLanguage2")
+    @SharedLanguageSlot(1)
     private var transcribeLanguageSecondaryRaw: String = ""
     /// 2026-05-01 — third language slot. Used by the ElevenLabs path
     /// (the user explicitly asked for up to 3 selectable languages
@@ -92,7 +93,7 @@ struct ControlBar: View {
     /// `SpeechAnalyzer` path still consumes only the first two
     /// (its dual-locale API is hard-capped); a third value is dropped
     /// silently inside its provider.
-    @AppStorage("com.ntakker-cli.ui.transcribeLanguage3")
+    @SharedLanguageSlot(2)
     private var transcribeLanguageTertiaryRaw: String = ""
 
     private let logger = Logger(label: "ntakker-cli.ui.controlBar")

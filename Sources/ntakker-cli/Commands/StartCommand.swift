@@ -135,6 +135,11 @@ public struct StartCommand: AsyncParsableCommand {
         // ---- Step 1: bootstrap ~/.tool-agents/ntakker-cli/. (FR-13) -------
         do {
             _ = try ToolAgentsBootstrap.ensure(toolName: "ntakker-cli")
+            // plan-025: settings live in the shared ~/.tool-agents/ntakker/.env
+            // (with ntakker and ntakker studio); the CLI's old file is merged
+            // into it once.
+            _ = try ToolAgentsBootstrap.ensure(toolName: SharedSettings.toolName)
+            try SharedSettings.migrateLegacyCLIFile()
         } catch let err as NtakkerError {
             err.printToStderr()
             throw ExitCode(err.exitCode)
@@ -151,7 +156,7 @@ public struct StartCommand: AsyncParsableCommand {
         // ---- Step 3: resolve options. --------------------------------
         let options: RecordingOptions
         do {
-            options = try ConfigResolver(toolName: "ntakker-cli").resolve(cliOverrides: overrides)
+            options = try ConfigResolver(toolName: SharedSettings.toolName).resolve(cliOverrides: overrides)
         } catch let err as NtakkerError {
             err.printToStderr()
             throw ExitCode(err.exitCode)

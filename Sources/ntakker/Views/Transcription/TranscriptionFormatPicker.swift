@@ -11,13 +11,14 @@
 import NtakkerCore
 import NtakkerUIKit
 import SwiftUI
+import NtakkerSettingsUI
 
 /// Format picker for the sidecar transcript file.
 struct TranscriptionFormatPicker: View {
     @Environment(\.recordingController) private var recordingController
 
     /// Persisted format raw value. Default `"jsonl"`.
-    @AppStorage("com.ntakker-cli.ui.transcriptFormat")
+    @SharedSetting(SharedSettings.Keys.transcribeFormat)
     private var formatRaw: String = TranscriptFormat.jsonl.rawValue
 
     private var isLocked: Bool {

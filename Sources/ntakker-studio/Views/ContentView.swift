@@ -1,5 +1,7 @@
 // ntakker-studio/Views/ContentView.swift — plan-024 T9.
 
+import NtakkerCore
+import NtakkerSettingsUI
 import NtakkerStudioKit
 import SwiftUI
 
@@ -29,6 +31,9 @@ struct ContentView: View {
         .onAppear {
             PlaybackKeys.player = { library.workspace?.player }
         }
+        .onChange(of: SharedSettingsStore.shared.string(SharedSettings.Keys.recordingsDir)) { _, _ in
+            library.followSharedFolder()
+        }
     }
 }
 
@@ -47,28 +52,9 @@ struct ChooseLibraryView: View {
     }
 }
 
+/// The studio's Settings window: the shared settings view (plan-025).
 struct StudioSettingsView: View {
-    @Environment(LibraryStore.self) private var library
-
     var body: some View {
-        Form {
-            LabeledContent("Library folder") {
-                HStack {
-                    Text(library.root?.path ?? "Not chosen")
-                        .foregroundStyle(library.root == nil ? .secondary : .primary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Button("Change…") { library.chooseFolder() }
-                }
-            }
-            LabeledContent("Ask, minutes and re-transcription") {
-                Text("Use ntakker's settings in ~/.tool-agents/ntakker/.env (NTAKKER_ASK_PROVIDER, provider keys). Change them in ntakker's Settings.")
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .formStyle(.grouped)
-        .frame(width: 560)
-        .padding()
+        SharedSettingsView(selectionKey: "studio.settings.selectedPane")
     }
 }

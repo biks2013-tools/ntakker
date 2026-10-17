@@ -10,6 +10,7 @@
 // section.
 
 import SwiftUI
+import NtakkerSettingsUI
 import NtakkerUIKit
 
 struct GeneralSettingsView: View {

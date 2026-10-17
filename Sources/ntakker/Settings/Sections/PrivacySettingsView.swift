@@ -4,6 +4,7 @@
 // for demos or when switching machines).
 
 import SwiftUI
+import NtakkerSettingsUI
 
 struct PrivacySettingsView: View {
 
