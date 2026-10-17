@@ -2,12 +2,13 @@
 
 A native macOS tool that captures **system audio** (Music, Spotify, browsers, Zoom, Teams, …) and the **microphone** simultaneously, streams them to a live transcription provider, and lets you ask questions about what's been said while it's still being said.
 
-Three surfaces, one engine:
+Four surfaces, one engine:
 
 | Component   | Kind                       | Purpose                                                                  |
 |-------------|----------------------------|--------------------------------------------------------------------------|
 | `ntakker-cli`    | Swift CLI                  | Headless recording + transcription. Drives CI, scripts, terminal use.    |
 | `ntakker` | Swift menu-bar app         | Menu-bar popover with mode toggle (Transcription / Asking), Save flow, Settings. |
+| `ntakker-studio` | Swift Dock app       | Explores finished recordings: transcript follows playback, click to jump, cut, rename speakers, re-transcribe, search, Q&A and minutes. |
 | `convo-coach` | Node CLI (TypeScript)    | Reads a recorded transcript and streams coaching advice from an LLM.     |
 
 Local-first by design — audio capture is fully on-device; only the streams you explicitly opt into (transcription provider, Q&A LLM) leave the machine.
@@ -44,6 +45,16 @@ swift run ntakker-cli list-devices
 swift run ntakker-cli start --output ~/Recordings/test.m4a
 # Ctrl-C to stop
 ```
+
+### 4. Install ntakker studio
+
+Download the notarized `ntakker-studio-<version>.dmg` from [Releases](https://github.com/biks2013-tools/recording-tool/releases) and drag the app to Applications, or:
+
+```sh
+brew install --cask biks2013-tools/ntakker-studio/ntakker-studio
+```
+
+From source: `bash scripts/redeploy-ntakker-studio.sh` (ad-hoc signed, installs to `/Applications`).
 
 ---
 
@@ -99,6 +110,16 @@ Privacy: cloud providers trigger a one-time disclosure sheet per provider. Missi
 ### Predefined questions (one-click Q&A)
 
 Maintain a personal list of frequently-asked questions in **Settings → Predefined Questions** (add / edit / reorder / delete). During a recording, the Asking panel's Send button becomes a split menu — click the trailing chevron to pick any saved question and fire it through the existing Q&A pipeline with one click (same streaming, same sidecar, same privacy gate). UI-only state; see [plan-016](docs/design/plan-016-predefined-questions.md).
+
+### ntakker studio — studying finished recordings
+
+A separate Dock app ([`docs/tools/ntakker-studio.md`](docs/tools/ntakker-studio.md)) that opens the recordings ntakker saved:
+
+- Library grouped by month, plus search across every transcript (case- and accent-insensitive).
+- Player (mic + system together, 0.75–2×) with a waveform; the line being played is highlighted and followed; click a line to hear it.
+- Cut ranges into a **new copy** — audio in the same format, transcript times shifted. Originals are never changed.
+- Ask questions and write meeting minutes over the whole transcript (ntakker's Ask provider); cited `[mm:ss]` times are clickable.
+- Rename speakers, fix transcript text (a `.orig` backup is kept), re-transcribe with Parakeet, WhisperKit, Gemini, Azure or ElevenLabs.
 
 ### Session bundling (Save…)
 
@@ -230,4 +251,4 @@ log stream --predicate 'subsystem CONTAINS "ntakker-cli"' --info
 
 ## License
 
-Local-first, single-user project. Not currently published; see the repo owner for redistribution terms.
+MIT — see [LICENSE](LICENSE).
