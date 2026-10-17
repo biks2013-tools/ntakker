@@ -1263,7 +1263,8 @@ public final class RecordingSession: @unchecked Sendable {
             for await event in dispatcherEvents {
                 if Task.isCancelled { break }
                 seen += 1
-                forwarderLogger.info("transcript forwarder: republishing event #\(seen) \(String(describing: event).prefix(60))")
+                // A7: trace, not info — one line per event otherwise.
+                forwarderLogger.trace("transcript forwarder: republishing event #\(seen) \(String(describing: event).prefix(60))")
                 publicContinuation.yield(event)
             }
             forwarderLogger.info("transcript forwarder: dispatcher events stream ended after \(seen) events")

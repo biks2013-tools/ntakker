@@ -870,10 +870,13 @@
         ~/.tool-agents/ntakker/ntakker.log
         ```
 
-        The file is `0600` mode, append-only, and **not** rotated by
-        the app (manage it manually if it grows large — same
-        convention as the CLI's detached-mode log file). Default
-        level is `.info`.
+        The file is `0600` mode and append-only. Lines are written in
+        batches on a background queue. At 10 MB the app renames it to
+        `ntakker.log.1`, replacing the previous backup, and starts a
+        fresh file, so at most about 20 MB is kept. Default level is
+        `.info`. The once-a-second `mic_health` line is logged at
+        `.info` only for the first 5 s and when the mic looks
+        unhealthy, and at `.debug` otherwise.
 
         ### Viewing logs in Console.app
 
@@ -1127,7 +1130,7 @@
           (managed by `UserDefaults` / `@AppStorage`; selected
           format / layout / mic UID / output-folder bookmark live
           here, per FR-36 / FR-38 / FR-39).
-        - **Log file:**         `~/.tool-agents/ntakker/ntakker.log`   (mode `0600`, append-only, no rotation; see "Logging" above).
+        - **Log file:**         `~/.tool-agents/ntakker/ntakker.log`   (mode `0600`, append-only, rotated at 10 MB to `ntakker.log.1`; see "Logging" above).
         - **Bootstrap folder:** `~/.tool-agents/ntakker/`               (mode `0700`; auto-created on launch).
 
         Note: unlike the CLI, `ntakker` does **not** use a PID

@@ -184,6 +184,13 @@ public enum LoggerFactory {
     public static func make(_ subsystem: String) -> Logging.Logger {
         Logging.Logger(label: subsystem)
     }
+
+    /// Block until every line already logged has reached the log file.
+    /// No-op without a file sink. Also runs automatically at process
+    /// exit (A6/A7: the file sink writes asynchronously).
+    public static func flush() {
+        BootstrapState.shared.flushFileSink()
+    }
 }
 
 // MARK: - Bootstrap-once guard
@@ -205,6 +212,16 @@ private final class BootstrapState: @unchecked Sendable {
     /// Shared, mutable level cell read on every log emit. Stored so the
     /// UI's hidden debug menu can flip the verbosity at runtime.
     fileprivate let levelBox = LogLevelBox(level: .info)
+
+    /// The UI file sink, kept so `flush()` and the exit hook can reach it.
+    private var fileSink: FileLogSink?
+
+    func flushFileSink() {
+        lock.lock()
+        let sink = fileSink
+        lock.unlock()
+        sink?.flush()
+    }
 
     private init() {}
 
@@ -267,6 +284,11 @@ private final class BootstrapState: @unchecked Sendable {
                 ))
                 return nil
             }
+        }
+
+        if let fileSink {
+            self.fileSink = fileSink
+            atexit { BootstrapState.shared.flushFileSink() }
         }
 
         let box = levelBox
@@ -482,8 +504,16 @@ private struct FileLogHandler: LogHandler {
 // MARK: - FileLogSink (shared append-only writer)
 
 /// Thread-safe, append-only writer backed by a single `FileHandle`.
-/// Created once at bootstrap and shared by every `FileLogHandler` so
-/// they serialize writes through one lock and one fd.
+/// Created once at bootstrap and shared by every `FileLogHandler`.
+///
+/// A6 / A7 (EVAL 2026-10-16, plan-022 T2): callers no longer do a
+/// `write(2)` under a lock on their own thread — the capture and
+/// transcription threads log through here. `append` copies the line
+/// into a pending batch under a short lock and schedules one flush on
+/// a private serial queue; a burst of lines becomes one write. When
+/// the file passes `rotationBytes` it is renamed to `<name>.1`
+/// (replacing the previous backup) and a fresh file is started, so the
+/// log can no longer grow without bound.
 ///
 /// Permission discipline (NFR-16):
 ///   - Parent directory is owned/created by `ToolAgentsBootstrap.ensure`
@@ -491,15 +521,37 @@ private struct FileLogHandler: LogHandler {
 ///     it).
 ///   - The log file itself is created at mode `0600` if missing, and
 ///     defensively `chmod 0600`'d on every open even if it pre-exists.
-private final class FileLogSink: @unchecked Sendable {
-    private let handle: FileHandle
+final class FileLogSink: @unchecked Sendable {
+
+    /// Size at which the log rotates to `<name>.1`.
+    static let rotationBytes: UInt64 = 10 * 1024 * 1024
+
+    private let url: URL
+    private let rotationLimit: UInt64
+    private let queue = DispatchQueue(label: "ntakker.log.file-sink", qos: .utility)
     private let lock = NSLock()
 
-    private init(handle: FileHandle) {
+    // Guarded by `lock`.
+    private var pending = Data()
+    private var flushScheduled = false
+
+    // Owned by `queue`.
+    private var handle: FileHandle
+    private var size: UInt64
+
+    private init(url: URL, handle: FileHandle, size: UInt64, rotationLimit: UInt64) {
+        self.url = url
         self.handle = handle
+        self.size = size
+        self.rotationLimit = rotationLimit
     }
 
-    static func open(at url: URL) throws -> FileLogSink {
+    static func open(at url: URL, rotationBytes: UInt64 = FileLogSink.rotationBytes) throws -> FileLogSink {
+        let (handle, size) = try openHandle(at: url)
+        return FileLogSink(url: url, handle: handle, size: size, rotationLimit: rotationBytes)
+    }
+
+    private static func openHandle(at url: URL) throws -> (FileHandle, UInt64) {
         let fm = FileManager.default
         let path = url.path
 
@@ -539,27 +591,63 @@ private final class FileLogSink: @unchecked Sendable {
             )
         }
         // Append mode: seek to end on every open.
-        handle.seekToEndOfFile()
-        return FileLogSink(handle: handle)
+        let size = handle.seekToEndOfFile()
+        return (handle, size)
     }
 
     func append(_ line: String) {
-        let data = Data(line.utf8)
         lock.lock()
-        defer { lock.unlock() }
-        // FileHandle.write is documented to throw on macOS 11+ but
-        // legacy callers still see the non-throwing variant. Use the
-        // typed throwing variant where available; if it raises, swallow
-        // the error to keep logging best-effort (a logging path that
-        // crashes the app is worse than a silent loss).
+        pending.append(contentsOf: line.utf8)
+        let schedule = !flushScheduled
+        flushScheduled = true
+        lock.unlock()
+        if schedule {
+            queue.async { self.drain() }
+        }
+    }
+
+    /// Block until every line appended so far is on disk.
+    func flush() {
+        queue.sync { self.drain() }
+    }
+
+    /// Runs on `queue`.
+    private func drain() {
+        lock.lock()
+        let batch = pending
+        pending = Data()
+        flushScheduled = false
+        lock.unlock()
+        guard !batch.isEmpty else { return }
+
+        // Best-effort throughout: log loss is preferable to a
+        // log-induced crash.
         do {
-            if #available(macOS 10.15.4, *) {
-                try handle.write(contentsOf: data)
-            } else {
-                handle.write(data)
-            }
+            try handle.write(contentsOf: batch)
+            size += UInt64(batch.count)
         } catch {
-            // Best-effort: log loss is preferable to log-induced crash.
+            return
+        }
+        if size >= rotationLimit {
+            rotate()
+        }
+    }
+
+    /// Runs on `queue`.
+    private func rotate() {
+        let fm = FileManager.default
+        let backup = url.appendingPathExtension("1")
+        try? handle.close()
+        try? fm.removeItem(at: backup)
+        try? fm.moveItem(at: url, to: backup)
+        do {
+            (handle, size) = try Self.openHandle(at: url)
+        } catch {
+            // Keep writing to the renamed file rather than losing logs.
+            if let fallback = FileHandle(forWritingAtPath: backup.path) {
+                handle = fallback
+                size = fallback.seekToEndOfFile()
+            }
         }
     }
 }

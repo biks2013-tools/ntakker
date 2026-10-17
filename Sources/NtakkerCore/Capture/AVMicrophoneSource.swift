@@ -128,6 +128,11 @@ public final class AVMicrophoneSource: NSObject,
     private var _totalFramesReceived: Int = 0
     private var _lastBufferSize: Int = 0
     private var _recentMaxAmplitude: Float32 = 0
+
+    /// Heartbeat bookkeeping (A7): ticks fired so far, and the buffer
+    /// count at the previous tick. Guarded by `stateQueue`.
+    private var _heartbeatTicks = 0
+    private var _heartbeatPrevBufferCount = 0
     private var _healthHeartbeatTimer: DispatchSourceTimer?
     private let healthHeartbeatQueue = DispatchQueue(
         label: "ntakker-cli.capture.mic.health",
@@ -572,7 +577,8 @@ public final class AVMicrophoneSource: NSObject,
 
     /// Schedule the 1 Hz heartbeat timer on `healthHeartbeatQueue`.
     /// Each fire snapshots the cumulative counters under `stateQueue`,
-    /// emits a single info-level log line, and resets the per-interval
+    /// emits a single log line (info while starting up or unhealthy,
+    /// debug otherwise), and resets the per-interval
     /// peak amplitude. Cancelled by `removeHealthHeartbeat()` on stop.
     ///
     /// Log format (sample):
@@ -601,7 +607,10 @@ public final class AVMicrophoneSource: NSObject,
         )
         timer.setEventHandler { [weak self] in
             guard let self else { return }
-            let snapshot = self.stateQueue.sync { () -> (Int, Int, Int, Float32, Date) in
+            let (snapshot, tick, prevBuffers) = self.stateQueue.sync { () -> ((Int, Int, Int, Float32, Date), Int, Int) in
+                self._heartbeatTicks += 1
+                let prev = self._heartbeatPrevBufferCount
+                self._heartbeatPrevBufferCount = self._bufferCount
                 let bc = self._bufferCount
                 let tf = self._totalFramesReceived
                 let ls = self._lastBufferSize
@@ -610,14 +619,17 @@ public final class AVMicrophoneSource: NSObject,
                 // Reset per-interval amplitude so we measure the next
                 // window cleanly.
                 self._recentMaxAmplitude = 0
-                return (bc, tf, ls, pa, lba)
+                return ((bc, tf, ls, pa, lba), self._heartbeatTicks, prev)
             }
             let sinceLast = Date().timeIntervalSince(snapshot.4)
-            let ampStr = String(format: "%.4f", snapshot.3)
-            let sinceStr = String(format: "%.2fs", max(sinceLast, 0))
-            self.logger.info(
-                "mic_health: buffers=\(snapshot.0) totalFrames=\(snapshot.1) lastSize=\(snapshot.2) recentPeakAmp=\(ampStr) sinceLastBuf=\(sinceStr)"
-            )
+            // A7 (EVAL 2026-10-16): INFO for the first few ticks and
+            // whenever the mic looks unhealthy (no new buffers, a
+            // digital-zero peak, or a >1 s gap) — the cases the
+            // interpretation notes above care about. A healthy steady
+            // state logs at debug instead of once a second at info.
+            let unhealthy = snapshot.0 == prevBuffers || snapshot.3 == 0 || sinceLast > 1
+            let level: Logger.Level = (tick <= 5 || unhealthy) ? .info : .debug
+            self.logger.log(level: level, "mic_health: buffers=\(snapshot.0) totalFrames=\(snapshot.1) lastSize=\(snapshot.2) recentPeakAmp=\(String(format: "%.4f", snapshot.3)) sinceLastBuf=\(String(format: "%.2fs", max(sinceLast, 0)))")
         }
         stateQueue.sync {
             self._healthHeartbeatTimer = timer
