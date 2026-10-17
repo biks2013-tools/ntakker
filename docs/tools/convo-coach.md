@@ -224,7 +224,7 @@
         | `@langchain/anthropic`   | `^1.3.0`  | `ChatAnthropic` |
         | `@langchain/google-genai`| `^2.1.0`  | `ChatGoogleGenerativeAI` (Gemini) |
         | `@langchain/ollama`      | `^1.2.0`  | `ChatOllama` (native Ollama API) |
-        | `js-tiktoken`            | `^1.0.0`  | Token counting for context-window budget |
+        | `js-tiktoken`            | `^1.0.0`  | Token counting for context-window budget. Uses `js-tiktoken/lite` with only the encoding the model needs: `o200k_base` for gpt-4o / 4.1 / 4.5 / 5.x / o-series, `cl100k_base` for older models. Counts are cached per record. |
 
         npm `overrides` pins `@anthropic-ai/sdk@^0.92.0` to clear an upstream
         moderate-severity advisory (filesystem-memory tool — not used by `convo-coach`).

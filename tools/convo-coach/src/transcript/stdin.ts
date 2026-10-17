@@ -9,9 +9,14 @@
 //     `debounceMs` of stdin silence.
 //   * EOF always emits one final yield with whatever is buffered.
 //
-// The generator KEEPS the accumulated buffer between yields, so each yield
-// contains the full conversation history. Callers (the orchestrator) apply
-// the windowing layer to slice down to the requested time range.
+// The generator keeps the conversation between yields, so each yield
+// contains the full history. Callers (the orchestrator) apply the windowing
+// layer to slice down to the requested time range.
+//
+// EVAL-2026-06-12 B1 (plan-023 T5): lines are parsed once, as they arrive,
+// into a `StdinTranscript`. Before, every trigger re-split and re-parsed
+// the whole accumulated buffer (O(n²) over a session) and re-warned about
+// every malformed line each time.
 //
 // Defensive: every resource (timer, readline interface, /dev/tty fd) is
 // disposed inside a `try/finally` if the generator is closed early.
@@ -19,7 +24,7 @@
 import * as fs from 'node:fs';
 import * as readline from 'node:readline';
 
-import { parseJsonl, parsePlainText } from './jsonl.js';
+import { JsonlAccumulator, parsePlainText } from './jsonl.js';
 import type { NormalisedRecord } from '../types.js';
 
 export interface StdinDriverOptions {
@@ -35,45 +40,66 @@ export interface StdinTrigger {
 }
 
 /**
- * Detect whether the buffer looks like JSONL (first non-blank line parses as
- * a JSON object). Comments (`#`) are skipped while sniffing. Returns false
- * for empty or non-JSON-looking buffers; the caller falls back to
- * `parsePlainText` in that case.
+ * The stdin conversation so far, built one line at a time.
+ *
+ * The format is decided by the first non-blank, non-comment line: a JSON
+ * object means JSONL, anything else plain text. JSONL lines go through a
+ * `JsonlAccumulator`. Until the first JSONL record parses, the raw lines
+ * are kept too, so a stream whose every line fails as JSONL still degrades
+ * to plain text (the old whole-buffer behaviour) instead of yielding
+ * nothing.
  */
-function looksLikeJsonl(buffer: string): boolean {
-    for (const raw of buffer.split(/\r?\n/)) {
-        const trimmed = raw.trim();
-        if (trimmed.length === 0) continue;
-        if (trimmed.startsWith('#')) continue;
-        if (!trimmed.startsWith('{')) return false;
-        try {
-            const parsed = JSON.parse(trimmed);
-            return typeof parsed === 'object' && parsed !== null;
-        } catch {
-            return false;
+export class StdinTranscript {
+    private format: 'unknown' | 'jsonl' | 'text' = 'unknown';
+    private readonly jsonl = new JsonlAccumulator();
+    private pendingRaw: string[] | undefined = [];
+    private readonly textLines: string[] = [];
+
+    push(line: string): void {
+        if (this.format === 'unknown') {
+            const trimmed = line.trim();
+            if (trimmed.length > 0 && !trimmed.startsWith('#')) {
+                this.format = looksLikeJsonObject(trimmed) ? 'jsonl' : 'text';
+            }
+        }
+        if (this.format === 'text') {
+            const trimmed = line.trim();
+            if (trimmed.length > 0) this.textLines.push(trimmed);
+            return;
+        }
+        this.jsonl.push(line);
+        if (this.pendingRaw !== undefined) {
+            if (this.jsonl.size > 0) {
+                this.pendingRaw = undefined;
+            } else {
+                this.pendingRaw.push(line);
+            }
         }
     }
-    return false;
+
+    /** Records at trigger time `now`. Plain-text records all carry `now`. */
+    records(now: Date): NormalisedRecord[] {
+        if (this.format === 'text') {
+            return this.textLines.map((text) => ({ timestamp: now, text }));
+        }
+        if (this.jsonl.size === 0 && this.pendingRaw !== undefined && this.jsonl.considered > 0) {
+            // Every line so far failed as JSONL — degrade to plain text
+            // rather than aborting the long-lived loop.
+            return parsePlainText(this.pendingRaw.join('\n'), now);
+        }
+        return this.jsonl.records();
+    }
 }
 
-/**
- * Parse the accumulated buffer. JSONL when the first non-blank line is a
- * JSON object; plain text otherwise. Both parsers are graceful — they
- * never throw on per-line malformed input.
- */
-function parseBuffer(buffer: string, now: Date): NormalisedRecord[] {
-    if (buffer.trim().length === 0) return [];
-    if (looksLikeJsonl(buffer)) {
-        try {
-            return parseJsonl(buffer);
-        } catch {
-            // parseJsonl throws TranscriptError when EVERY line fails. In
-            // stdin mode we degrade to plain-text rather than aborting the
-            // long-lived loop.
-            return parsePlainText(buffer, now);
-        }
+/** Whether `line` (trimmed, non-empty) parses as a JSON object. */
+function looksLikeJsonObject(line: string): boolean {
+    if (!line.startsWith('{')) return false;
+    try {
+        const parsed = JSON.parse(line);
+        return typeof parsed === 'object' && parsed !== null;
+    } catch {
+        return false;
     }
-    return parsePlainText(buffer, now);
 }
 
 /**
@@ -96,7 +122,7 @@ export async function* readFromStdin(
 ): AsyncGenerator<StdinTrigger> {
     const debounceMs = opts.debounceMs;
 
-    let buffer = '';
+    const transcript = new StdinTranscript();
     let resolveNext: ((value: TriggerReason | null) => void) | undefined;
     let pendingValue: TriggerReason | null | undefined;
     let debounceTimer: NodeJS.Timeout | undefined;
@@ -137,7 +163,7 @@ export async function* readFromStdin(
     let ttyRl: readline.Interface | undefined;
 
     stdinRl.on('line', (line: string) => {
-        buffer += line + '\n';
+        transcript.push(line);
         if (!useTtyTrigger) {
             armDebounce();
         }
@@ -203,17 +229,17 @@ export async function* readFromStdin(
             if (reason === null) {
                 // EOF: emit one last batch with whatever is buffered.
                 const now = new Date();
-                const records = parseBuffer(buffer, now);
+                const records = transcript.records(now);
                 yield { records, transcriptEnd: now, reason: 'eof' };
                 return;
             }
 
             const now = new Date();
-            const records = parseBuffer(buffer, now);
+            const records = transcript.records(now);
             yield { records, transcriptEnd: now, reason };
-            // Buffer is intentionally NOT reset — each yield contains the
-            // accumulated history; the orchestrator's window slicer trims
-            // it down to the requested range.
+            // The transcript is intentionally NOT reset — each yield
+            // contains the accumulated history; the orchestrator's window
+            // slicer trims it down to the requested range.
         }
     } finally {
         cleanup();

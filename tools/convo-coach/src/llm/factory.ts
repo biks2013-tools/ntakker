@@ -21,26 +21,30 @@ import {
 } from '../types.js';
 
 import { resolveModel } from './default-models.js';
-import { openaiProvider } from './providers/openai.js';
-import { anthropicProvider } from './providers/anthropic.js';
-import { googleProvider } from './providers/google.js';
-import { azureOpenaiProvider } from './providers/azure-openai.js';
-import { azureAiInferenceProvider } from './providers/azure-ai-inference.js';
-import { ollamaProvider } from './providers/ollama.js';
-import { litellmProvider } from './providers/litellm.js';
-import { mlxProvider } from './providers/mlx.js';
 
-/** Static provider registry. Keys are the canonical ProviderName values. */
-export const PROVIDERS: Readonly<Record<ProviderName, LlmProviderModule>> = Object.freeze({
-    'openai':              openaiProvider,
-    'anthropic':           anthropicProvider,
-    'google':              googleProvider,
-    'azure-openai':        azureOpenaiProvider,
-    'azure-ai-inference':  azureAiInferenceProvider,
-    'ollama':              ollamaProvider,
-    'litellm':             litellmProvider,
-    'mlx':                 mlxProvider,
+/**
+ * Provider registry: one lazy loader per canonical ProviderName.
+ *
+ * EVAL-2026-10-16 CC-11 (plan-023 T5): the registry used to import all
+ * eight provider modules — and with them every LangChain SDK — at
+ * startup, which made even `--help` pay ~100 ms. Each module is now
+ * imported only when its provider is selected.
+ */
+export const PROVIDER_LOADERS: Readonly<Record<ProviderName, () => Promise<LlmProviderModule>>> = Object.freeze({
+    'openai':              async () => (await import('./providers/openai.js')).openaiProvider,
+    'anthropic':           async () => (await import('./providers/anthropic.js')).anthropicProvider,
+    'google':              async () => (await import('./providers/google.js')).googleProvider,
+    'azure-openai':        async () => (await import('./providers/azure-openai.js')).azureOpenaiProvider,
+    'azure-ai-inference':  async () => (await import('./providers/azure-ai-inference.js')).azureAiInferenceProvider,
+    'ollama':              async () => (await import('./providers/ollama.js')).ollamaProvider,
+    'litellm':             async () => (await import('./providers/litellm.js')).litellmProvider,
+    'mlx':                 async () => (await import('./providers/mlx.js')).mlxProvider,
 });
+
+/** Load the provider module for `name`. */
+export function loadProvider(name: ProviderName): Promise<LlmProviderModule> {
+    return PROVIDER_LOADERS[name]();
+}
 
 /** Type-narrowing helper: is this string one of the known providers? */
 function isProviderName(value: string): value is ProviderName {
@@ -93,13 +97,13 @@ export interface BuildLanguageModelResult {
  * re-wrapped in `ProviderError` (exit 70) UNLESS they are themselves
  * `ConfigError`s (exit 78), which we re-throw verbatim.
  */
-export function buildLanguageModel(
+export async function buildLanguageModel(
     config: ResolvedConfig,
     cliProvider: ProviderName | undefined,
     modelOverride: string | undefined,
-): BuildLanguageModelResult {
+): Promise<BuildLanguageModelResult> {
     const providerName = resolveProviderName(config, cliProvider);
-    const providerModule = PROVIDERS[providerName];
+    const providerModule = await loadProvider(providerName);
 
     let model: LanguageModel;
     try {

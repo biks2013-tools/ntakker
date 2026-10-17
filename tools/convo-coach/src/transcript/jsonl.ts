@@ -31,33 +31,35 @@
 
 import { TranscriptError, type NormalisedRecord } from '../types.js';
 
-interface ParseStats {
-    readonly considered: number;     // non-empty, non-comment lines
-    readonly produced: number;       // records returned to the caller
-    readonly malformed: number;      // JSON/missing-field failures
-    readonly tombstones: number;     // dropped tombstones (text === '' or _tombstone)
-}
-
 /**
- * Parse a ntakker-cli sidecar JSONL payload (the entire file content as a string).
- *
- * Returns the parsed records sorted by ascending `timestamp`. Tombstones and
- * comments are excluded. Malformed individual lines are warned-about and
- * skipped. Throws `TranscriptError` if every non-comment, non-blank line is
- * unparseable (no usable records produced from a non-empty payload).
+ * Incremental JSONL parser: feed lines one at a time with `push`, read the
+ * current records with `records()`. `parseJsonl` uses it for whole files;
+ * stdin mode keeps one for the whole session so every trigger costs only
+ * the lines that arrived since the last one (EVAL-2026-06-12 B1). Each
+ * malformed line is warned about once, when it arrives.
  */
-export function parseJsonl(content: string): NormalisedRecord[] {
-    const lines = content.split(/\r?\n/);
-    const records: NormalisedRecord[] = [];
-    const indexById = new Map<string, number>();
-    const stats = { considered: 0, malformed: 0, tombstones: 0 };
+export class JsonlAccumulator {
+    private readonly list: NormalisedRecord[] = [];
+    private readonly indexById = new Map<string, number>();
+    private lineNumber = 0;
+    private sorted = true;
+    private readonly counts = { considered: 0, malformed: 0, tombstones: 0 };
 
-    for (let i = 0; i < lines.length; i += 1) {
-        const raw = lines[i] ?? '';
+    /** Lines seen that were neither blank nor comments. */
+    get considered(): number { return this.counts.considered; }
+    get malformed(): number { return this.counts.malformed; }
+    get tombstones(): number { return this.counts.tombstones; }
+    /** Records currently held (after id de-duplication). */
+    get size(): number { return this.list.length; }
+
+    /** Parse one line (without its newline) into the accumulator. */
+    push(raw: string): void {
+        this.lineNumber += 1;
+        const lineNo = this.lineNumber;
         const trimmed = raw.trim();
-        if (trimmed.length === 0) continue;
-        if (trimmed.startsWith('#')) continue;
-        stats.considered += 1;
+        if (trimmed.length === 0) return;
+        if (trimmed.startsWith('#')) return;
+        this.counts.considered += 1;
 
         let obj: unknown;
         try {
@@ -65,47 +67,47 @@ export function parseJsonl(content: string): NormalisedRecord[] {
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             console.warn(
-                `[convo-coach/jsonl] line ${i + 1}: malformed JSON, skipped (${msg})`,
+                `[convo-coach/jsonl] line ${lineNo}: malformed JSON, skipped (${msg})`,
             );
-            stats.malformed += 1;
-            continue;
+            this.counts.malformed += 1;
+            return;
         }
 
         if (!isPlainObject(obj)) {
             console.warn(
-                `[convo-coach/jsonl] line ${i + 1}: expected JSON object, skipped`,
+                `[convo-coach/jsonl] line ${lineNo}: expected JSON object, skipped`,
             );
-            stats.malformed += 1;
-            continue;
+            this.counts.malformed += 1;
+            return;
         }
 
         // Tombstone marker per CC-DSGN-7.
         if (obj['_tombstone'] === true) {
-            stats.tombstones += 1;
-            continue;
+            this.counts.tombstones += 1;
+            return;
         }
 
         const text = obj['text'];
         if (typeof text !== 'string') {
             console.warn(
-                `[convo-coach/jsonl] line ${i + 1}: missing/non-string 'text', skipped`,
+                `[convo-coach/jsonl] line ${lineNo}: missing/non-string 'text', skipped`,
             );
-            stats.malformed += 1;
-            continue;
+            this.counts.malformed += 1;
+            return;
         }
         if (text.trim().length === 0) {
             // Tombstone-by-empty-text per task spec.
-            stats.tombstones += 1;
-            continue;
+            this.counts.tombstones += 1;
+            return;
         }
 
         const timestamp = extractTimestamp(obj);
         if (timestamp === null) {
             console.warn(
-                `[convo-coach/jsonl] line ${i + 1}: no parseable timestamp (ts/t/timestamp), skipped`,
+                `[convo-coach/jsonl] line ${lineNo}: no parseable timestamp (ts/t/timestamp), skipped`,
             );
-            stats.malformed += 1;
-            continue;
+            this.counts.malformed += 1;
+            return;
         }
 
         const channel = extractChannel(obj['channel']) ?? channelFromSource(obj['source']);
@@ -128,29 +130,70 @@ export function parseJsonl(content: string): NormalisedRecord[] {
             ...(speaker !== undefined && { speaker }),
         };
         const id = typeof obj['id'] === 'string' ? (obj['id'] as string) : undefined;
-        const existing = id !== undefined ? indexById.get(id) : undefined;
+        const existing = id !== undefined ? this.indexById.get(id) : undefined;
         if (existing !== undefined) {
-            records[existing] = rec;
+            this.list[existing] = rec;
+            this.sorted = false;
         } else {
-            if (id !== undefined) indexById.set(id, records.length);
-            records.push(rec);
+            const last = this.list[this.list.length - 1];
+            if (last !== undefined && last.timestamp.getTime() > timestamp.getTime()) {
+                this.sorted = false;
+            }
+            if (id !== undefined) this.indexById.set(id, this.list.length);
+            this.list.push(rec);
         }
     }
 
-    if (stats.considered > 0 && records.length === 0) {
+    /**
+     * The records so far, sorted by ascending timestamp, as a fresh array.
+     * Record objects are shared between calls (immutable), which lets the
+     * token budget cache their counts.
+     */
+    records(): NormalisedRecord[] {
+        if (!this.sorted) {
+            // Sort in place once and rebuild the id index to match.
+            const ids = new Map<NormalisedRecord, string>();
+            for (const [id, i] of this.indexById) {
+                const r = this.list[i];
+                if (r !== undefined) ids.set(r, id);
+            }
+            this.list.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+            this.indexById.clear();
+            this.list.forEach((r, i) => {
+                const id = ids.get(r);
+                if (id !== undefined) this.indexById.set(id, i);
+            });
+            this.sorted = true;
+        }
+        return [...this.list];
+    }
+}
+
+/**
+ * Parse a ntakker-cli sidecar JSONL payload (the entire file content as a string).
+ *
+ * Returns the parsed records sorted by ascending `timestamp`. Tombstones and
+ * comments are excluded. Malformed individual lines are warned-about and
+ * skipped. Throws `TranscriptError` if every non-comment, non-blank line is
+ * unparseable (no usable records produced from a non-empty payload).
+ */
+export function parseJsonl(content: string): NormalisedRecord[] {
+    const acc = new JsonlAccumulator();
+    for (const line of content.split(/\r?\n/)) acc.push(line);
+
+    if (acc.considered > 0 && acc.size === 0) {
         throw new TranscriptError(
-            `transcript JSONL: every line failed to parse (considered=${stats.considered}, malformed=${stats.malformed}, tombstones=${stats.tombstones}). Verify the file is a ntakker-cli sidecar (.jsonl).`,
+            `transcript JSONL: every line failed to parse (considered=${acc.considered}, malformed=${acc.malformed}, tombstones=${acc.tombstones}). Verify the file is a ntakker-cli sidecar (.jsonl).`,
         );
     }
 
-    if (stats.malformed > 0) {
+    if (acc.malformed > 0) {
         console.warn(
-            `[convo-coach/jsonl] parse summary: ${stats.malformed} malformed line(s) skipped, ${records.length} record(s) kept.`,
+            `[convo-coach/jsonl] parse summary: ${acc.malformed} malformed line(s) skipped, ${acc.size} record(s) kept.`,
         );
     }
 
-    records.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-    return records;
+    return acc.records();
 }
 
 /**

@@ -23,7 +23,7 @@ import {
 
 import { resolveModel, DEFAULT_MODELS } from '../src/llm/default-models.js';
 import {
-    PROVIDERS,
+    loadProvider,
     buildLanguageModel,
     resolveProviderName,
 } from '../src/llm/factory.js';
@@ -133,9 +133,9 @@ test('DEFAULT_MODELS covers every ProviderName exactly once', () => {
 // PROVIDERS registry sanity
 // ---------------------------------------------------------------------------
 
-test('PROVIDERS registry: every provider module declares its own name', () => {
+test('provider registry: every provider module declares its own name', async () => {
     for (const name of PROVIDER_NAMES) {
-        const mod = PROVIDERS[name];
+        const mod = await loadProvider(name);
         assert.ok(mod, `missing provider module for ${name}`);
         assert.equal(mod.name, name, `provider module name mismatch for ${name}`);
     }
@@ -213,9 +213,9 @@ const FIXTURES: readonly ProviderFixture[] = [
 ];
 
 for (const fx of FIXTURES) {
-    test(`buildLanguageModel(${fx.provider}) returns a model + correct labels`, () => {
+    test(`buildLanguageModel(${fx.provider}) returns a model + correct labels`, async () => {
         const cfg = makeConfig(fx.cfg);
-        const result = buildLanguageModel(cfg, fx.provider, fx.modelOverride);
+        const result = await buildLanguageModel(cfg, fx.provider, fx.modelOverride);
         assert.equal(result.provider, fx.provider, 'provider label');
         assert.equal(result.modelId, fx.expectedModelId, 'modelId label');
         assert.ok(result.model !== undefined && result.model !== null, 'model defined');
@@ -230,28 +230,28 @@ for (const fx of FIXTURES) {
 // buildLanguageModel — error mapping
 // ---------------------------------------------------------------------------
 
-test('buildLanguageModel: ConfigError from a provider passes through (exit 78)', () => {
+test('buildLanguageModel: ConfigError from a provider passes through (exit 78)', async () => {
     // openai with no API key → provider raises ConfigError → factory re-throws.
     const cfg = makeConfig({});
-    assert.throws(
+    await assert.rejects(
         () => buildLanguageModel(cfg, 'openai', undefined),
         (err: unknown) => err instanceof ConfigError && /OPENAI_API_KEY/.test((err as Error).message),
     );
 });
 
-test('buildLanguageModel: azure-openai missing endpoint raises ConfigError', () => {
+test('buildLanguageModel: azure-openai missing endpoint raises ConfigError', async () => {
     const cfg = makeConfig({
         AZURE_OPENAI_API_KEY: 'sk-test',
         AZURE_OPENAI_API_VERSION: '2024-10-21',
         AZURE_OPENAI_DEPLOYMENT: 'depl',
     });
-    assert.throws(
+    await assert.rejects(
         () => buildLanguageModel(cfg, 'azure-openai', undefined),
         (err: unknown) => err instanceof ConfigError && /AZURE_OPENAI_ENDPOINT/.test((err as Error).message),
     );
 });
 
-test('buildLanguageModel: azure-openai builds without AZURE_OPENAI_API_VERSION (v1 GA default)', () => {
+test('buildLanguageModel: azure-openai builds without AZURE_OPENAI_API_VERSION (v1 GA default)', async () => {
     // The v1 GA endpoint /openai/v1/... does not require a dated api-version.
     // Confirm the provider builds cleanly when AZURE_OPENAI_API_VERSION is unset
     // (the SDK falls back to its built-in 'v1' default). See provider source for
@@ -262,7 +262,7 @@ test('buildLanguageModel: azure-openai builds without AZURE_OPENAI_API_VERSION (
         AZURE_OPENAI_DEPLOYMENT: 'gpt-5.1',
         // AZURE_OPENAI_API_VERSION intentionally omitted.
     });
-    const result = buildLanguageModel(cfg, 'azure-openai', undefined);
+    const result = await buildLanguageModel(cfg, 'azure-openai', undefined);
     assert.equal(result.provider, 'azure-openai');
     assert.equal(result.modelId, 'gpt-5.1');
     assert.ok(result.model !== undefined && result.model !== null);

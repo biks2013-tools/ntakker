@@ -435,7 +435,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     }
 
     const config = loadConfig(cliArgs);
-    const built = buildLanguageModel(config, cliArgs.provider, cliArgs.model);
+    const built = await buildLanguageModel(config, cliArgs.provider, cliArgs.model);
     const systemPrompt = loadSystemPrompt(
         cliArgs.systemPrompt ?? config.get('COACH_SYSTEM_PROMPT_PATH'),
     );
