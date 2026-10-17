@@ -18,10 +18,12 @@ Approved: 2026-10-17. The user said "yes proceed with the CPU/energy wave". One 
   - Map levels to dBFS.
   - Skip unchanged values and pause publishing while the popover is hidden.
   - Draw the meters from the data instead of a `TimelineView`.
-- [ ] **T4 (CAP-3 / CAP-6 / CAP-11)** The AEC NLMS loop makes four full passes over 4096 taps per sample per channel, and holds the lock that `feedReference` (the SCStream thread) needs for the whole loop.
+- [x] **T4 (CAP-3 / CAP-6 / CAP-11)** The AEC NLMS loop makes four full passes over 4096 taps per sample per channel, and holds the lock that `feedReference` (the SCStream thread) needs for the whole loop.
   - Keep a running window energy instead of calling `svesq` per sample, and fuse leakage and update into one `vDSP_vsmsma`.
   - Run one filter against a mono reference when the mic channels are identical, since CoreAudio upmixes a mono mic.
   - Copy the needed reference span under the lock and run the NLMS outside it.
+  - **Found while doing T4: the filter never cancelled echo.** The window for mic sample `p` started at ring index `p + 1`, so it read reference samples `p+1 … p+L` (the future) when the reference led by more than L, or `p−2L+1 … p−L` (85–170 ms old) otherwise. On a synthetic delayed echo the old code left a residual larger than the echo itself. The window now ends at `p`. The ring grew from 2L to 4L so the window plus a mic buffer plus the reference lead fit.
+  - Done. The CAP-6 part is the mono path inside the AEC; the capture pipeline still upmixes the mic to stereo (moving that to the encoder is a separate change). Release-build benchmark, L = 4096, an adapting echo: 0.053 s → 0.016 s of CPU per second of audio (3.3×). Tests: three echo-convergence tests (mono, upmixed mono, true stereo) that fail on the old code; the double-talk test's pass-through count changed from 2L to L−1 because of the corrected window.
 - [ ] **T5 (TR-11)** WhisperKit and Parakeet models are reloaded and warmed up on every recording, twice in source-split mode.
   - Add a process-wide model cache with idle eviction.
 - [ ] **T6 (TR-2)** On-device providers get the same ~2.5 s chunks as the cloud batch providers, padded to the model window (15 s Parakeet, 30 s Whisper).

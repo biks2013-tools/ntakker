@@ -509,14 +509,30 @@
         problem in `--layout split` / `stereo-split` recordings goes
         away.
 
+        > **Fixed 2026-10-17 (EVAL-2026-10-16, plan-022 T4).** Until
+        > this fix the filter's reference window started one sample
+        > *after* the mic sample. Depending on how far the system
+        > audio led the mic, it read either future reference audio or
+        > audio 85–170 ms old, so it could not learn a real echo path,
+        > and on a synthetic echo it left more echo than it removed.
+        > The window now ends at the mic sample's own time. The same
+        > change made the processor about 3.3× cheaper (about 1.6 % of
+        > one core per second of audio, against 5.3 %): it keeps a
+        > running window energy, fuses leakage and update into one
+        > vector pass, runs one filter against a mono reference when
+        > the mic is an upmixed mono device (the usual built-in mic),
+        > and no longer holds the system-audio thread's lock during
+        > the filter loop. If you tried AEC before and it did nothing,
+        > try it again.
+
         > **Why opt-in?** The default-on shipping of v3/v4 produced
         > "filtering distortion" on setups where there was no actual
         > speaker bleed (headphones, low speaker volume, etc.) — see
         > plan-014 §0 and the v5 stability layers below for the fix.
         > With v5 the processor is safe to leave on whenever there
         > is real bleed to cancel, but for headphone users it costs
-        > ~5–8 % CPU doing nothing useful. Opt-in matches behaviour
-        > to user intent.
+        > CPU doing nothing useful. Opt-in matches behaviour to user
+        > intent.
 
         > **History.** The first plan-013 attempt used Apple's
         > built-in `AVAudioEngine.inputNode.setVoiceProcessingEnabled`

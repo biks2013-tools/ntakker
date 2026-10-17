@@ -48,9 +48,10 @@
 // "double-write" trick (every sample written to both `ring[p % C]`
 // and `ring[(p % C) + C]`) so any L-sample window can be read
 // contiguously without wrap-around branching inside the per-sample
-// loop. Capacity C is `2 · filterLength` (~170 ms at 48 kHz, with
-// L=4096) — plenty of headroom for any plausible mic-vs-ref skew
-// (typically < 30 ms).
+// loop. Capacity C is `4 · filterLength` (~340 ms at 48 kHz, with
+// L=4096): the window (L samples) plus a mic buffer plus the
+// reference's lead over the mic (typically < 30 ms) fit with room
+// to spare.
 //
 // Public-method threading: `feedReference` is invoked from the
 // SCStream audio queue, `processMic` from the AVCaptureSession audio
@@ -217,23 +218,28 @@ public final class SoftwareAECProcessor: @unchecked Sendable {
     private let config: Configuration
     private let logger: Logging.Logger
 
-    /// Per-channel adaptive filter weights. `weights[ch]` is a
-    /// contiguous Float array of length `filterLength`.
-    private var weights: [[Float]]
+    // ---- Reference side: written by `feedReference` (SCStream queue),
+    // ---- read by `processMic` (mic queue). Guarded by `refLock`.
 
-    /// Per-channel reference ring buffer with the double-write trick.
-    /// Each ring is `2 · ringCapacity` Float32s long, where
-    /// `ringCapacity = 2 · filterLength`. Logical position `p` writes
-    /// to both `ring[p % C]` and `ring[(p % C) + C]`.
+    /// Reference ring buffers with the double-write trick. One ring per
+    /// channel, plus — when `channels > 1` — one more at index
+    /// `channels` holding the mean of the channels (the mono reference
+    /// used for an upmixed mono mic, CAP-6). Each ring is
+    /// `2 · ringCapacity` Float32s long; logical position `p` writes to
+    /// both `ring[p % C]` and `ring[(p % C) + C]`, so any span of up to
+    /// `C` samples can be read with one contiguous copy.
     private var refRing: [[Float]]
 
-    /// Capacity of the (un-mirrored) ring per channel = `2 ·
+    /// Capacity of the (un-mirrored) ring per channel = `4 ·
     /// filterLength`. The ring array itself is `2 · ringCapacity` long.
+    /// A mic buffer needs the `filterLength - 1` samples before it plus
+    /// its own span, and the reference may lead the mic by tens of ms,
+    /// so `2 · filterLength` left too little headroom once the window
+    /// was corrected to end at the mic sample (EVAL 2026-10-16).
     private let ringCapacity: Int
 
-    /// Per-channel logical index ONE PAST the most-recently-written
+    /// Per-ring logical index ONE PAST the most-recently-written
     /// reference sample. Equivalently, the next position to write to.
-    /// Negative indicates "no reference data yet".
     private var refLastWriteEnd: [Int]
 
     /// PTS anchor — set on the very first `feedReference` call;
@@ -242,20 +248,37 @@ public final class SoftwareAECProcessor: @unchecked Sendable {
     /// off this anchor.
     private var refAnchorPTS: CMTime?
 
-    /// Per-channel envelopes — exponential moving averages of |x|²,
+    /// Reference-side counters.
+    private var refStats = AECStatistics()
+
+    /// CAP-11 (EVAL 2026-10-16): held only while the reference ring is
+    /// written or a span of it is copied out — never for the NLMS
+    /// loop — so the SCStream audio thread no longer waits 2–4 ms
+    /// behind a mic buffer.
+    private let refLock = OSAllocatedUnfairLock<Void>(initialState: ())
+
+    // ---- Filter side: owned by `processMic`, which runs serially on
+    // ---- the mic queue. Guarded by `filterLock`, which only
+    // ---- `snapshotStatistics` contends for.
+
+    /// Per-filter adaptive weights. Filter `f` serves mic channel `f`;
+    /// in mono mode only filter 0 runs. Each is `filterLength` long.
+    private var weights: [[Float]]
+
+    /// Per-filter envelopes — exponential moving averages of |x|²,
     /// |d|², |e|² respectively. Used by Layers A / B / C.
     private var refEnv: [Float]
     private var micEnv: [Float]
     private var resEnv: [Float]
 
-    /// Per-channel running counter of consecutive samples with
+    /// Per-filter running counter of consecutive samples with
     /// `resEnv > micEnv`. When it exceeds `divergenceResetSamples`,
     /// the weights are reset to zero. Reset to 0 every time the
     /// inequality fails.
     private var divergentSampleCount: [Int]
 
-    /// Stats — used by tests / diagnostics. Reset only on `init`.
-    private var stats = AECStatistics()
+    /// Mic-side counters.
+    private var micStats = AECStatistics()
 
     /// C2 (EVAL 2026-06-12): reusable per-channel output scratch for
     /// the cleaned signal. `processMic` runs serially on the single mic
@@ -266,10 +289,13 @@ public final class SoftwareAECProcessor: @unchecked Sendable {
     /// the per-sample writes stay in-place (no copy-on-write).
     private var cleanedScratch: [[Float]] = []
 
-    /// Lock guarding all of the mutable state above. Held for the
-    /// duration of a `processMic` call (one mic buffer at a time)
-    /// and briefly during `feedReference`.
-    private let lock = OSAllocatedUnfairLock<Void>(initialState: ())
+    /// CAP-11: per-filter linear copy of the reference span one mic
+    /// buffer needs (`filterLength - 1 + frameCount` samples), taken
+    /// under `refLock` and read by the NLMS loop without it. Same
+    /// move-out / move-back reuse as `cleanedScratch`.
+    private var refSpanScratch: [[Float]] = []
+
+    private let filterLock = OSAllocatedUnfairLock<Void>(initialState: ())
 
     /// One-shot diagnostic flags — first reference buffer seen,
     /// first mic buffer processed.
@@ -279,6 +305,11 @@ public final class SoftwareAECProcessor: @unchecked Sendable {
     /// Constants derived from `config`. Computed once.
     private let envCoeff: Float                  // exp-MA coefficient α
     private let divergenceResetSamples: Int      // Layer C samples threshold
+
+    /// CAP-3: the window energy is updated incrementally per sample
+    /// (add the entering sample², subtract the leaving one) and
+    /// recomputed exactly this often to bound Float drift.
+    private static let energyRecomputeInterval = 512
 
     // MARK: - Public surface
 
@@ -300,25 +331,34 @@ public final class SoftwareAECProcessor: @unchecked Sendable {
         public var refBuffersReceived: UInt64 = 0
         public var refBuffersDroppedOutOfOrder: UInt64 = 0
         public var refGapsZeroFilled: UInt64 = 0
+        /// Mic buffers processed with one filter because every mic
+        /// channel carried the same samples (an upmixed mono mic).
+        public var monoMicBuffers: UInt64 = 0
     }
 
     public func snapshotStatistics() -> AECStatistics {
-        lock.withLockUnchecked { stats }
+        var out = filterLock.withLockUnchecked { micStats }
+        let ref = refLock.withLockUnchecked { refStats }
+        out.refBuffersReceived = ref.refBuffersReceived
+        out.refBuffersDroppedOutOfOrder = ref.refBuffersDroppedOutOfOrder
+        out.refGapsZeroFilled = ref.refGapsZeroFilled
+        return out
     }
 
     public init(config: Configuration = Configuration(), logger: Logging.Logger? = nil) {
         self.config = config
         self.logger = logger ?? LoggerFactory.make("ntakker-cli.aec")
-        self.ringCapacity = config.filterLength * 2
+        self.ringCapacity = config.filterLength * 4
+        let rings = config.channels > 1 ? config.channels + 1 : 1
         self.weights = Array(
             repeating: Array(repeating: 0, count: config.filterLength),
             count: config.channels
         )
         self.refRing = Array(
             repeating: Array(repeating: 0, count: ringCapacity * 2),
-            count: config.channels
+            count: rings
         )
-        self.refLastWriteEnd = Array(repeating: 0, count: config.channels)
+        self.refLastWriteEnd = Array(repeating: 0, count: rings)
         self.refEnv = Array(repeating: 0, count: config.channels)
         self.micEnv = Array(repeating: 0, count: config.channels)
         self.resEnv = Array(repeating: 0, count: config.channels)
@@ -358,7 +398,7 @@ public final class SoftwareAECProcessor: @unchecked Sendable {
             logger.warning("feedReference: invalid PTS; dropping")
             return
         }
-        guard let channels = extractFloat32Channels(
+        guard var channels = extractFloat32Channels(
             from: buffer.buffer,
             channelCount: config.channels
         ) else {
@@ -368,13 +408,23 @@ public final class SoftwareAECProcessor: @unchecked Sendable {
         let frameCount = channels.first?.count ?? 0
         guard frameCount > 0 else { return }
 
+        // CAP-6: the mono reference (mean of the channels) for an
+        // upmixed mono mic. Computed outside the lock.
+        if config.channels > 1 {
+            var mono = [Float](repeating: 0, count: frameCount)
+            for ch in channels { vDSP_vadd(mono, 1, ch, 1, &mono, 1, vDSP_Length(frameCount)) }
+            var scale = 1 / Float(channels.count)
+            vDSP_vsmul(mono, 1, &scale, &mono, 1, vDSP_Length(frameCount))
+            channels.append(mono)
+        }
+
         let logFirstTime = firstReferenceLogged.withLock { logged -> Bool in
             guard !logged else { return false }
             logged = true
             return true
         }
 
-        lock.withLockUnchecked {
+        refLock.withLockUnchecked {
             // Anchor on first arrival. Same anchor for all channels.
             if self.refAnchorPTS == nil {
                 self.refAnchorPTS = pts
@@ -383,18 +433,16 @@ public final class SoftwareAECProcessor: @unchecked Sendable {
 
             // Logical index of the first sample in this buffer.
             let bufferStartLogical = self.logicalIndex(forPTS: pts, anchor: anchor)
-            let C = self.ringCapacity
 
-            self.stats.refBuffersReceived &+= 1
+            self.refStats.refBuffersReceived &+= 1
 
-            for ch in 0..<min(self.config.channels, channels.count) {
-                let samples = channels[ch]
-                let lastEnd = self.refLastWriteEnd[ch]
+            for r in 0..<min(self.refRing.count, channels.count) {
+                let lastEnd = self.refLastWriteEnd[r]
 
                 // Out-of-order / overlapping with already-written
                 // data — drop, do not try to splice in.
                 if bufferStartLogical < lastEnd {
-                    self.stats.refBuffersDroppedOutOfOrder &+= 1
+                    if r == 0 { self.refStats.refBuffersDroppedOutOfOrder &+= 1 }
                     continue
                 }
 
@@ -403,37 +451,64 @@ public final class SoftwareAECProcessor: @unchecked Sendable {
                 // pick up stale data left over from a wrap.
                 if bufferStartLogical > lastEnd {
                     let gap = bufferStartLogical - lastEnd
-                    self.stats.refGapsZeroFilled &+= UInt64(gap)
-                    self.refRing[ch].withUnsafeMutableBufferPointer { ringPtr in
-                        var p = lastEnd
-                        for _ in 0..<gap {
-                            let primary = ((p % C) + C) % C
-                            ringPtr[primary] = 0
-                            ringPtr[primary + C] = 0
-                            p += 1
-                        }
-                    }
+                    if r == 0 { self.refStats.refGapsZeroFilled &+= UInt64(gap) }
+                    self.writeRing(r, zerosAt: lastEnd, count: gap)
                 }
 
-                self.refRing[ch].withUnsafeMutableBufferPointer { ringPtr in
-                    samples.withUnsafeBufferPointer { srcPtr in
-                        var p = bufferStartLogical
-                        for i in 0..<frameCount {
-                            let primary = ((p % C) + C) % C
-                            ringPtr[primary] = srcPtr[i]
-                            ringPtr[primary + C] = srcPtr[i]
-                            p += 1
-                        }
-                    }
+                channels[r].withUnsafeBufferPointer { src in
+                    self.writeRing(r, from: src.baseAddress!, count: frameCount, at: bufferStartLogical)
                 }
-                self.refLastWriteEnd[ch] = bufferStartLogical + frameCount
+                self.refLastWriteEnd[r] = bufferStartLogical + frameCount
             }
         }
 
         if logFirstTime {
             logger.info(
-                "SoftwareAECProcessor first reference: frames=\(frameCount) channels=\(channels.count) bufferStartPTS=\(CMTimeGetSeconds(pts))"
+                "SoftwareAECProcessor first reference: frames=\(frameCount) channels=\(config.channels) bufferStartPTS=\(CMTimeGetSeconds(pts))"
             )
+        }
+    }
+
+    /// Write `count` samples at logical position `logical` into ring
+    /// `r`, both halves of the mirror, with at most four `memcpy`s.
+    /// Only the last `ringCapacity` samples can survive, so a longer
+    /// run is trimmed to its tail. Caller holds `refLock`.
+    private func writeRing(_ r: Int, from src: UnsafePointer<Float>, count: Int, at logical: Int) {
+        let C = ringCapacity
+        let skip = max(0, count - C)
+        var remaining = count - skip
+        var srcPos = skip
+        var p = logical + skip
+        refRing[r].withUnsafeMutableBufferPointer { ring in
+            let base = ring.baseAddress!
+            while remaining > 0 {
+                let idx = ((p % C) + C) % C
+                let n = min(remaining, C - idx)
+                memcpy(base + idx, src + srcPos, n * MemoryLayout<Float>.size)
+                memcpy(base + idx + C, src + srcPos, n * MemoryLayout<Float>.size)
+                remaining -= n
+                srcPos += n
+                p += n
+            }
+        }
+    }
+
+    /// Zero `count` samples at logical position `logical` in ring `r`.
+    /// Caller holds `refLock`.
+    private func writeRing(_ r: Int, zerosAt logical: Int, count: Int) {
+        let C = ringCapacity
+        var remaining = min(count, C)
+        var p = logical + (count - remaining)
+        refRing[r].withUnsafeMutableBufferPointer { ring in
+            let base = ring.baseAddress!
+            while remaining > 0 {
+                let idx = ((p % C) + C) % C
+                let n = min(remaining, C - idx)
+                vDSP_vclr(base + idx, 1, vDSP_Length(n))
+                vDSP_vclr(base + idx + C, 1, vDSP_Length(n))
+                remaining -= n
+                p += n
+            }
         }
     }
 
@@ -445,6 +520,13 @@ public final class SoftwareAECProcessor: @unchecked Sendable {
     /// PTS / format as the input — preserves the host-clock alignment
     /// downstream consumers (`HostClockAligner`, the recorder)
     /// depend on.
+    ///
+    /// The reference window for mic sample `p` is the `filterLength`
+    /// reference samples ENDING at `p` (logical `p - L + 1 … p`) — the
+    /// audio that can have produced an echo in that mic sample. (Before
+    /// EVAL-2026-10-16 the window started at `p + 1`, so it read either
+    /// future reference samples or ones `L … 2L` old, and the filter
+    /// could not converge on a real echo.)
     public func processMic(_ buffer: CaptureBuffer) {
         guard buffer.source == .microphone else {
             onCleanedMic?(buffer)
@@ -470,6 +552,17 @@ public final class SoftwareAECProcessor: @unchecked Sendable {
             return
         }
 
+        let L = config.filterLength
+        let C = ringCapacity
+        let spanLength = L - 1 + frameCount
+
+        // CAP-6: CoreAudio upmixes a mono mic by duplicating it, so
+        // every channel carries the same samples. One filter against
+        // the mono reference then does the work of `channels` filters.
+        let monoMic = config.channels > 1 && micChannels.count == config.channels
+            && micChannels.dropFirst().allSatisfy { Self.sameSamples($0, micChannels[0], count: frameCount) }
+        let filterCount = monoMic ? 1 : min(config.channels, micChannels.count)
+
         // C2 (EVAL 2026-06-12): reuse the output scratch instead of
         // allocating a fresh 2-D array per buffer. Moving it out of
         // `self` (leaving `cleanedScratch` empty) makes `cleaned`
@@ -480,17 +573,14 @@ public final class SoftwareAECProcessor: @unchecked Sendable {
         // stale tail samples is harmless.
         var cleaned = cleanedScratch
         cleanedScratch = []
-        defer { cleanedScratch = cleaned }
-        if cleaned.count != config.channels {
-            cleaned = Array(
-                repeating: Array(repeating: 0, count: frameCount),
-                count: config.channels
-            )
-        } else {
-            for ch in 0..<cleaned.count where cleaned[ch].count < frameCount {
-                cleaned[ch] = [Float](repeating: 0, count: frameCount)
-            }
+        var span = refSpanScratch
+        refSpanScratch = []
+        defer {
+            cleanedScratch = cleaned
+            refSpanScratch = span
         }
+        Self.ensure(&cleaned, count: config.channels, length: frameCount)
+        Self.ensure(&span, count: filterCount, length: spanLength)
 
         let logFirstTime = firstMicLogged.withLock { logged -> Bool in
             guard !logged else { return false }
@@ -498,14 +588,43 @@ public final class SoftwareAECProcessor: @unchecked Sendable {
             return true
         }
 
-        lock.withLockUnchecked {
+        // ---- CAP-11: copy the reference span under the lock, then
+        // ---- release it before the NLMS loop.
+        //
+        // `span[f][j]` holds reference logical `spanStart + j`. Samples
+        // outside the ring's retained range are not copied; `available`
+        // is the half-open logical range that was.
+        var micFirstLogical = 0
+        var available = [Range<Int>](repeating: 0..<0, count: filterCount)
+        let anchored: Bool = refLock.withLockUnchecked {
+            guard let anchor = self.refAnchorPTS else { return false }
+            micFirstLogical = self.logicalIndex(forPTS: pts, anchor: anchor)
+            let spanStart = micFirstLogical - L + 1
+            for f in 0..<filterCount {
+                let r = monoMic ? self.config.channels : f
+                let lastEnd = self.refLastWriteEnd[r]
+                let lo = max(spanStart, lastEnd - C, 0)
+                let hi = min(micFirstLogical + frameCount, lastEnd)
+                guard hi > lo else { continue }
+                available[f] = lo..<hi
+                self.refRing[r].withUnsafeBufferPointer { ring in
+                    span[f].withUnsafeMutableBufferPointer { dst in
+                        memcpy(dst.baseAddress! + (lo - spanStart),
+                               ring.baseAddress! + (lo % C),
+                               (hi - lo) * MemoryLayout<Float>.size)
+                    }
+                }
+            }
+            return true
+        }
+
+        filterLock.withLockUnchecked {
             // PTS anchor must be present (set by feedReference). If
             // mic arrived before any ref → passthrough — we have no
             // reference data to learn from.
-            guard let anchor = self.refAnchorPTS else {
+            guard anchored else {
                 for ch in 0..<min(self.config.channels, micChannels.count) {
-                    let micCh = micChannels[ch]
-                    micCh.withUnsafeBufferPointer { src in
+                    micChannels[ch].withUnsafeBufferPointer { src in
                         cleaned[ch].withUnsafeMutableBufferPointer { dst in
                             for i in 0..<frameCount {
                                 dst[i] = self.softLimit(src[i])
@@ -513,161 +632,41 @@ public final class SoftwareAECProcessor: @unchecked Sendable {
                         }
                     }
                 }
-                self.stats.samplesProcessed &+= UInt64(frameCount)
-                self.stats.samplesPassedThrough &+= UInt64(frameCount)
+                self.micStats.samplesProcessed &+= UInt64(frameCount)
+                self.micStats.samplesPassedThrough &+= UInt64(frameCount)
                 return
             }
 
-            let micFirstLogical = self.logicalIndex(forPTS: pts, anchor: anchor)
-
-            let L = self.config.filterLength
-            let C = self.ringCapacity
-            let mu = self.config.stepSize
-            let reg = self.config.regularization
-            let stepMaxAbs = self.config.stepMax
-            let leak = self.config.leakage
-            let leakRetain = 1 - leak
-            let alpha = self.envCoeff
-            let oneMinusAlpha = 1 - alpha
-            // Gate envelopes live on per-sample mean-power scale.
-            // `refPower` below is the full L-sample window energy and
-            // remains the correct NLMS denominator, but comparing that
-            // directly to `d*d` makes the reference side about `L`
-            // times larger (~36 dB for L=4096). That disables the
-            // double-talk detector in exactly the case it must catch:
-            // local speech over system playback.
-            let refActivityPower = self.config.referenceActivityRMSThreshold
-                * self.config.referenceActivityRMSThreshold
-            let dtRatio = self.config.doubleTalkRatio
-            let divergeLimit = self.divergenceResetSamples
-
-            var passThroughInThisBuffer: UInt64 = 0
-            var skippedRefSilence: UInt64 = 0
-            var skippedDoubleTalk: UInt64 = 0
-            var resetsInThisBuffer: UInt64 = 0
-
-            for ch in 0..<min(self.config.channels, micChannels.count) {
-                let micCh = micChannels[ch]
-
-                self.weights[ch].withUnsafeMutableBufferPointer { wPtr in
-                    self.refRing[ch].withUnsafeBufferPointer { ringPtr in
-                        cleaned[ch].withUnsafeMutableBufferPointer { outPtr in
-                            micCh.withUnsafeBufferPointer { dPtr in
-                                let lastEnd = self.refLastWriteEnd[ch]
-                                var refEnv = self.refEnv[ch]
-                                var micEnv = self.micEnv[ch]
-                                var resEnv = self.resEnv[ch]
-                                var divCount = self.divergentSampleCount[ch]
-
-                                for n in 0..<frameCount {
-                                    let p = micFirstLogical + n
-
-                                    // --- Window availability ---
-                                    let haveWindow =
-                                        (p >= L - 1) &&
-                                        (p <= lastEnd - 1) &&
-                                        (p >= lastEnd - C)
-                                    if !haveWindow {
-                                        // Pass mic through (still
-                                        // soft-limited). No envelope
-                                        // updates, no adaptation.
-                                        outPtr[n] = self.softLimit(dPtr[n])
-                                        passThroughInThisBuffer &+= 1
-                                        continue
-                                    }
-
-                                    let phase = ((p + 1) % C + C) % C
-                                    let window = ringPtr.baseAddress!.advanced(by: phase)
-
-                                    // y_hat = w · x
-                                    var yHat: Float = 0
-                                    vDSP_dotpr(wPtr.baseAddress!, 1, window, 1, &yHat, vDSP_Length(L))
-
-                                    // ‖x‖². Keep this full-window
-                                    // energy for the NLMS denominator,
-                                    // but use mean power for envelopes
-                                    // so gates compare like with like.
-                                    var refPower: Float = 0
-                                    vDSP_svesq(window, 1, &refPower, vDSP_Length(L))
-                                    let refMeanPower = refPower / Float(L)
-
-                                    let d = dPtr[n]
-                                    let dSq = d * d
-                                    let e = d - yHat
-                                    let eSq = e * e
-
-                                    // --- Envelopes ---
-                                    refEnv = oneMinusAlpha * refEnv + alpha * refMeanPower
-                                    micEnv = oneMinusAlpha * micEnv + alpha * dSq
-                                    resEnv = oneMinusAlpha * resEnv + alpha * eSq
-
-                                    // --- Soft-limit + write output ---
-                                    outPtr[n] = self.softLimit(e)
-
-                                    // --- Layer A: ref-silence gate ---
-                                    if refEnv < refActivityPower {
-                                        skippedRefSilence &+= 1
-                                        divCount = 0
-                                        continue
-                                    }
-
-                                    // --- Layer B: double-talk gate ---
-                                    if micEnv > refEnv * dtRatio {
-                                        skippedDoubleTalk &+= 1
-                                        divCount = 0
-                                        continue
-                                    }
-
-                                    // --- Layer C: divergence reset ---
-                                    if resEnv > micEnv {
-                                        divCount &+= 1
-                                        if divCount >= divergeLimit {
-                                            // Zero out weights — let
-                                            // the filter rebuild from
-                                            // scratch. Skip this
-                                            // sample's update so the
-                                            // reset is visible at the
-                                            // next iteration.
-                                            for i in 0..<L {
-                                                wPtr[i] = 0
-                                            }
-                                            divCount = 0
-                                            resetsInThisBuffer &+= 1
-                                            continue
-                                        }
-                                    } else {
-                                        divCount = 0
-                                    }
-
-                                    // --- Layer D: NLMS step (clamped + leakage) ---
-                                    var step = mu * e / (refPower + reg)
-                                    if step > stepMaxAbs { step = stepMaxAbs }
-                                    else if step < -stepMaxAbs { step = -stepMaxAbs }
-
-                                    var retain = leakRetain
-                                    vDSP_vsmul(wPtr.baseAddress!, 1, &retain, wPtr.baseAddress!, 1, vDSP_Length(L))
-                                    vDSP_vsma(window, 1, &step, wPtr.baseAddress!, 1, wPtr.baseAddress!, 1, vDSP_Length(L))
-                                }
-
-                                self.refEnv[ch] = refEnv
-                                self.micEnv[ch] = micEnv
-                                self.resEnv[ch] = resEnv
-                                self.divergentSampleCount[ch] = divCount
-                            }
+            for f in 0..<filterCount {
+                let counts = self.runFilter(
+                    f,
+                    mic: micChannels[f],
+                    reference: span[f],
+                    available: available[f],
+                    micFirstLogical: micFirstLogical,
+                    frameCount: frameCount,
+                    output: &cleaned[f]
+                )
+                self.micStats.samplesPassedThrough &+= counts.passThrough
+                self.micStats.updatesSkippedRefSilence &+= counts.skippedRefSilence
+                self.micStats.updatesSkippedDoubleTalk &+= counts.skippedDoubleTalk
+                self.micStats.divergenceResets &+= counts.resets
+                if counts.resets > 0 {
+                    self.logger.info("AEC divergence reset fired \(counts.resets) time(s) — weights re-zeroed (cumulative resets=\(self.micStats.divergenceResets))")
+                }
+            }
+            if monoMic {
+                self.micStats.monoMicBuffers &+= 1
+                let first = cleaned[0]
+                for ch in 1..<self.config.channels {
+                    cleaned[ch].withUnsafeMutableBufferPointer { dst in
+                        first.withUnsafeBufferPointer { src in
+                            _ = memcpy(dst.baseAddress!, src.baseAddress!, frameCount * MemoryLayout<Float>.size)
                         }
                     }
                 }
             }
-
-            self.stats.samplesProcessed &+= UInt64(frameCount) * UInt64(self.config.channels)
-            self.stats.samplesPassedThrough &+= passThroughInThisBuffer
-            self.stats.updatesSkippedRefSilence &+= skippedRefSilence
-            self.stats.updatesSkippedDoubleTalk &+= skippedDoubleTalk
-            self.stats.divergenceResets &+= resetsInThisBuffer
-
-            if resetsInThisBuffer > 0 {
-                logger.info("AEC divergence reset fired \(resetsInThisBuffer) time(s) — weights re-zeroed (cumulative resets=\(self.stats.divergenceResets))")
-            }
+            self.micStats.samplesProcessed &+= UInt64(frameCount) * UInt64(self.config.channels)
         }
 
         // Re-package the cleaned samples as a fresh CMSampleBuffer.
@@ -683,11 +682,189 @@ public final class SoftwareAECProcessor: @unchecked Sendable {
 
         if logFirstTime {
             logger.info(
-                "SoftwareAECProcessor first mic processed: frames=\(frameCount) channels=\(micChannels.count) micFirstPTS=\(CMTimeGetSeconds(pts))"
+                "SoftwareAECProcessor first mic processed: frames=\(frameCount) channels=\(micChannels.count) mono=\(monoMic) micFirstPTS=\(CMTimeGetSeconds(pts))"
             )
         }
 
         onCleanedMic?(CaptureBuffer(source: .microphone, buffer: cleanedSampleBuffer))
+    }
+
+    private struct FilterCounts {
+        var passThrough: UInt64 = 0
+        var skippedRefSilence: UInt64 = 0
+        var skippedDoubleTalk: UInt64 = 0
+        var resets: UInt64 = 0
+    }
+
+    /// Run filter `f` over one mic buffer. `reference[j]` is reference
+    /// logical `micFirstLogical - L + 1 + j`; `available` is the range
+    /// of logical positions actually copied into it. Caller holds
+    /// `filterLock`.
+    ///
+    /// CAP-3: per sample this is two vector passes over the taps — the
+    /// `vDSP_dotpr` for ŷ and one fused `vDSP_vsmsma` for leakage plus
+    /// update (`w = (1 - leak)·w + step·x`) — instead of four (dotpr,
+    /// svesq, vsmul, vsma). The window energy `‖x‖²` is kept as a
+    /// running sum.
+    private func runFilter(
+        _ f: Int,
+        mic: [Float],
+        reference: [Float],
+        available: Range<Int>,
+        micFirstLogical: Int,
+        frameCount: Int,
+        output: inout [Float]
+    ) -> FilterCounts {
+        let L = config.filterLength
+        let mu = config.stepSize
+        let reg = config.regularization
+        let stepMaxAbs = config.stepMax
+        var retain = 1 - config.leakage
+        let alpha = envCoeff
+        let oneMinusAlpha = 1 - alpha
+        let invL = 1 / Float(L)
+        // Gate envelopes live on per-sample mean-power scale.
+        // `refPower` below is the full L-sample window energy and
+        // remains the correct NLMS denominator, but comparing that
+        // directly to `d*d` makes the reference side about `L`
+        // times larger (~36 dB for L=4096). That disables the
+        // double-talk detector in exactly the case it must catch:
+        // local speech over system playback.
+        let refActivityPower = config.referenceActivityRMSThreshold
+            * config.referenceActivityRMSThreshold
+        let dtRatio = config.doubleTalkRatio
+        let divergeLimit = divergenceResetSamples
+
+        var counts = FilterCounts()
+        var refEnv = self.refEnv[f]
+        var micEnv = self.micEnv[f]
+        var resEnv = self.resEnv[f]
+        var divCount = divergentSampleCount[f]
+
+        weights[f].withUnsafeMutableBufferPointer { wBuf in
+            reference.withUnsafeBufferPointer { xBuf in
+                output.withUnsafeMutableBufferPointer { outPtr in
+                    mic.withUnsafeBufferPointer { dPtr in
+                        let w = wBuf.baseAddress!
+                        let xBase = xBuf.baseAddress!
+                        var refPower: Float = 0
+                        var powerValid = false
+                        var sinceRecompute = 0
+
+                        for n in 0..<frameCount {
+                            let p = micFirstLogical + n
+
+                            // --- Window availability ---
+                            // The whole window p-L+1 … p must have been
+                            // copied out of the ring.
+                            guard p - L + 1 >= available.lowerBound, p < available.upperBound else {
+                                // Pass mic through (still soft-limited).
+                                // No envelope updates, no adaptation.
+                                outPtr[n] = self.softLimit(dPtr[n])
+                                counts.passThrough &+= 1
+                                powerValid = false
+                                continue
+                            }
+                            let window = xBase + n
+
+                            // ‖x‖², incrementally: the window gained
+                            // x[L-1] and lost the sample before x[0].
+                            if powerValid && sinceRecompute < Self.energyRecomputeInterval {
+                                let entering = window[L - 1]
+                                let leaving = window[-1]
+                                refPower += entering * entering - leaving * leaving
+                                if refPower < 0 { refPower = 0 }
+                                sinceRecompute += 1
+                            } else {
+                                vDSP_svesq(window, 1, &refPower, vDSP_Length(L))
+                                powerValid = true
+                                sinceRecompute = 0
+                            }
+                            let refMeanPower = refPower * invL
+
+                            // y_hat = w · x
+                            var yHat: Float = 0
+                            vDSP_dotpr(w, 1, window, 1, &yHat, vDSP_Length(L))
+
+                            let d = dPtr[n]
+                            let e = d - yHat
+
+                            // --- Envelopes ---
+                            refEnv = oneMinusAlpha * refEnv + alpha * refMeanPower
+                            micEnv = oneMinusAlpha * micEnv + alpha * (d * d)
+                            resEnv = oneMinusAlpha * resEnv + alpha * (e * e)
+
+                            // --- Soft-limit + write output ---
+                            outPtr[n] = self.softLimit(e)
+
+                            // --- Layer A: ref-silence gate ---
+                            if refEnv < refActivityPower {
+                                counts.skippedRefSilence &+= 1
+                                divCount = 0
+                                continue
+                            }
+
+                            // --- Layer B: double-talk gate ---
+                            if micEnv > refEnv * dtRatio {
+                                counts.skippedDoubleTalk &+= 1
+                                divCount = 0
+                                continue
+                            }
+
+                            // --- Layer C: divergence reset ---
+                            if resEnv > micEnv {
+                                divCount &+= 1
+                                if divCount >= divergeLimit {
+                                    // Zero out weights — let the filter
+                                    // rebuild from scratch. Skip this
+                                    // sample's update so the reset is
+                                    // visible at the next iteration.
+                                    vDSP_vclr(w, 1, vDSP_Length(L))
+                                    divCount = 0
+                                    counts.resets &+= 1
+                                    continue
+                                }
+                            } else {
+                                divCount = 0
+                            }
+
+                            // --- Layer D: NLMS step (clamped + leakage) ---
+                            var step = mu * e / (refPower + reg)
+                            if step > stepMaxAbs { step = stepMaxAbs }
+                            else if step < -stepMaxAbs { step = -stepMaxAbs }
+
+                            // w = (1 - leak)·w + step·x, one pass.
+                            vDSP_vsmsma(w, 1, &retain, window, 1, &step, w, 1, vDSP_Length(L))
+                        }
+                    }
+                }
+            }
+        }
+
+        self.refEnv[f] = refEnv
+        self.micEnv[f] = micEnv
+        self.resEnv[f] = resEnv
+        divergentSampleCount[f] = divCount
+        return counts
+    }
+
+    /// Whether the first `count` samples of `a` and `b` are identical.
+    private static func sameSamples(_ a: [Float], _ b: [Float], count: Int) -> Bool {
+        a.withUnsafeBytes { ra in
+            b.withUnsafeBytes { rb in
+                memcmp(ra.baseAddress!, rb.baseAddress!, count * MemoryLayout<Float>.size) == 0
+            }
+        }
+    }
+
+    /// Make `buffers` hold `count` arrays of at least `length` floats.
+    private static func ensure(_ buffers: inout [[Float]], count: Int, length: Int) {
+        if buffers.count < count {
+            buffers.append(contentsOf: Array(repeating: [], count: count - buffers.count))
+        }
+        for i in 0..<count where buffers[i].count < length {
+            buffers[i] = [Float](repeating: 0, count: length)
+        }
     }
 
     // MARK: - Soft limiter (Layer E)
