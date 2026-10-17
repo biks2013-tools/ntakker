@@ -259,7 +259,15 @@
         underlying vDSP measurements run on a pre-allocated
         `AVAudioPCMBuffer` so they never block the audio capture
         queues (NFR-11). Active any time at least one capture source
-        is delivering buffers.
+        is delivering buffers and the popover is open.
+
+        The bars use a dBFS scale with a −60 dB floor, so silence
+        sits at the bottom and normal speech fills about half to two
+        thirds of the bar. The publisher skips ticks that would not
+        change what is drawn, and stops publishing while the popover
+        is closed. The status-bar bars are drawn from the level alone
+        (no animation timer), so they redraw only when the level
+        changes.
 
         ### Live transcription picker (FR-49)
 

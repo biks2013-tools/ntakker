@@ -67,6 +67,17 @@ public final class LevelMeterPublisher: @unchecked Sendable {
         initialState: LatestSamples()
     )
 
+    /// M1 / M2 (EVAL 2026-10-16): publication gate. While `paused`
+    /// (the popover is hidden) nothing is yielded, so the main actor
+    /// is not woken 30 times a second for bars nobody sees. `lastKey`
+    /// is the display identity of the last yielded sample; a tick that
+    /// would draw the same bars is skipped.
+    private struct Gate {
+        var paused = false
+        var lastKey: LevelMeterScale.DisplayKey?
+    }
+    private let gate = OSAllocatedUnfairLock<Gate>(initialState: Gate())
+
     /// Tasks consuming each per-source tap's stream and the merging-
     /// publisher tick task. Cancelled on `finish()`.
     private var systemConsumerTask: Task<Void, Never>?
@@ -120,6 +131,16 @@ public final class LevelMeterPublisher: @unchecked Sendable {
         micTap.ingest(sampleBuffer)
     }
 
+    /// Stop or resume yielding merged samples. Resuming always yields
+    /// the next tick, even if the levels are unchanged, so a newly
+    /// shown meter is filled at once.
+    public func setPaused(_ paused: Bool) {
+        gate.withLock {
+            $0.paused = paused
+            $0.lastKey = nil
+        }
+    }
+
     /// Cancel all internal tasks and finish the merged stream.
     /// Idempotent — safe to call from `deinit` and from the
     /// controller's teardown.
@@ -160,7 +181,8 @@ public final class LevelMeterPublisher: @unchecked Sendable {
     }
 
     /// Start the 30 Hz publication tick. On every tick, snapshot the
-    /// `latest*` slots under the lock and yield a `MergedLevelSample`.
+    /// `latest*` slots under the lock and yield a `MergedLevelSample`,
+    /// unless publication is paused or the bars would not change.
     private func startPublishLoop() {
         let intervalNs = UInt64(publishIntervalSeconds * 1_000_000_000)
         publishTask = Task { [weak self] in
@@ -174,7 +196,15 @@ public final class LevelMeterPublisher: @unchecked Sendable {
                     mic: snapshot.mic,
                     timestamp: Date().timeIntervalSince1970
                 )
-                self.continuation.yield(merged)
+                let key = LevelMeterScale.displayKey(merged)
+                let publish = self.gate.withLock { gate -> Bool in
+                    guard !gate.paused, gate.lastKey != key else { return false }
+                    gate.lastKey = key
+                    return true
+                }
+                if publish {
+                    self.continuation.yield(merged)
+                }
             }
         }
     }

@@ -22,13 +22,13 @@
 //        text; Save… is filled with the accent gradient.
 //
 // The bouncing-bar geometry is driven by `recordingController.latestLevels`
-// — the same 30 Hz publisher the legacy `LevelMeterView` subscribes to.
-// Each bar's height is mapped from the source's RMS magnitude through
-// a small phase offset so the seven bars don't move in lockstep
-// (visually pleasing chorus effect, not extra data). When the session
-// is not recording, all bars freeze at min-height per FR-IRQ-42.
+// — the same publisher the legacy `LevelMeterView` subscribes to. Each
+// bar's height is the source's dBFS-mapped RMS times a fixed
+// centre-weighted profile (EVAL 2026-10-16 UI-5). When the session is
+// not recording, all bars freeze at min-height per FR-IRQ-42.
 
 import NtakkerCore
+import NtakkerUIKit
 import SwiftUI
 
 struct PopoverStatusBar: View {
@@ -259,61 +259,49 @@ struct PopoverStatusBar: View {
     }
 
     private var micIntensity: Double {
-        Double(recordingController?.latestLevels?.mic?.rms ?? 0)
+        LevelMeterScale.normalized(recordingController?.latestLevels?.mic?.rms ?? 0)
     }
 
     private var systemIntensity: Double {
-        Double(recordingController?.latestLevels?.system?.rms ?? 0)
+        LevelMeterScale.normalized(recordingController?.latestLevels?.system?.rms ?? 0)
     }
 }
 
 // MARK: - BouncingBars
 
-/// 7-bar bouncing-level indicator. Each bar's animated height is
-/// derived from the supplied `intensity` (0...1) plus a per-bar
-/// phase offset so the bars don't move in lockstep.
+/// 7-bar level indicator. M1 / UI-5 (EVAL 2026-10-16): the bar heights
+/// come from the live level alone — a fixed centre-weighted profile
+/// scaled by the dBFS-mapped RMS — and SwiftUI tweens between
+/// published values. No `TimelineView`: the view redraws only when
+/// the level changes, and silence draws flat bars.
 private struct BouncingBars: View {
     let color: Color
-    let intensity: Double  // 0...1, RMS magnitude
+    let intensity: Double  // 0...1, dBFS-mapped RMS (`LevelMeterScale`)
     let isActive: Bool
 
-    /// Phase offsets per bar (radians). Chosen so adjacent bars
-    /// look mildly correlated but not identical.
-    private static let phases: [Double] = [
-        0.0, 0.5, 1.1, 1.7, 2.4, 3.0, 3.6,
+    /// Relative bar heights, tallest in the middle.
+    private static let profile: [Double] = [
+        0.45, 0.7, 0.9, 1.0, 0.85, 0.65, 0.5,
     ]
 
-    /// Internal time accumulator used to drive the phase animation
-    /// while the recording is active. Updated by `TimelineView`.
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !isActive)) { context in
-            let t = context.date.timeIntervalSinceReferenceDate
-            HStack(alignment: .bottom, spacing: 2) {
-                ForEach(Array(Self.phases.enumerated()), id: \.offset) { _, phase in
-                    let h = barHeight(at: t, phase: phase)
-                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                        .fill(color)
-                        .frame(width: 3, height: h)
-                        .opacity(isActive ? 1.0 : 0.45)
-                }
+        HStack(alignment: .bottom, spacing: 2) {
+            ForEach(Array(Self.profile.enumerated()), id: \.offset) { _, weight in
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(color)
+                    .frame(width: 3, height: barHeight(weight))
+                    .opacity(isActive ? 1.0 : 0.45)
             }
-            .frame(height: 14, alignment: .bottom)
         }
-        .frame(height: 14)
+        .frame(height: 14, alignment: .bottom)
+        .animation(.easeOut(duration: 0.12), value: intensity)
     }
 
-    /// Compute a bar's height from clamped intensity + sinusoidal phase.
     /// Min height 3pt (per FR-IRQ-41), max 14pt.
-    private func barHeight(at t: TimeInterval, phase: Double) -> CGFloat {
-        let clampedIntensity = max(0, min(1, intensity))
-        if !isActive {
-            return 3
-        }
-        // Bar oscillates 0..1 driven by sin, scaled by the live RMS.
-        let osc = (sin(t * 9.0 + phase) + 1.0) / 2.0     // 0..1
-        let amplitude = 0.35 + 0.65 * clampedIntensity   // floor so bars still wiggle quietly
-        let frac = osc * amplitude
-        return CGFloat(3 + frac * 11)
+    private func barHeight(_ weight: Double) -> CGFloat {
+        guard isActive else { return 3 }
+        let level = max(0, min(1, intensity))
+        return CGFloat(3 + 11 * level * weight)
     }
 }
 

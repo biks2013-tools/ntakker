@@ -56,6 +56,10 @@ final class PopoverController {
     /// we re-read both keys and re-clamp on every fire.
     private var sizeObserver: NSObjectProtocol?
 
+    /// M2 (EVAL 2026-10-16): show / close observers that tell the
+    /// recording controller whether the level meters are on screen.
+    private var visibilityObservers: [NSObjectProtocol] = []
+
     /// Default size + clamp range when no user choice has been
     /// persisted yet. Matches `ResizeHandle.{min,max}{Height,Width}`
     /// so the SwiftUI clamp and the AppKit clamp agree.
@@ -202,6 +206,26 @@ final class PopoverController {
             popover.contentSize = newSize
             popover.animates = previousAnimates
         }
+
+        // M2: the meters are only drawn while the popover is shown.
+        // `didClose` also covers transient dismissal (a click outside).
+        recordingController.levelMetersVisible = false
+        visibilityObservers = [
+            NotificationCenter.default.addObserver(
+                forName: NSPopover.willShowNotification,
+                object: popover,
+                queue: .main
+            ) { [weak recordingController] _ in
+                MainActor.assumeIsolated { recordingController?.levelMetersVisible = true }
+            },
+            NotificationCenter.default.addObserver(
+                forName: NSPopover.didCloseNotification,
+                object: popover,
+                queue: .main
+            ) { [weak recordingController] _ in
+                MainActor.assumeIsolated { recordingController?.levelMetersVisible = false }
+            },
+        ]
 
         logger.debug("PopoverController initialized (behavior=.transient, contentSize=\(popover.contentSize))")
     }

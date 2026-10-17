@@ -3800,6 +3800,14 @@ public final class LevelMeterPublisher {
 - **Back-pressure**: `AsyncStream` constructed with
   `.bufferingPolicy: .bufferingNewest(2)` so a slow consumer (UI lag)
   cannot back up audio-thread memory.
+- **Publication gate (EVAL-2026-10-16 M1 / M2 / UI-5, plan-022 T3)**:
+  `LevelMeterPublisher` yields a merged sample only when its
+  `LevelMeterScale.displayKey` (dBFS-mapped peak and RMS, quantised to
+  48 steps) differs from the last one, and yields nothing while
+  `RecordingController.levelMetersVisible` is false. The popover sets
+  that flag from `NSPopover.willShow` / `didClose`. The status-bar
+  bars are a fixed centre-weighted profile scaled by the dBFS level,
+  with no `TimelineView`.
 - **Per-source isolation**: separate `AVAudioPCMBuffer` per source
   (sharing one would race).
 - **dB floor**: `20 * log10(0)` is `-inf`; clamped to `-80 dB`.

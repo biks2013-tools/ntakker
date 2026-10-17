@@ -14,7 +14,7 @@ Approved: 2026-10-17. The user said "yes proceed with the CPU/energy wave". One 
   - Cache the formatter, batch the writes on a serial queue, and rotate by size.
   - Demote the hot logs to debug or trace.
   - Done. The `DateFormatter` was already a static; the real cost was the synchronous write, now batched on a utility queue with a flush at exit. Rotation at 10 MB keeps one `.1` backup. `mic_health` stays at INFO for the first 5 ticks and whenever the mic looks unhealthy, and drops to DEBUG otherwise. The per-event forwarder log is now TRACE, so its `String(describing:)` is never built at the default level.
-- [ ] **T3 (M1 / M2 / UI-5)** The level meters publish at 30 Hz even when nothing changes and the popover is closed. Two `TimelineView`s animate `sin(t·9)` regardless of audio. The meters map linear RMS, so silence and speech look alike.
+- [x] **T3 (M1 / M2 / UI-5)** The level meters publish at 30 Hz even when nothing changes and the popover is closed. Two `TimelineView`s animate `sin(t·9)` regardless of audio. The meters map linear RMS, so silence and speech look alike.
   - Map levels to dBFS.
   - Skip unchanged values and pause publishing while the popover is hidden.
   - Draw the meters from the data instead of a `TimelineView`.

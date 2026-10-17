@@ -82,6 +82,18 @@ public final class RecordingController {
     /// `LevelMeterPublisher`. `nil` until the first sample arrives.
     public private(set) var latestLevels: MergedLevelSample?
 
+    /// M2 (EVAL 2026-10-16): whether any level meter is on screen. Set
+    /// by the popover as it shows and closes. While false the level
+    /// publisher stops yielding and `latestLevels` is cleared, so a
+    /// hidden popover costs no main-actor work per tick.
+    public var levelMetersVisible: Bool = true {
+        didSet {
+            guard levelMetersVisible != oldValue else { return }
+            levelMeterPublisher?.setPaused(!levelMetersVisible)
+            if !levelMetersVisible { latestLevels = nil }
+        }
+    }
+
     /// Completed segment URLs (post-rename for FR-34 multi-file
     /// recordings). Appended each time `.segmentCompleted(url)`
     /// arrives on the coordinator's events stream.
@@ -379,6 +391,7 @@ public final class RecordingController {
                     logger: Logger(label: "ntakker-cli.ui.levelMeter")
                 )
                 self.levelMeterPublisher = publisher
+                publisher.setPaused(!levelMetersVisible)
                 // Strong capture (see comment in `cancelAll()` for why).
                 let strongPublisher = publisher
                 // H3/H4 (EVAL 2026-06-12): this closure runs on the
