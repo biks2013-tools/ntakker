@@ -285,71 +285,38 @@ public struct ElevenLabsTranscriptionProvider: TranscriptionProvider {
         }
     }
 
-    /// Plan-007 §B.3 retry policy: 3 attempts max, exponential
-    /// backoff with ±20% jitter (1, 2, 4 s). ElevenLabs does NOT
-    /// return `Retry-After` headers (research §8 footnote). Retry
-    /// only on 429 (`rate_limit_exceeded`, `system_busy`), 500, 503,
-    /// and transient `URLError`. **Never** retry
-    /// `concurrent_limit_exceeded` — surface immediately.
+    /// Plan-007 §B.3 retry policy, via the shared `HTTPRetryPolicy`
+    /// (F31): 3 attempts max, exponential backoff with ±20 % jitter
+    /// (1, 2, 4 s). ElevenLabs does NOT return `Retry-After` headers
+    /// (research §8 footnote). Retry only on 429 (`rate_limit_exceeded`,
+    /// `system_busy`), 500, 503, and transient `URLError`. **Never**
+    /// retry `concurrent_limit_exceeded` — surface immediately.
+    private static let retryPolicy = HTTPRetryPolicy(
+        label: "elevenlabs",
+        retryableStatuses: [429, 500, 503],
+        honoursRetryAfter: false,
+        shouldRetry: { http, data in
+            guard http.statusCode == 429 else { return true }
+            let envelope = ElevenLabsErrorEnvelope.decode(from: data)
+            return envelope?.detail.status?.lowercased() != "concurrent_limit_exceeded"
+        }
+    )
+
     private func postWithRetries(
         request: URLRequest,
         body: Data
     ) async throws -> (Data, HTTPURLResponse) {
-        var attempt = 0
-        let maxAttempts = 3
-
-        while true {
-            attempt += 1
-            var sendRequest = request
-            sendRequest.httpBody = body
-
-            do {
-                let (data, response) = try await urlSession.data(for: sendRequest)
-                guard let http = response as? HTTPURLResponse else {
-                    throw ElevenLabsSTTError.networkFailure(
-                        underlying: NSError(domain: "ElevenLabs", code: -1)
-                    ).toNtakkerError()
-                }
-
-                // Concurrent-limit: surface immediately, no retry.
-                if http.statusCode == 429 {
-                    let envelope = ElevenLabsErrorEnvelope.decode(from: data)
-                    if envelope?.detail.status?.lowercased() == "concurrent_limit_exceeded" {
-                        return (data, http)
-                    }
-                }
-
-                let isRetryable = [429, 500, 503].contains(http.statusCode)
-                if isRetryable && attempt < maxAttempts {
-                    let delay = Self.delayForAttempt(attempt)
-                    logger.warning("elevenlabs: HTTP \(http.statusCode); retry \(attempt)/\(maxAttempts) after \(String(format: "%.2f", delay))s")
-                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                    continue
-                }
-                return (data, http)
-            } catch let err as URLError {
-                let transient: Set<URLError.Code> = [
-                    .timedOut,
-                    .networkConnectionLost,
-                    .notConnectedToInternet,
-                    .dnsLookupFailed,
-                    .cannotConnectToHost
-                ]
-                if transient.contains(err.code) && attempt < maxAttempts {
-                    let delay = Self.delayForAttempt(attempt)
-                    logger.warning("elevenlabs: URLError \(err.code.rawValue); retry \(attempt)/\(maxAttempts) after \(String(format: "%.2f", delay))s")
-                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                    continue
-                }
-                throw ElevenLabsSTTError.networkFailure(underlying: err).toNtakkerError()
-            }
+        var sendRequest = request
+        sendRequest.httpBody = body
+        do {
+            return try await Self.retryPolicy.send(sendRequest, session: urlSession, logger: logger)
+        } catch is HTTPRetryPolicy.NonHTTPResponse {
+            throw ElevenLabsSTTError.networkFailure(
+                underlying: NSError(domain: "ElevenLabs", code: -1)
+            ).toNtakkerError()
+        } catch let err as URLError {
+            throw ElevenLabsSTTError.networkFailure(underlying: err).toNtakkerError()
         }
-    }
-
-    private static func delayForAttempt(_ attempt: Int) -> Double {
-        let base = pow(2.0, Double(attempt - 1))    // 1, 2, 4
-        let factor = Double.random(in: 0.8...1.2)
-        return min(base * factor, 32.0)
     }
 
     private func logResponseHeaders(_ http: HTTPURLResponse) {

@@ -609,7 +609,7 @@ public final class SoftwareAECProcessor: @unchecked Sendable {
                 available[f] = lo..<hi
                 self.refRing[r].withUnsafeBufferPointer { ring in
                     span[f].withUnsafeMutableBufferPointer { dst in
-                        memcpy(dst.baseAddress! + (lo - spanStart),
+                        _ = memcpy(dst.baseAddress! + (lo - spanStart),
                                ring.baseAddress! + (lo % C),
                                (hi - lo) * MemoryLayout<Float>.size)
                     }

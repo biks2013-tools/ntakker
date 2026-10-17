@@ -12,9 +12,11 @@ struct GeminiRESTTranscriptionProviderTests {
                         headerFields: nil)!
     }
 
+    /// Note: does NOT reset the stub — each test installs its handler
+    /// first, and resetting here wiped it (the cause of every request
+    /// in this suite failing with "GeminiRESTStubProtocol error -1").
     private func makeProvider(model: String = GeminiRESTTranscriptionProvider.defaultModelId) -> GeminiRESTTranscriptionProvider {
-        GeminiRESTStubProtocol.reset()
-        return GeminiRESTTranscriptionProvider(
+        GeminiRESTTranscriptionProvider(
             apiKey: "test-key",
             modelId: model,
             urlSession: GeminiRESTStubProtocol.makeURLSession()
@@ -91,7 +93,8 @@ struct GeminiRESTTranscriptionProviderTests {
             samples: Array(repeating: Float(0.1), count: 16_000),
             source: .microphone, options: makeOptions())
         let body = GeminiRESTStubProtocol.capturedBody ?? Data()
-        let s = String(data: body, encoding: .utf8) ?? ""
+        // JSONEncoder escapes "/" as "\/"; compare the unescaped form.
+        let s = (String(data: body, encoding: .utf8) ?? "").replacingOccurrences(of: "\\/", with: "/")
         #expect(s.contains("\"mimeType\":\"audio/wav\""))
         #expect(s.contains("\"temperature\":0"))
     }
@@ -103,8 +106,25 @@ struct GeminiRESTTranscriptionProviderTests {
         }
         let p = makeProvider(model: "gemini-3-flash-preview")
         _ = try await p.transcribe(samples: [0.1], source: .microphone, options: makeOptions())
-        let url = GeminiRESTStubProtocol.capturedRequest?.url?.absoluteString ?? ""
+        let captured = GeminiRESTStubProtocol.capturedRequest
+        let url = captured?.url?.absoluteString ?? ""
         #expect(url.contains("/models/gemini-3-flash-preview:generateContent"))
-        #expect(url.contains("key=test-key"))
+        // F13: the key rides the x-goog-api-key header, never the URL.
+        #expect(captured?.value(forHTTPHeaderField: "x-goog-api-key") == "test-key")
+        #expect(!url.contains("test-key"))
+    }
+
+    @Test("HTTP 401 maps to a missing-key error so the breaker trips (TR-10)")
+    func http401() async throws {
+        GeminiRESTStubProtocol.handler = { _ in (self.httpResponse(401), Data("{}".utf8)) }
+        let p = makeProvider()
+        do {
+            _ = try await p.transcribe(samples: [0.1], source: .microphone, options: makeOptions())
+            Issue.record("expected throw")
+        } catch NtakkerError.transcriptionApiKeyMissing(let provider) {
+            #expect(provider == "gemini")
+        } catch {
+            Issue.record("wrong error: \(error)")
+        }
     }
 }

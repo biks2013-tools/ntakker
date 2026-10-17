@@ -113,9 +113,11 @@ public actor TranscriptionManager: TranscriptionDispatcher {
     // event, then silence), lets a single probe through per cooldown,
     // and trips permanently on configuration-class errors that no
     // retry can fix.
-    private var consecutiveProviderFailures = 0
-    private var circuitOpenUntil: ContinuousClock.Instant?
-    private var circuitTrippedPermanently = false
+    // The transitions live in `ProviderCircuitBreaker` (TR-10).
+    private var circuit = ProviderCircuitBreaker(
+        failureThreshold: TranscriptionManager.circuitFailureThreshold,
+        cooldown: .seconds(TranscriptionManager.circuitCooldownSeconds)
+    )
     public static let circuitFailureThreshold = 5
     public static let circuitCooldownSeconds: Double = 60
 
@@ -433,15 +435,9 @@ public actor TranscriptionManager: TranscriptionDispatcher {
     }
 
     /// F15: true when the provider may be called. A finished cooldown
-    /// closes the circuit half-open (one probe call decides whether it
-    /// re-opens).
+    /// moves the breaker half-open (TR-10).
     private func providerCircuitAllowsCall() -> Bool {
-        if circuitTrippedPermanently { return false }
-        if let until = circuitOpenUntil {
-            guard ContinuousClock.now >= until else { return false }
-            circuitOpenUntil = nil
-        }
-        return true
+        circuit.allowsCall(at: .now)
     }
 
     /// F15: classify errors no retry can fix — these trip the breaker
@@ -513,8 +509,7 @@ public actor TranscriptionManager: TranscriptionDispatcher {
                 await sidecarWriter?.write(event)
             }
             // F15: a successful round-trip closes the breaker.
-            consecutiveProviderFailures = 0
-            circuitOpenUntil = nil
+            circuit.recordSuccess()
         } catch {
             metrics.errorCount += 1
             eventsContinuation?.yield(.error(detail: error.localizedDescription))
@@ -522,18 +517,19 @@ public actor TranscriptionManager: TranscriptionDispatcher {
 
             // F15: escalate repeated failures instead of hammering a
             // dead provider for the rest of the recording.
-            consecutiveProviderFailures += 1
-            if Self.isConfigClassError(error) {
-                circuitTrippedPermanently = true
+            switch circuit.recordFailure(configurationError: Self.isConfigClassError(error), at: .now) {
+            case .trippedPermanently:
                 eventsContinuation?.yield(.error(detail: "transcription disabled for the remainder of the recording — provider configuration error: \(error.localizedDescription)"))
                 logger.error("transcription circuit tripped permanently (configuration-class error)")
-            } else if consecutiveProviderFailures >= Self.circuitFailureThreshold,
-                      circuitOpenUntil == nil,
-                      !circuitTrippedPermanently {
-                circuitOpenUntil = ContinuousClock.now.advanced(by: .seconds(Self.circuitCooldownSeconds))
-                consecutiveProviderFailures = 0
+            case .opened:
                 eventsContinuation?.yield(.error(detail: "transcription degraded — pausing provider calls for \(Int(Self.circuitCooldownSeconds)) s after \(Self.circuitFailureThreshold) consecutive failures"))
                 logger.warning("transcription circuit opened for \(Self.circuitCooldownSeconds)s")
+            case .reopened:
+                // TR-10: the probe failed. No new degraded event — the
+                // first one still stands.
+                logger.warning("transcription circuit re-opened for \(Self.circuitCooldownSeconds)s after a failed probe")
+            case .none:
+                break
             }
         }
     }

@@ -97,6 +97,14 @@ public struct GeminiRESTTranscriptionProvider: TranscriptionProvider, Sendable {
 
         let (data, http) = try await postWithRetries(request)
 
+        // TR-10: an auth failure is a configuration error no retry can
+        // fix — map it so the circuit breaker trips permanently.
+        if http.statusCode == 401 {
+            throw NtakkerError.transcriptionApiKeyMissing(provider: "gemini")
+        }
+        if http.statusCode == 403 {
+            throw NtakkerError.transcriptionPermissionDenied(provider: "gemini")
+        }
         if !(200..<300).contains(http.statusCode) {
             let bodyText = String(data: data, encoding: .utf8) ?? "(non-utf8 body)"
             let parsed = try? JSONDecoder().decode(GeminiREST.Response.self, from: data)
@@ -123,68 +131,31 @@ public struct GeminiRESTTranscriptionProvider: TranscriptionProvider, Sendable {
         return raw.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    // MARK: - Retry (F13, EVAL 2026-06-12)
+    // MARK: - Retry (F13 / F31)
 
-    /// Statuses worth a retry — mirrors the Azure batch / ElevenLabs
-    /// retry policy (consolidating the three copies into a shared
-    /// `HTTPRetryPolicy` is tracked as eval finding F31).
-    private static let retryableStatuses: Set<Int> = [429, 500, 502, 503, 504]
-    private static let maxAttempts = 3
+    /// The shared REST retry policy (F31). Gemini backs off from 0.5 s;
+    /// `Retry-After` is honoured up to `HTTPRetryPolicy.maxRetryAfterSeconds`.
+    private static let retryPolicy = HTTPRetryPolicy(
+        label: "gemini",
+        retryableStatuses: [429, 500, 502, 503, 504],
+        baseDelay: 0.5
+    )
 
-    /// Transient `URLError` codes worth a retry.
-    private static let transientURLErrorCodes: Set<URLError.Code> = [
-        .timedOut, .networkConnectionLost, .cannotConnectToHost,
-        .dnsLookupFailed, .notConnectedToInternet
-    ]
-
-    /// POST with up to `maxAttempts` attempts. Retries transient
-    /// `URLError`s and retryable HTTP statuses, honouring `Retry-After`
-    /// when present, otherwise 0.5 · 2ⁿ s with ±20 % jitter. Before
-    /// F13 a single network blip cost the whole 2.5 s chunk — over a
-    /// long session that measurably degraded transcript completeness.
+    /// POST with retries. Before F13 a single network blip cost the
+    /// whole chunk — over a long session that measurably degraded
+    /// transcript completeness.
     private func postWithRetries(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        var lastError: Error?
-        for attempt in 1...Self.maxAttempts {
-            do {
-                let (data, response) = try await urlSession.data(for: request)
-                guard let http = response as? HTTPURLResponse else {
-                    // TODO(plan-004 Phase G): rename to .transcriptionProviderFailed(detail:)
-                    throw NtakkerError.transcriptionProviderUnavailable(reason: "non-HTTP response")
-                }
-                if Self.retryableStatuses.contains(http.statusCode), attempt < Self.maxAttempts {
-                    let delay = Self.retryDelay(for: attempt, retryAfter: http.value(forHTTPHeaderField: "Retry-After"))
-                    logger.warning("gemini: HTTP \(http.statusCode) — retrying in \(String(format: "%.1f", delay))s (attempt \(attempt)/\(Self.maxAttempts))")
-                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                    continue
-                }
-                return (data, http)
-            } catch let urlError as URLError
-                where Self.transientURLErrorCodes.contains(urlError.code) && attempt < Self.maxAttempts {
-                let delay = Self.retryDelay(for: attempt, retryAfter: nil)
-                logger.warning("gemini: transient network error (\(urlError.code.rawValue)) — retrying in \(String(format: "%.1f", delay))s (attempt \(attempt)/\(Self.maxAttempts))")
-                lastError = urlError
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            } catch let ntakkerError as NtakkerError {
-                throw ntakkerError
-            } catch {
-                // TODO(plan-004 Phase G): rename to .transcriptionProviderFailed(detail:)
-                throw NtakkerError.transcriptionProviderUnavailable(
-                    reason: "URLSession error: \(error.localizedDescription). Try setting NTAKKER_TRANSCRIBE_MODEL=\(Self.knownGoodFallback)."
-                )
-            }
+        do {
+            return try await Self.retryPolicy.send(request, session: urlSession, logger: logger)
+        } catch is HTTPRetryPolicy.NonHTTPResponse {
+            // TODO(plan-004 Phase G): rename to .transcriptionProviderFailed(detail:)
+            throw NtakkerError.transcriptionProviderUnavailable(reason: "non-HTTP response")
+        } catch {
+            // TODO(plan-004 Phase G): rename to .transcriptionProviderFailed(detail:)
+            throw NtakkerError.transcriptionProviderUnavailable(
+                reason: "URLSession error: \(error.localizedDescription). Try setting NTAKKER_TRANSCRIBE_MODEL=\(Self.knownGoodFallback)."
+            )
         }
-        // TODO(plan-004 Phase G): rename to .transcriptionProviderFailed(detail:)
-        throw NtakkerError.transcriptionProviderUnavailable(
-            reason: "URLSession error after \(Self.maxAttempts) attempts: \(lastError?.localizedDescription ?? "unknown"). Try setting NTAKKER_TRANSCRIBE_MODEL=\(Self.knownGoodFallback)."
-        )
-    }
-
-    private static func retryDelay(for attempt: Int, retryAfter: String?) -> Double {
-        if let retryAfter, let seconds = Double(retryAfter), seconds >= 0 {
-            return min(seconds, 30)
-        }
-        let base = 0.5 * pow(2.0, Double(attempt - 1))
-        return base * Double.random(in: 0.8...1.2)
     }
 
     /// Gemini REST is a batch-only provider. Plan-005 routes streaming

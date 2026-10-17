@@ -201,91 +201,34 @@ public struct AzureOpenAITranscriptionProvider: TranscriptionProvider {
         }
     }
 
-    /// Plan-007 §A.3 / research §9 retry policy. Up to 3 attempts;
-    /// honour `Retry-After` on 429; exponential backoff with ±20%
-    /// jitter on 408 / 500 / 503 / transient `URLError`s.
+    /// Plan-007 §A.3 / research §9 retry policy, via the shared
+    /// `HTTPRetryPolicy` (F31): up to 3 attempts, `Retry-After` on
+    /// 429 (capped, TR-16), exponential backoff with ±20 % jitter on
+    /// 408 / 500 / 503 / transient `URLError`s.
+    private static let retryPolicy = HTTPRetryPolicy(
+        label: "azure",
+        retryableStatuses: [408, 429, 500, 503]
+    )
+
     private func postWithRetries(
         request: URLRequest,
         body: Data
     ) async throws -> (Data, HTTPURLResponse) {
-        var attempt = 0
-        let maxAttempts = 3
-        var lastDelay: Double = 0.0
-
-        while true {
-            attempt += 1
-            var sendRequest = request
-            sendRequest.httpBody = body
-
-            do {
-                let (data, response) = try await urlSession.data(for: sendRequest)
-                guard let http = response as? HTTPURLResponse else {
-                    throw mapError(.unexpectedResponse(statusCode: -1, body: data))
-                }
-                let shouldRetry = [408, 429, 500, 503].contains(http.statusCode)
-                if shouldRetry && attempt < maxAttempts {
-                    let delay = Self.delayForRetry(
-                        statusCode: http.statusCode,
-                        http: http,
-                        previous: lastDelay,
-                        attempt: attempt
-                    )
-                    lastDelay = delay
-                    logger.warning("azure: HTTP \(http.statusCode); retry \(attempt)/\(maxAttempts) after \(String(format: "%.2f", delay))s")
-                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                    continue
-                }
-                return (data, http)
-            } catch let err as URLError {
-                let transient: Set<URLError.Code> = [
-                    .timedOut,
-                    .networkConnectionLost,
-                    .notConnectedToInternet,
-                    .dnsLookupFailed,
-                    .cannotConnectToHost
-                ]
-                if transient.contains(err.code) && attempt < maxAttempts {
-                    let delay = Self.delayForRetry(
-                        statusCode: -1,
-                        http: nil,
-                        previous: lastDelay,
-                        attempt: attempt
-                    )
-                    lastDelay = delay
-                    logger.warning("azure: URLError \(err.code.rawValue); retry \(attempt)/\(maxAttempts) after \(String(format: "%.2f", delay))s")
-                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                    continue
-                }
-                throw mapError(.networkError(underlying: err))
-            }
+        var sendRequest = request
+        sendRequest.httpBody = body
+        do {
+            return try await Self.retryPolicy.send(sendRequest, session: urlSession, logger: logger)
+        } catch is HTTPRetryPolicy.NonHTTPResponse {
+            throw mapError(.unexpectedResponse(statusCode: -1, body: Data()))
+        } catch let err as URLError {
+            throw mapError(.networkError(underlying: err))
         }
-    }
-
-    /// Compute the next-attempt delay. 429 honours `Retry-After`;
-    /// other retryable cases use exponential backoff (1, 2, 4 s) with
-    /// ±20% jitter.
-    private static func delayForRetry(
-        statusCode: Int,
-        http: HTTPURLResponse?,
-        previous: Double,
-        attempt: Int
-    ) -> Double {
-        if statusCode == 429, let http, let after = parseRetryAfterSeconds(http) {
-            return jitter(after)
-        }
-        let base = pow(2.0, Double(attempt - 1))    // 1, 2, 4
-        return jitter(base)
     }
 
     private static func parseRetryAfterSeconds(_ http: HTTPURLResponse) -> Double? {
         guard let raw = http.value(forHTTPHeaderField: "Retry-After"),
               let seconds = Double(raw) else { return nil }
         return seconds
-    }
-
-    private static func jitter(_ value: Double) -> Double {
-        let factor = Double.random(in: 0.8...1.2)
-        return value * factor
     }
 
     /// Surface the response headers research §10 calls out as
