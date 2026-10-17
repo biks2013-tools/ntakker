@@ -262,7 +262,7 @@ struct CutPanel: View {
         let long = workspace.duration >= 3600
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Drag across the waveform (or use a line's menu) to select a range, then add it as a cut. Exporting writes a new copy without the cuts; transcript times are shifted to match. The original is never changed.")
+                Text("Drag across the waveform (or use a line's menu) to select a range, then add it as a cut. Export writes a new copy without the cuts, transcript times shifted to match, and optionally with the echo removed from the microphone. The original is never changed.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -307,16 +307,28 @@ struct CutPanel: View {
                     }
                 }
 
+                if workspace.canRemoveEcho {
+                    Toggle(isOn: Binding(get: { workspace.exportRemovesEcho }, set: { workspace.exportRemovesEcho = $0 })) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Remove echo from the microphone")
+                            Text("Subtracts the system audio the mic picked up from the speakers, over the whole track. Useful before re-transcribing the copy. Takes about a minute per hour of audio.")
+                                .font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .toggleStyle(.checkbox)
+                }
+
                 HStack {
                     if let p = workspace.exportProgress {
                         ProgressView(value: p).frame(maxWidth: 180)
-                        Text("Writing the copy…").foregroundStyle(.secondary)
+                        Text(workspace.exportRemovesEcho && p < 0.7 ? "Removing echo…" : "Writing the copy…").foregroundStyle(.secondary)
                     } else {
                         Button("Clear Cuts") { workspace.clearCuts() }.disabled(workspace.cuts.isEmpty)
                         Spacer()
-                        Button("Export Cut Copy") { workspace.exportCut() }
+                        Button("Export Copy") { workspace.exportCut() }
                             .buttonStyle(.borderedProminent)
-                            .disabled(workspace.cuts.isEmpty)
+                            .disabled(workspace.cuts.isEmpty && !(workspace.exportRemovesEcho && workspace.canRemoveEcho))
                     }
                 }
 
@@ -324,7 +336,7 @@ struct CutPanel: View {
                     GroupBox {
                         VStack(alignment: .leading, spacing: 6) {
                             Label("Saved \(r.folder.lastPathComponent)", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-                            Text("Removed \(StudioAsk.timecode(r.removedSeconds, longForm: true)) and \(r.droppedLines) transcript lines.")
+                            Text(exportSummary(r))
                                 .font(.callout).foregroundStyle(.secondary)
                             HStack {
                                 Button("Open the Copy") { library.reveal(folder: r.folder) }
@@ -339,6 +351,17 @@ struct CutPanel: View {
             .padding(12)
         }
     }
+}
+
+private func exportSummary(_ r: CutExportResult) -> String {
+    var parts: [String] = []
+    if r.removedSeconds > 0 {
+        parts.append("Removed \(StudioAsk.timecode(r.removedSeconds, longForm: true)) and \(r.droppedLines) transcript lines.")
+    }
+    if let d = r.echoDelay {
+        parts.append("Echo removed from the microphone (echo delay \(Int(d * 1000)) ms).")
+    }
+    return parts.joined(separator: " ")
 }
 
 // MARK: - Re-transcribe

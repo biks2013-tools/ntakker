@@ -52,4 +52,6 @@ User request: "can you add a real-time filter in studio to clear the echo?"
 - [x] **T12** `SoftwareAECProcessor.processAligned` + `playbackConfiguration` + `resetAlignedTimeline` (core, 3 tests); `EchoDelayEstimator` (kit, 1 test); `PlayerController` rewritten on `AVAudioEngine` with a block reader that filters the mic against the delayed system track; "Remove echo" switch in the player bar.
   - Found: the echo on real recordings arrives 114–142 ms after the system audio, beyond the filter's 85 ms window. Delaying the reference by the measured delay raised the reduction from 3–7 dB to 15–16 dB on two of three recordings.
   - Live check: playback, transcript follow and the switch work in the app.
+- [x] **T13** Export a copy with the echo removed: `EchoCleaner` (kit), `RecordingCutExporter(removeEcho:)`, a checkbox in the Cut tab, folder suffix `clean` / `cut-clean`. Tests: a 150 ms synthetic echo removed by > 10 dB from the start with local speech within 1 dB, the export copy, and the nothing-to-do guard.
+- [x] **T14** Release ntakker studio 0.2.0 with T12 and T13.
 

@@ -20,11 +20,13 @@ import NtakkerCore
 public enum AudioCutError: Error, LocalizedError {
     case unreadable(URL, String)
     case nothingLeft
+    case nothingToDo
 
     public var errorDescription: String? {
         switch self {
         case .unreadable(let url, let why): return "Could not read \(url.lastPathComponent): \(why)"
         case .nothingLeft: return "The cut removes the whole recording."
+        case .nothingToDo: return "Add a cut or choose to remove the echo."
         }
     }
 }
@@ -88,6 +90,8 @@ public struct CutExportResult: Sendable {
     public let recordingStem: String
     public let removedSeconds: Double
     public let droppedLines: Int
+    /// The echo delay used, when the echo was removed from the mic.
+    public let echoDelay: Double?
 }
 
 public enum RecordingCutExporter {
@@ -100,29 +104,51 @@ public enum RecordingCutExporter {
     ///   - audioStart: the recording's audio start.
     ///   - metadata: the recording's studio metadata (speaker names are
     ///     carried over).
+    ///   - removeEcho: also clean the microphone track of the system
+    ///     track's echo (`EchoCleaner`) — split recordings only. The
+    ///     cleaning runs on the original timeline, before the cut.
     public static func export(
         recording: Recording,
         plan: CutPlan,
         entriesByTranscript: [TranscriptFile: [TranscriptEntry]],
         audioStart: Date,
         metadata: StudioMetadata,
+        removeEcho: Bool = false,
         now: Date = Date(),
         progress: @escaping (Double) -> Void = { _ in }
     ) throws -> CutExportResult {
+        guard !plan.ranges.isEmpty || removeEcho else { throw AudioCutError.nothingToDo }
         guard plan.resultDuration > 0.05 else { throw AudioCutError.nothingLeft }
+        let micTrack = recording.tracks.first { $0.role == .microphone }
+        let sysTrack = recording.tracks.first { $0.role == .system }
+        if removeEcho, micTrack == nil || sysTrack == nil { throw EchoCleanerError.notSplit }
         let fm = FileManager.default
-        let dest = destinationFolder(for: recording, now: now)
+        let suffix = [plan.ranges.isEmpty ? nil : "cut", removeEcho ? "clean" : nil].compactMap { $0 }.joined(separator: "-")
+        let dest = destinationFolder(for: recording, suffix: suffix, now: now)
         try fm.createDirectory(at: dest, withIntermediateDirectories: true)
 
         do {
+            // Cleaning is the slow part: it gets most of the progress bar.
+            let cleanShare = removeEcho ? 0.7 : 0
+            var echoDelay: Double?
+            var cleanedMic: URL?
+            if removeEcho, let micTrack, let sysTrack {
+                let tmp = dest.appendingPathComponent(".cleaning-\(micTrack.url.lastPathComponent)")
+                echoDelay = try EchoCleaner.clean(micURL: micTrack.url, systemURL: sysTrack.url, to: tmp) { p in
+                    progress(p * cleanShare)
+                }
+                cleanedMic = tmp
+            }
             let trackCount = Double(max(1, recording.tracks.count))
             for (i, track) in recording.tracks.enumerated() {
                 let out = dest.appendingPathComponent(track.url.lastPathComponent)
-                try AudioCutter.cut(track.url, to: out, plan: plan) { p in
-                    progress((Double(i) + p) / trackCount * 0.95)
+                let source = track.role == .microphone ? (cleanedMic ?? track.url) : track.url
+                try AudioCutter.cut(source, to: out, plan: plan) { p in
+                    progress(cleanShare + (Double(i) + p) / trackCount * (0.95 - cleanShare))
                 }
                 try? fm.setAttributes([.creationDate: audioStart], ofItemAtPath: out.path)
             }
+            if let cleanedMic { try? fm.removeItem(at: cleanedMic) }
 
             var dropped = 0
             var exact: [String] = []
@@ -145,7 +171,8 @@ public enum RecordingCutExporter {
             progress(1)
             return CutExportResult(
                 folder: dest, recordingStem: recording.stem,
-                removedSeconds: plan.removedDuration, droppedLines: dropped
+                removedSeconds: plan.removedDuration, droppedLines: dropped,
+                echoDelay: echoDelay
             )
         } catch {
             try? fm.removeItem(at: dest)
@@ -153,7 +180,7 @@ public enum RecordingCutExporter {
         }
     }
 
-    static func destinationFolder(for recording: Recording, now: Date) -> URL {
+    static func destinationFolder(for recording: Recording, suffix: String = "cut", now: Date) -> URL {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd-HH-mm-ss"
@@ -163,10 +190,10 @@ public enum RecordingCutExporter {
         let name: String
         if alone {
             base = recording.folder.deletingLastPathComponent()
-            name = "\(recording.folder.lastPathComponent)-cut-\(stamp)"
+            name = "\(recording.folder.lastPathComponent)-\(suffix)-\(stamp)"
         } else {
             base = recording.folder
-            name = "\(recording.stem)-cut-\(stamp)"
+            name = "\(recording.stem)-\(suffix)-\(stamp)"
         }
         var candidate = base.appendingPathComponent(name, isDirectory: true)
         var n = 2

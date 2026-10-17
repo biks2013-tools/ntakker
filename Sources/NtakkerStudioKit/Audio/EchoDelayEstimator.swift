@@ -16,6 +16,9 @@ import Foundation
 
 public enum EchoDelayEstimator {
     public static let maxLagMs = 500
+    /// The reference is delayed by the estimate minus this, so the echo
+    /// path sits inside the filter's 85 ms window with room before it.
+    public static let referenceMargin = 0.02
 
     /// Lag (seconds) at which the mic envelope best matches the system
     /// envelope; positive = mic later. `nil` when there is no usable

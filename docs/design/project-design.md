@@ -13099,5 +13099,5 @@ ntakker stamps segments with wall-clock time. The studio places a line at `times
 - **STU-ADR-1** Cuts write a new copy; originals are read-only to the studio except for explicit text edits (backed up) and the studio's own sidecars. (User decision, 2026-10-17.)
 - **STU-ADR-2** Ask/minutes use ntakker's Ask configuration; the studio loads `~/.tool-agents/ntakker/.env` at launch and has no configuration folder of its own. (User decision.)
 - **STU-ADR-3** No silent library default: the studio adopts ntakker's folder setting or asks.
-- **STU-ADR-5** The echo filter is a playback effect only; exporting a cleaned copy is a possible follow-up.
+- **STU-ADR-5** The echo filter never changes files: playback filters on the fly, and a cleaned mic track is only ever written into an exported copy (`EchoCleaner`, via `RecordingCutExporter(removeEcho:)`, warm-up pass + full pass, cleaned before cutting so the echo stays aligned).
 - **STU-ADR-4** Re-transcription is batch-only in v1; streaming providers would need a faster-than-real-time feed and file-relative timestamps.

@@ -35,6 +35,11 @@ final class RecordingWorkspace {
     var selection: CutRange?
     private(set) var cuts: [CutRange] = []
     var previewCuts = false { didSet { applySkipRanges() } }
+    /// Clean the mic of the system track's echo in the exported copy.
+    var exportRemovesEcho = false
+    var canRemoveEcho: Bool {
+        recording.tracks.contains { $0.role == .microphone } && recording.tracks.contains { $0.role == .system }
+    }
     private(set) var exportProgress: Double?
     private(set) var lastExport: CutExportResult?
 
@@ -256,7 +261,8 @@ final class RecordingWorkspace {
     var cutPlan: CutPlan { CutPlan(ranges: cuts, duration: duration) }
 
     func exportCut() {
-        guard exportProgress == nil, !cuts.isEmpty else { return }
+        let removeEcho = exportRemovesEcho && canRemoveEcho
+        guard exportProgress == nil, !cuts.isEmpty || removeEcho else { return }
         let rec = recording, plan = cutPlan, start = audioStart, meta = metadata
         var byFile: [TranscriptFile: [TranscriptEntry]] = [:]
         for (file, doc) in documents {
@@ -270,7 +276,7 @@ final class RecordingWorkspace {
                 let result = try await Task.detached(priority: .userInitiated) {
                     try RecordingCutExporter.export(
                         recording: rec, plan: plan, entriesByTranscript: entriesByFile,
-                        audioStart: start, metadata: meta
+                        audioStart: start, metadata: meta, removeEcho: removeEcho
                     ) { p in
                         Task { @MainActor in
                             if self.exportProgress != nil { self.exportProgress = p }
@@ -280,7 +286,7 @@ final class RecordingWorkspace {
                 lastExport = result
                 onFilesChanged?(nil)
             } catch {
-                lastError = "Cut failed: \(error.localizedDescription)"
+                lastError = "Export failed: \(error.localizedDescription)"
             }
             exportProgress = nil
         }

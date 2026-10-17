@@ -40,9 +40,6 @@ final class PlayerController {
     }
     /// Measured delay of the echo behind the system track, once known.
     private(set) var echoDelay: Double?
-    /// The reference is delayed by the echo delay minus this, so the
-    /// echo path sits inside the filter's 85 ms window with room before it.
-    nonisolated static let delayMargin = 0.02
     var rate: Float = 1 {
         didSet { timePitch.rate = rate }
     }
@@ -96,7 +93,7 @@ final class PlayerController {
                 Task.detached(priority: .utility) { [weak self] in
                     let lag = (try? EchoDelayEstimator.estimate(micURL: mic.url, systemURL: sys.url, duration: length)) ?? nil
                     guard let lag else { return }
-                    r.setReferenceDelay(seconds: lag - Self.delayMargin)
+                    r.setReferenceDelay(seconds: lag - EchoDelayEstimator.referenceMargin)
                     await MainActor.run { self?.echoDelay = lag }
                 }
             }

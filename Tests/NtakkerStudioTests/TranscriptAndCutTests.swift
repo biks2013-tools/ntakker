@@ -264,3 +264,92 @@ struct EchoDelayTests {
         print("echo delay: \(rec.displayName): mic lags system by \(best.lag) ms")
     }
 }
+
+@Suite("Echo-cleaned copy")
+struct EchoCleanerTests {
+    /// System: noise bursts (so the envelope has structure). Mic: the
+    /// system's echo 150 ms later at half level, plus a 1 kHz tone of
+    /// local "speech" from 15 s to 17 s while the system is silent.
+    private func makeSplit(in dir: URL, seconds: Double = 20, rate: Double = 48_000) -> (mic: URL, sys: URL) {
+        let n = Int(seconds * rate), delay = Int(0.150 * rate)
+        var state: UInt64 = 9
+        var sys = [Float](repeating: 0, count: n)
+        for i in 0..<n {
+            state = state &* 6364136223846793005 &+ 1442695040888963407
+            let t = Double(i) / rate
+            let on = Int(t * 2) % 3 != 2 && !(t >= 14.5 && t < 17.5)
+            sys[i] = on ? (Float(state >> 40) / Float(1 << 24) * 2 - 1) * 0.3 : 0
+        }
+        let mic: [Float] = (0..<n).map { i in
+            let t = Double(i) / rate
+            let echo: Float = i >= delay ? 0.5 * sys[i - delay] : 0
+            let speech: Float = (t >= 15 && t < 17) ? sinf(Float(t) * 2 * .pi * 1000) * 0.3 : 0
+            return echo + speech
+        }
+        let micURL = dir.appendingPathComponent("rec.mic.wav"), sysURL = dir.appendingPathComponent("rec.system.wav")
+        StudioFixtures.writeWAV(micURL, seconds: seconds, rate: rate) { mic[$0] }
+        StudioFixtures.writeWAV(sysURL, seconds: seconds, rate: rate) { sys[$0] }
+        return (micURL, sysURL)
+    }
+
+    private func power(_ url: URL, from: Double, to: Double) throws -> Float {
+        let f = try AVAudioFile(forReading: url)
+        let rate = f.processingFormat.sampleRate
+        f.framePosition = AVAudioFramePosition(from * rate)
+        let n = AVAudioFrameCount((to - from) * rate)
+        let b = AVAudioPCMBuffer(pcmFormat: f.processingFormat, frameCapacity: n)!
+        try f.read(into: b, frameCount: n)
+        let d = b.floatChannelData![0]
+        return (0..<Int(b.frameLength)).reduce(Float(0)) { $0 + d[$1] * d[$1] } / Float(b.frameLength)
+    }
+
+    @Test("a 150 ms echo is removed (> 10 dB) from the start, local speech is kept")
+    func cleans() throws {
+        let dir = StudioFixtures.tempDir("clean")
+        let (mic, sys) = makeSplit(in: dir)
+        let out = dir.appendingPathComponent("clean.wav")
+        let lag = try EchoCleaner.clean(micURL: mic, systemURL: sys, to: out)
+        #expect(abs(lag - 0.150) < 0.003, "estimated delay \(lag)")
+        let echoBefore = try power(mic, from: 1, to: 5), echoAfter = try power(out, from: 1, to: 5)
+        #expect(10 * log10(echoBefore / echoAfter) > 10, "early echo reduced by \(10 * log10(echoBefore / echoAfter)) dB")
+        let speechBefore = try power(mic, from: 15.2, to: 16.8), speechAfter = try power(out, from: 15.2, to: 16.8)
+        #expect(abs(10 * log10(speechBefore / speechAfter)) < 1, "speech level changed by \(10 * log10(speechBefore / speechAfter)) dB")
+        #expect(try AudioCutter.duration(of: out) == 20)
+    }
+
+    @Test("export with echo removal and no cuts writes a -clean- copy with all lines")
+    func exportClean() throws {
+        let root = StudioFixtures.tempDir("export-clean")
+        let folder = root.appendingPathComponent("session")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        _ = makeSplit(in: folder, seconds: 8)
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        try TranscriptDocument.write([StudioFixtures.segment("hello", at: t0.addingTimeInterval(2))],
+                                     to: folder.appendingPathComponent("rec.microphone.transcript.jsonl"))
+        let rec = RecordingLibraryScanner.scan(root: root)[0]
+        let entries = TranscriptDocument.load(rec.transcripts[0]).entries(audioStart: t0, exact: false, syncOffsetSec: 0)
+        let result = try RecordingCutExporter.export(
+            recording: rec, plan: CutPlan(ranges: [], duration: 8),
+            entriesByTranscript: [rec.transcripts[0]: entries], audioStart: t0, metadata: StudioMetadata(),
+            removeEcho: true, now: Date(timeIntervalSince1970: 1_800_000_500)
+        )
+        #expect(result.folder.lastPathComponent.hasPrefix("session-clean-"))
+        #expect(result.echoDelay != nil)
+        let copy = RecordingLibraryScanner.recordings(inFolder: result.folder)[0]
+        #expect(copy.tracks.map(\.role) == [.microphone, .system])
+        #expect(TranscriptDocument.load(copy.transcripts[0]).segments.map(\.text) == ["hello"])
+        let hidden = try FileManager.default.contentsOfDirectory(atPath: result.folder.path).filter { $0.hasPrefix(".cleaning") }
+        #expect(hidden.isEmpty, "temporary file removed")
+    }
+
+    @Test("nothing to export without cuts or echo removal")
+    func nothingToDo() throws {
+        let root = StudioFixtures.tempDir("export-none")
+        _ = makeSplit(in: root, seconds: 2)
+        let rec = RecordingLibraryScanner.scan(root: root)[0]
+        #expect(throws: AudioCutError.self) {
+            _ = try RecordingCutExporter.export(recording: rec, plan: CutPlan(ranges: [], duration: 2),
+                                                entriesByTranscript: [:], audioStart: Date(), metadata: StudioMetadata())
+        }
+    }
+}

@@ -179,6 +179,16 @@
         - a `<stem>-cut-<yyyy-MM-dd-HH-mm-ss>/` subfolder when the folder
           is shared with other recordings.
 
+        **Remove echo from the microphone** (split recordings): the same
+        export can also clean the mic track of the system track's echo,
+        with or without cuts. `EchoCleaner` runs the playback echo filter
+        over the whole mic file at the measured echo delay, after a
+        one-minute warm-up pass so the opening is clean too, writing the
+        mic file's own format; the cut, if any, is applied afterwards. The
+        folder is then named `…-clean-…` (echo only) or `…-cut-clean-…`
+        (both). Re-transcribing the cleaned copy gives a mic transcript
+        without the other side's words in it.
+
         ### Re-transcribe
 
         Produces a new transcript from the audio with one of ntakker's
