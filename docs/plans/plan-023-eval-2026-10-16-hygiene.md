@@ -36,7 +36,11 @@ Approved: 2026-10-17. The user said "Do the cleanup items". One commit per task.
   - Done. Past 600 queued frames (a minute of audio) the writer is failed as stalled; the failure surfaces from the next `append` / `finalize` as for any encoder error, and the queue is freed. Build-verified plus the existing M4A tests; a stalled `AVAssetWriterInput` cannot be produced in a unit test.
 - [x] **T8 (C7)** `split()` leaves the session inconsistent when finalizing the old segment fails. Roll back, and keep the sidecar rotation consistent.
   - Done, as "complete forward" rather than roll back: once the recorders are swapped, the new part is already recording and the old recorder cannot be reopened. `split` now finishes the sidecar rotation and emits `.recording`, then throws `SplitPreviousSegmentError`. The coordinator does its part bookkeeping (counter, boundary, `segmentCompleted`) before rethrowing it. The coordinator path has a test; the `RecordingSession` side is build-verified, because its recorders are created internally and cannot be made to fail in a test.
-- [ ] **T9 (CAP-18)** Observe the mic's `wasDisconnectedNotification` so an unplugged mic is reported instead of stalling silently.
+- [x] **T9 (CAP-18)** Observe the mic's `wasDisconnectedNotification` so an unplugged mic is reported instead of stalling silently.
+  - Done.
+    - When following the system default input, the source re-attaches to the new default after 0.5 s.
+    - When a device was chosen explicitly, the source does not switch to another mic; it logs an error and stops, and the recording continues with a silent mic track (the aligner fills it).
+    - Build-verified only, since a device disconnect cannot be produced in a unit test. Manual check: unplug a USB or Bluetooth mic mid-recording, with the default device and with an explicit one.
 - [ ] **T10 (found in plan-022)** `--transcribe-source mic` is refused unless `--mic-device` is set, because the resolver treats "system default" as disabled. This is the baseline failure "Shell env supplies transcription keys".
 
 ## Verification

@@ -99,6 +99,9 @@ public final class AVMicrophoneSource: NSObject,
     private var input: AVCaptureDeviceInput?
     private var output: AVCaptureAudioDataOutput?
     private var runtimeErrorObserver: NSObjectProtocol?
+    /// CAP-18: `AVCaptureDevice.wasDisconnectedNotification` for the
+    /// device the current session captures from.
+    private var disconnectObserver: NSObjectProtocol?
     private var willSleepObserver: NSObjectProtocol?
     private var didWakeObserver: NSObjectProtocol?
 
@@ -394,6 +397,19 @@ public final class AVMicrophoneSource: NSObject,
             }
         }
 
+        // CAP-18 (EVAL 2026-10-16): without this, unplugging the mic
+        // stopped its buffers with nothing but a stalled heartbeat.
+        let disconnectObserver = NotificationCenter.default.addObserver(
+            forName: AVCaptureDevice.wasDisconnectedNotification,
+            object: device,
+            queue: nil
+        ) { [weak self] _ in
+            guard let self else { return }
+            let name = device.localizedName
+            let uid = device.uniqueID
+            self.lifecycleQueue.async { self.handleDisconnect(deviceName: name, uid: uid) }
+        }
+
         // `startRunning()` is synchronous and may block briefly while
         // CoreAudio negotiates the requested format. We are already on
         // `lifecycleQueue` so blocking here is fine.
@@ -405,6 +421,7 @@ public final class AVMicrophoneSource: NSObject,
             self.input = input
             self.output = output
             self.runtimeErrorObserver = runtimeObserver
+            self.disconnectObserver = disconnectObserver
             self._isRunning = true
             self._terminalError = nil
             self._lastBufferArrival = Date()
@@ -418,22 +435,28 @@ public final class AVMicrophoneSource: NSObject,
             session: AVCaptureSession?,
             input: AVCaptureDeviceInput?,
             output: AVCaptureAudioDataOutput?,
-            runtimeObserver: NSObjectProtocol?
+            runtimeObserver: NSObjectProtocol?,
+            disconnectObserver: NSObjectProtocol?
         ) = stateQueue.sync {
             let s = self.session
             let i = self.input
             let o = self.output
             let r = self.runtimeErrorObserver
+            let d = self.disconnectObserver
             self.session = nil
             self.input = nil
             self.output = nil
             self.runtimeErrorObserver = nil
+            self.disconnectObserver = nil
             self._isRunning = false
-            return (s, i, o, r)
+            return (s, i, o, r, d)
         }
 
         if let r = snapshot.runtimeObserver {
             NotificationCenter.default.removeObserver(r)
+        }
+        if let d = snapshot.disconnectObserver {
+            NotificationCenter.default.removeObserver(d)
         }
 
         guard let session = snapshot.session else { return }
@@ -447,6 +470,46 @@ public final class AVMicrophoneSource: NSObject,
         }
         if let i = snapshot.input {
             session.removeInput(i)
+        }
+    }
+
+    // MARK: - Disconnect (CAP-18)
+
+    /// The capture device went away. Runs on `lifecycleQueue`.
+    ///
+    /// * Recording from the system default input: re-attach to the new
+    ///   default once macOS has picked one.
+    /// * Recording from a device the user chose: do not silently switch
+    ///   to a different microphone. The source stops; the recording
+    ///   continues, and the aligner fills the mic track with silence.
+    ///
+    /// Either way the mic track has a gap for the time the device was
+    /// missing, which the aligner fills with silence at its true
+    /// position.
+    private func handleDisconnect(deviceName: String, uid: String) {
+        // Ignore a late notification for a session already torn down.
+        let current = stateQueue.sync { self.input?.device.uniqueID }
+        guard current == uid else { return }
+        tearDownSession()
+
+        guard deviceIdentifier == nil || deviceIdentifier?.isEmpty == true else {
+            logger.error("microphone '\(deviceName)' was disconnected; it was selected explicitly, so the recording continues without the mic (the mic track is silent from here)")
+            return
+        }
+        // Give macOS a moment to move the default input.
+        lifecycleQueue.asyncAfter(deadline: .now() + .milliseconds(500)) { [weak self] in
+            guard let self else { return }
+            guard let next = AVCaptureDevice.default(for: .audio),
+                  next.uniqueID != uid, next.isConnected else {
+                self.logger.error("microphone '\(deviceName)' was disconnected and no other input is available; the recording continues without the mic")
+                return
+            }
+            do {
+                try self.buildAndStartSession(device: next)
+                self.logger.warning("microphone '\(deviceName)' was disconnected; switched to the new default input '\(next.localizedName)'")
+            } catch {
+                self.logger.error("microphone '\(deviceName)' was disconnected; re-attaching to '\(next.localizedName)' failed: \(error.localizedDescription)")
+            }
         }
     }
 
