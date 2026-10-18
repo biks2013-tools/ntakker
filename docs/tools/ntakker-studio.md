@@ -58,7 +58,18 @@
         - Bundle id: `com.giorgosmarinos.ntakker-studio`. Info.plist:
           `Resources/NtakkerStudio-Info.plist` (embedded into the
           binary by the target's linker settings and copied into the
-          `.app` by the packaging script). Version: `0.1.0`.
+          `.app` by the packaging script).
+        - Icon ("Listen & Read", 2026-10-18): a frosted panel with a
+          waveform — the played part in ntakker's mint, a red playhead —
+          over three transcript lines with speaker dots, the current one
+          highlighted, on the squircle of ntakker's icon in a midnight →
+          teal gradient. At 16 / 32 px only a thick waveform and the
+          playhead are drawn. Source: `scripts/generate-studio-appicon.swift`
+          (Core Graphics, no external tools) →
+          `Resources/StudioAppIcon.iconset/` → `iconutil -c icns
+          Resources/StudioAppIcon.iconset -o Resources/StudioAppIcon.icns`.
+          The packaging script copies it into the bundle as `AppIcon.icns`
+          and regenerates it when the `.icns` is missing.
         - Tests: `swift test --filter NtakkerStudioTests` (Swift Testing
           suites for the kit; Xcode toolchain required).
         - Packaging scripts honour the same overrides as the ntakker

@@ -4,7 +4,7 @@
 # Builds `dist/ntakker-studio.app` (bundle id `com.giorgosmarinos.ntakker-studio`)
 # from `swift build -c release` (or `SWIFT_CONFIG=debug`). Same layout and
 # signing as `scripts/package-ntakker-app.sh`; the Info.plist source is
-# `Resources/NtakkerStudio-Info.plist`, and the icon is shared with ntakker.
+# `Resources/NtakkerStudio-Info.plist`, and its own icon `Resources/StudioAppIcon.icns`.
 #
 # Usage:
 #   bash scripts/package-ntakker-studio-app.sh
@@ -51,13 +51,15 @@ chmod +x "${APP_BUNDLE}/Contents/MacOS/${APP_NAME}"
 # Copy the Info.plist verbatim — single source of truth.
 cp "${PLIST_SRC}" "${APP_BUNDLE}/Contents/Info.plist"
 
-# Copy the app icon. If the .icns is missing, regenerate it from the
-# vector source (`scripts/generate-appicon.swift` + `iconutil`).
-ICON_SRC="${REPO_ROOT}/Resources/AppIcon.icns"
+# Copy the studio's own icon ("Listen & Read"). If the .icns is missing,
+# regenerate it from the vector source
+# (`scripts/generate-studio-appicon.swift` + `iconutil`). It is installed
+# as AppIcon.icns, the name the Info.plist's CFBundleIconFile gives.
+ICON_SRC="${REPO_ROOT}/Resources/StudioAppIcon.icns"
 if [[ ! -f "${ICON_SRC}" ]]; then
-  echo "==> regenerating Resources/AppIcon.icns (source missing)"
-  swift "${REPO_ROOT}/scripts/generate-appicon.swift"
-  iconutil -c icns "${REPO_ROOT}/Resources/AppIcon.iconset" -o "${ICON_SRC}"
+  echo "==> regenerating Resources/StudioAppIcon.icns (source missing)"
+  (cd "${REPO_ROOT}" && swift scripts/generate-studio-appicon.swift)
+  iconutil -c icns "${REPO_ROOT}/Resources/StudioAppIcon.iconset" -o "${ICON_SRC}"
 fi
 cp "${ICON_SRC}" "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"
 
