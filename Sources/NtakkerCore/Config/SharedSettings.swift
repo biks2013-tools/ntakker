@@ -26,8 +26,7 @@ public enum SharedSettings {
     /// Names of the settings the three tools share. CLI names where the
     /// CLI already had one.
     public enum Keys {
-        /// Folder ntakker records into and the studio reads (also
-        /// convo-coach's name for it).
+        /// Folder ntakker records into and the studio reads.
         public static let recordingsDir = "NTAKKER_RECORDINGS_DIR"
         public static let format = ConfigResolver.Keys.format
         public static let layout = ConfigResolver.Keys.layout

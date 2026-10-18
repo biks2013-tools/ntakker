@@ -9,7 +9,6 @@ Four surfaces, one engine:
 | `ntakker-cli`    | Swift CLI                  | Headless recording + transcription. Drives CI, scripts, terminal use.    |
 | `ntakker` | Swift menu-bar app         | Menu-bar popover with mode toggle (Transcription / Asking), Save flow, Settings. |
 | `ntakker-studio` | Swift Dock app       | Explores finished recordings: transcript follows playback, click to jump, cut, rename speakers, re-transcribe, search, Q&A and minutes. |
-| `convo-coach` | Node CLI (TypeScript)    | Reads a recorded transcript and streams coaching advice from an LLM.     |
 
 Local-first by design — audio capture is fully on-device; only the streams you explicitly opt into (transcription provider, Q&A LLM) leave the machine.
 
@@ -56,7 +55,6 @@ swift build -c release                     # everything
 bash scripts/redeploy-ntakker.sh           # ntakker → /Applications (ad-hoc signed)
 bash scripts/redeploy-ntakker-studio.sh    # ntakker studio → /Applications (ad-hoc signed)
 bash scripts/build-ntakker-cli.sh          # ntakker-cli, offers to copy it to /usr/local/bin
-cd tools/convo-coach && npm install && npm link   # convo-coach (optional)
 ```
 
 Signed, notarized release builds: `bash scripts/release.sh ntakker|ntakker-studio|ntakker-cli` (see [`docs/tools/ntakker.md`](docs/tools/ntakker.md), "Releasing").
@@ -96,7 +94,7 @@ Sidecar formats: `jsonl` (default), `txt`, `srt`, `vtt`. Source-split (`--transc
 
 While a recording is in progress, switch to the **Asking** pane and type a question. The last N minutes of transcript + your question are sent to an LLM and the answer streams back token-by-token. On stop, a `<basename>.questions.jsonl` sidecar is written next to the audio.
 
-Eight provider families supported (same vendor-canonical env vars as `convo-coach`):
+Eight provider families supported, with the vendors' own env-var names:
 
 ```
 openai · anthropic · google · azure-openai · azure-ai-inference · ollama · litellm · mlx
@@ -158,7 +156,6 @@ The UI's Settings panel writes to the `~/.tool-agents/ntakker/.env` file, atomic
 For the full env-var catalogue see:
 - [`docs/tools/ntakker-cli.md`](docs/tools/ntakker-cli.md) — CLI reference
 - [`docs/tools/ntakker.md`](docs/tools/ntakker.md) — UI reference
-- [`docs/tools/convo-coach.md`](docs/tools/convo-coach.md) — Coaching CLI reference
 
 ---
 
@@ -176,8 +173,6 @@ ntakker/
 │       ├── Transcription/   — Provider matrix (Apple, WhisperKit, Soniox, …)
 │       └── Asking/          — Q&A: provider clients (OpenAI / Anthropic / Gemini), config, sidecar
 ├── Tests/
-├── tools/
-│   └── convo-coach/         — TypeScript companion CLI
 ├── docs/
 │   ├── tools/               — Per-tool reference docs
 │   ├── design/              — Plans (plan-001 … plan-015)
@@ -193,7 +188,6 @@ ntakker/
 
 - macOS 26 (Tahoe) or later — required for `SpeechAnalyzer` ([Exception 002](CLAUDE.md#exception-002))
 - Xcode 16 / Swift 6.2 toolchain
-- For `convo-coach` only: Node.js ≥ 20
 - TCC grants on first launch: Microphone, Screen Recording, (optional) Speech Recognition
 
 ---
@@ -208,7 +202,6 @@ ntakker/
 | Sign with a real identity                       | `CODESIGN_IDENTITY="Developer ID …" bash scripts/package-ntakker-app.sh` |
 | Install system-wide                             | `cp -R dist/ntakker.app /Applications/`              |
 | Run tests                                       | `swift test`                                            |
-| Install `convo-coach` on PATH                   | `cd tools/convo-coach && npm install && npm link`       |
 
 ---
 
@@ -235,7 +228,6 @@ log stream --predicate 'subsystem CONTAINS "ntakker-cli"' --info
 
 - **CLI reference:** [`docs/tools/ntakker-cli.md`](docs/tools/ntakker-cli.md)
 - **UI reference:** [`docs/tools/ntakker.md`](docs/tools/ntakker.md)
-- **Coach CLI reference:** [`docs/tools/convo-coach.md`](docs/tools/convo-coach.md)
 - **Project design** (architecture, threading, file layout): [`docs/design/project-design.md`](docs/design/project-design.md)
 - **Functional requirements:** [`docs/design/project-functions.MD`](docs/design/project-functions.MD)
 - **Active plans:** [`docs/design/plan-*.md`](docs/design/) — most recent are plan-013 / plan-014 (AEC), plan-015 (in-recording Q&A), plan-016 (predefined questions).
@@ -247,9 +239,9 @@ log stream --predicate 'subsystem CONTAINS "ntakker-cli"' --info
 ## Conventions in a nutshell
 
 - **Swift** for the recording engine and UI (approved exception to the project-wide "TypeScript for tools" rule — system-audio capture needs `ScreenCaptureKit` + `AVFoundation`; see [Exception 001](CLAUDE.md#exception-001) in `CLAUDE.md`).
-- **TypeScript** for everything else (e.g. `convo-coach`).
+- **TypeScript** for any future non-Swift tool.
 - **No fallback** for configuration: every missing required key raises `NtakkerError.missingRequiredConfig` instead of silently filling in a default.
-- **Vendor-canonical env-var names** — `OPENAI_API_KEY`, `AZURE_OPENAI_*`, `GOOGLE_API_KEY`, etc. — shared across `ntakker`, `convo-coach`, and any future tool.
+- **Vendor-canonical env-var names** — `OPENAI_API_KEY`, `AZURE_OPENAI_*`, `GOOGLE_API_KEY`, etc. — shared by ntakker, ntakker-cli, ntakker studio and any future tool.
 - **Recording-integrity invariant**: nothing (transcription, Q&A, sidecar writes) is allowed to compromise the audio file. Failures degrade gracefully.
 
 ---

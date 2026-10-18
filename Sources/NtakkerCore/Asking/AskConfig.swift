@@ -16,8 +16,7 @@
 //                                (azure-ai-inference / ollama / litellm
 //                                / mlx) raise `NtakkerError.missingRequiredConfig`.
 //   3. Per-provider credentials — REQUIRED per provider. Vendor-canonical
-//                                names exactly as documented in
-//                                `convo-coach`: `OPENAI_API_KEY`,
+//                                names: `OPENAI_API_KEY`,
 //                                `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`
 //                                (alias `GEMINI_API_KEY`), `AZURE_OPENAI_*`,
 //                                `AZURE_AI_INFERENCE_*`, `OLLAMA_HOST`,
@@ -164,7 +163,7 @@ public enum AskConfigResolver {
                 )
             }
             let deployment = try required(env, "AZURE_OPENAI_DEPLOYMENT")
-            // Per convo-coach docs: an unset api-version selects the new
+            // An unset api-version selects the new
             // `v1` GA path; a set value preserves the legacy
             // deployment-based URL pattern.
             let apiVersion = nonEmpty(env["AZURE_OPENAI_API_VERSION"])

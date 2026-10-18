@@ -2,11 +2,10 @@
 
 **Specification source (authoritative):** `docs/reference/evaluation-2026-10-16-quality-performance.md` §1, §2, §4 item 1. Registered as `EVAL-2026-10-16` in `Issues - Pending Items.md`.
 
-**Execution rules:** one task at a time; `swift build` + targeted tests after each task (convo-coach: `npm run build` + `npm test`); commit after each task (user-authorized 2026-10-16), staging only the files the task touched. Pre-existing failing test baseline is the one recorded in `docs/design/plan-017-eval-fixes-waves-1-3.md` — no task may add a new failure.
+**Execution rules:** one task at a time; `swift build` + targeted tests after each task; commit after each task (user-authorized 2026-10-16), staging only the files the task touched. Pre-existing failing test baseline is the one recorded in `docs/design/plan-017-eval-fixes-waves-1-3.md` — no task may add a new failure.
 
 ## Tasks
 
-- [x] **T1 (CC-1)** convo-coach stdin mode unreachable — `tools/convo-coach/src/index.ts:458` `isTTY === false` → `!process.stdin.isTTY`; add piped-input test.
 - [x] **T2 (TR-1)** Serialize inference in `ParakeetTranscriptionProvider` / `WhisperKitTranscriptionProvider` (engines are not re-entrant).
 - [x] **T3 (TR-3)** Azure realtime `finish()`: send `input_audio_buffer.commit`, wait (≤2 s) for outstanding transcriptions, then close.
 - [x] **T4 (INF-4)** Daemonizer `umask(0)` → `umask(0o077)`.
@@ -26,7 +25,7 @@
 
 ## Wave result (2026-10-16)
 
-All 14 tasks landed, one commit each. `swift build` green; convo-coach 168/168.
+All 13 tasks landed, one commit each. `swift build` green.
 
 **Full-suite comparison — zero new failures.** Every failure seen at HEAD reproduces identically at the pre-plan commit `bf69be5` (checked in a temporary worktree):
 - The plan-017 baseline set: Gemini REST ×5, SessionCoordinatorTranscriptionIntegration (`gemini-live` alias, `partNN` naming), ConfigResolver "Shell env supplies transcription keys", SonioxConfigBuilder V1-policy, AppleSpeechSessionReconciliation, HostClockAlignerStress ×2.

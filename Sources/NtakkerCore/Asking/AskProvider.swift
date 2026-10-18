@@ -1,8 +1,8 @@
 // NtakkerCore/Asking/AskProvider.swift — plan-015 Phase 4 (FR-IRQ-6,
 // FR-IRQ-7). Vendor-canonical identifier surface for the LLM provider
 // driving the in-recording Q&A feature. The eight supported providers
-// mirror the `convo-coach` TypeScript tool exactly so the user's
-// existing `~/.tool-agents/ntakker/.env` keys are reused verbatim.
+// use the vendors' own env-var names, so keys already in
+// `~/.tool-agents/ntakker/.env` are reused verbatim.
 //
 // The enum's `rawValue` is the on-the-wire env-var value of
 // `NTAKKER_ASK_PROVIDER`; the matching legacy aliases are accepted in
@@ -25,7 +25,7 @@ public enum AskProvider: String, CaseIterable, Sendable, Hashable, Identifiable 
 
     /// Parse the user-facing string (typically the `NTAKKER_ASK_PROVIDER`
     /// env value) into an `AskProvider`. Lowercases first and accepts
-    /// the small set of legacy aliases used by `convo-coach`.
+    /// a small set of legacy aliases.
     public init?(envValue raw: String) {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch trimmed {

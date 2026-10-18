@@ -2,9 +2,9 @@
 
 **Request:** "scan the application and detect improvements in quality and speed, as well as areas where the application could be better in terms of performance and more efficient in resource use."
 **Commit reviewed:** `bf69be5` (master; working tree only touches `.serena/project.yml`, `CLAUDE.md`).
-**Method:** five parallel read-only review passes (capture/encoding/aligner · transcription core + providers · Soniox/Asking/Config/Logging/Daemon/CLI · UI · convo-coach), each re-checking the still-open findings of the [2026-06-12 evaluation](evaluation-2026-06-12-summary.md) and hunting for new ones. The highest-impact claims (CC-1, CAP-1, CAP-4, TR-1, TR-3, TR-6, INF-4) were re-verified by hand against the source. `swift build -c release` green (45 s clean-ish, binaries 17 MB `ntakker` / 13 MB `ntakker-cli`; `.build` is 4.7 GB). convo-coach: `npm run build` green, 166/166 tests, `npm audit` 1 low (dev-only esbuild).
+**Method:** four parallel read-only review passes (capture/encoding/aligner · transcription core + providers · Soniox/Asking/Config/Logging/Daemon/CLI · UI), each re-checking the still-open findings of the [2026-06-12 evaluation](evaluation-2026-06-12-summary.md) and hunting for new ones. The highest-impact claims (CAP-1, CAP-4, TR-1, TR-3, TR-6, INF-4) were re-verified by hand against the source. `swift build -c release` green (45 s clean-ish, binaries 17 MB `ntakker` / 13 MB `ntakker-cli`; `.build` is 4.7 GB).
 
-**New finding IDs:** CAP-1…18 (capture), TR-1…20 (transcription), INF-1…15 (infra/Soniox/Asking/CLI), UI-1…9 (UI), CC-1…12 (convo-coach) — **74 new findings**. Prior-finding status tables are at the end.
+**New finding IDs:** CAP-1…18 (capture), TR-1…20 (transcription), INF-1…15 (infra/Soniox/Asking/CLI), UI-1…9 (UI) — **62 new findings**. Prior-finding status tables are at the end.
 
 ---
 
@@ -12,26 +12,24 @@
 
 | # | ID | Sev | Where | Problem | Effort |
 |---|----|-----|-------|---------|--------|
-| 1 | **CC-1** | Critical | `tools/convo-coach/src/index.ts:458` | `process.stdin.isTTY === false` — Node leaves `isTTY` **undefined** for pipes, so live (stdin) mode is never selected; `tail -f … \| convo-coach` silently coaches on the newest file instead. Reproduced. Fix: `!process.stdin.isTTY` + piped-input integration test. | S |
-| 2 | **CAP-1** | ~~High~~ *fixed (plan-021 T1)* | `Aligning/HostClockAligner.swift:458-462` | `headPTS` only re-anchored when the buffer is empty; with 1024-frame buffers vs 4800-frame windows leftover is almost never empty, so a gap (dropped buffer, SCStream restart, PTS jump) is collapsed, never silence-filled → that track is **permanently early** for the rest of the recording. Probable cause of the 2 failing `HostClockAlignerStress` gap-fill tests. Place samples by PTS (as `SoftwareAECProcessor.feedReference` does). | M |
-| 3 | **CAP-2** | ~~High~~ *fixed (plan-021 T1)* | `HostClockAligner.swift:536-566` | If one source stalls, `sourceReady` stays false → nothing emitted, the other source's buffer grows unbounded and is fully copied per append (~180 MB/s memcpy after 10 s). Add a max-skew (300–500 ms) → silence-fill the stalled side, cap backlog. | M |
-| 4 | **TR-1** | High | `Providers/ParakeetTranscriptionProvider.swift:113-119`, `WhisperKitTranscriptionProvider.swift:129` | `maxInFlightPerSource = 2` lets two concurrent inferences run on one non-thread-safe engine (FluidAudio `AsrManager` mutates inout decoder state across awaits). Guaranteed at cold start. Serialize on-device inference. | S |
-| 5 | **TR-3** | High | `Azure/Realtime/AzureOpenAIRealtimeSession.swift:153-159` | `finish()` closes immediately: no `input_audio_buffer.commit`, no wait for pending `transcription.completed` → last utterance lost on every stop. | S |
-| 6 | **UI-1** | High | `Views/Asking/SessionExporter.swift:61-90`, `SessionCoordinator.swift:604-631` | Save looks for `<stem>.part01.transcript.jsonl` (doesn't exist — only audio is renamed), ignores later parts and `.system/.microphone` sidecars → `transcript.md` falls back to the 100-segment in-memory list; part-1 sidecar left behind. | M |
-| 7 | **INF-1** | High | `Live/Soniox/SonioxStreamingSession.swift:279-285, 336-344` | Soniox reconnect replays the whole 5 s ring (already-transcribed audio) to a fresh session without resetting the aggregator → duplicated text; chunks arriving during replay are never sent; 5 s ring smaller than worst-case outage. | M |
-| 8 | **INF-3** | ~~Med (verify)~~ *not reproduced (plan-019 T2: `test_scripts/ws-resource-timeout-probe.swift` keeps an upgraded socket open past a 3 s resource timeout, with traffic and across a 6 s idle gap)* | `URLSessionWebSocketTaskTransport.swift:82` | `timeoutIntervalForResource = 300` may kill every WebSocket at 5 min → reconnect storm (×INF-1 duplicates). Set `.infinity`, verify with a >6 min session. | S |
-| 9 | **CC-2 / CC-3** | High | `convo-coach src/transcript/jsonl.ts:100`, `stdin.ts` | Parser expects `channel: "A"\|"B"`; ntakker writes `source: system\|microphone` and `speaker` — the LLM can't tell "me" from "them". `tail -f` can't see ntakker's in-place segment rewrites (stale / duplicate lines). | S / M |
-| 10 | **UI-4** | Med | `SessionCoordinator.swift:239-245` | All control events (state, segmentCompleted, errors) share a `.bufferingNewest(16)` stream with transcript partials → can be dropped; a dropped `.recording` leaves the controller stuck in `.starting` (Stop disabled) thanks to the H1 gate. | S–M |
-| 11 | **TR-8 / TR-9** | Med | `SourceSplitTranscriptionManager.swift:106-109`; `TranscriptionManager.swift:350-370` | Source-split stops children sequentially (2×5 s) inside a 5 s outer budget → mic drain abandoned. F18 deadline uses `withTaskGroup`, which waits for non-cancellable children (CoreML, model load) — deadline not real. | S |
-| 12 | **CAP-5** | ~~Med~~ Low — *not reproduced (plan-018 T6: 3 s files measure 3.0000 s before and after)* | `Encoding/M4ARecorder.swift:203, 689`; `HostClockAligner.swift:289-294` | `endSession(atSourceTime:)` uses last buffer's *start* PTS → final ~100 ms trimmed on every m4a and every split seam; `flush()` discards ≤99 ms leftover. | S |
-| 13 | **CAP-7 / CAP-8** | Med | `WAVRecorder.swift:122-140`, `CAFRecorder.swift:115-125`, `M4ARecorder.swift:210-216` | WAV/CAF write errors (disk full) only logged — finalize reports success on a truncated file; M4A `markAsFinished()` without draining `pending`. | S |
-| 14 | **TR-4** | Med | `AppleCloudTranscriptionProvider.swift:263-282, 465-476` | 55 s rotation ignores audio until the old final arrives → ~1.5–3 s lost per minute (3–5%). | M |
-| 15 | **TR-5 / TR-6 / TR-7** | Med | `AppleSpeechTranscriptionProvider.swift:293-315`; `TranscriptSanitizer.swift:24-39` | Dual-locale reconciliation never matches (both languages emitted); sanitizer strips `[` from `[Speaker 1]` (verified) and deletes genuine one-word answers ("yeah", "ok") in 2 s chunks. | S–M |
-| 16 | **INF-4** | Med | `Daemon/Daemonizer.swift:184` | `umask(0)` in the daemon → transcripts/audio created 0666 in `--detach` mode. Use `umask(0o077)`. | S |
-| 17 | **CAP-10** | Med | `SCKitSystemAudioSource.swift:419-436, 527` | `restartStream` has no in-progress latch → overlapping restarts can leak a live SCStream. | S |
-| 18 | **INF-2** | Med | `SonioxStreamingSession.swift:330-342`, `SonioxKeepaliveTimer.swift:49` | `finish()` racing a reconnect leaves a fresh socket + a 10 s keepalive loop alive forever. | S |
-| 19 | **INF-7** | Med | `Asking/AskConfig.swift:125,134,149,211` | Force-unwrapped `URL(string: env…)!` — a malformed `*_BASE_URL`/`OLLAMA_HOST` crashes the menu-bar app. | S |
-| 20 | **UI-2 / UI-3** *(fixed, plan-023)* | Med | `PopoverStatusBar.swift:108-129`, `RecordingController.swift:682-689` | Pause/Resume/Split are unreachable in the popover (ControlBar only shown idle/failed). Once exposed, pause tears down level meters and flashes the "stopped" UI. | S |
+| 1 | **CAP-1** | ~~High~~ *fixed (plan-021 T1)* | `Aligning/HostClockAligner.swift:458-462` | `headPTS` only re-anchored when the buffer is empty; with 1024-frame buffers vs 4800-frame windows leftover is almost never empty, so a gap (dropped buffer, SCStream restart, PTS jump) is collapsed, never silence-filled → that track is **permanently early** for the rest of the recording. Probable cause of the 2 failing `HostClockAlignerStress` gap-fill tests. Place samples by PTS (as `SoftwareAECProcessor.feedReference` does). | M |
+| 2 | **CAP-2** | ~~High~~ *fixed (plan-021 T1)* | `HostClockAligner.swift:536-566` | If one source stalls, `sourceReady` stays false → nothing emitted, the other source's buffer grows unbounded and is fully copied per append (~180 MB/s memcpy after 10 s). Add a max-skew (300–500 ms) → silence-fill the stalled side, cap backlog. | M |
+| 3 | **TR-1** | High | `Providers/ParakeetTranscriptionProvider.swift:113-119`, `WhisperKitTranscriptionProvider.swift:129` | `maxInFlightPerSource = 2` lets two concurrent inferences run on one non-thread-safe engine (FluidAudio `AsrManager` mutates inout decoder state across awaits). Guaranteed at cold start. Serialize on-device inference. | S |
+| 4 | **TR-3** | High | `Azure/Realtime/AzureOpenAIRealtimeSession.swift:153-159` | `finish()` closes immediately: no `input_audio_buffer.commit`, no wait for pending `transcription.completed` → last utterance lost on every stop. | S |
+| 5 | **UI-1** | High | `Views/Asking/SessionExporter.swift:61-90`, `SessionCoordinator.swift:604-631` | Save looks for `<stem>.part01.transcript.jsonl` (doesn't exist — only audio is renamed), ignores later parts and `.system/.microphone` sidecars → `transcript.md` falls back to the 100-segment in-memory list; part-1 sidecar left behind. | M |
+| 6 | **INF-1** | High | `Live/Soniox/SonioxStreamingSession.swift:279-285, 336-344` | Soniox reconnect replays the whole 5 s ring (already-transcribed audio) to a fresh session without resetting the aggregator → duplicated text; chunks arriving during replay are never sent; 5 s ring smaller than worst-case outage. | M |
+| 7 | **INF-3** | ~~Med (verify)~~ *not reproduced (plan-019 T2: `test_scripts/ws-resource-timeout-probe.swift` keeps an upgraded socket open past a 3 s resource timeout, with traffic and across a 6 s idle gap)* | `URLSessionWebSocketTaskTransport.swift:82` | `timeoutIntervalForResource = 300` may kill every WebSocket at 5 min → reconnect storm (×INF-1 duplicates). Set `.infinity`, verify with a >6 min session. | S |
+| 8 | **UI-4** | Med | `SessionCoordinator.swift:239-245` | All control events (state, segmentCompleted, errors) share a `.bufferingNewest(16)` stream with transcript partials → can be dropped; a dropped `.recording` leaves the controller stuck in `.starting` (Stop disabled) thanks to the H1 gate. | S–M |
+| 9 | **TR-8 / TR-9** | Med | `SourceSplitTranscriptionManager.swift:106-109`; `TranscriptionManager.swift:350-370` | Source-split stops children sequentially (2×5 s) inside a 5 s outer budget → mic drain abandoned. F18 deadline uses `withTaskGroup`, which waits for non-cancellable children (CoreML, model load) — deadline not real. | S |
+| 10 | **CAP-5** | ~~Med~~ Low — *not reproduced (plan-018 T6: 3 s files measure 3.0000 s before and after)* | `Encoding/M4ARecorder.swift:203, 689`; `HostClockAligner.swift:289-294` | `endSession(atSourceTime:)` uses last buffer's *start* PTS → final ~100 ms trimmed on every m4a and every split seam; `flush()` discards ≤99 ms leftover. | S |
+| 11 | **CAP-7 / CAP-8** | Med | `WAVRecorder.swift:122-140`, `CAFRecorder.swift:115-125`, `M4ARecorder.swift:210-216` | WAV/CAF write errors (disk full) only logged — finalize reports success on a truncated file; M4A `markAsFinished()` without draining `pending`. | S |
+| 12 | **TR-4** | Med | `AppleCloudTranscriptionProvider.swift:263-282, 465-476` | 55 s rotation ignores audio until the old final arrives → ~1.5–3 s lost per minute (3–5%). | M |
+| 13 | **TR-5 / TR-6 / TR-7** | Med | `AppleSpeechTranscriptionProvider.swift:293-315`; `TranscriptSanitizer.swift:24-39` | Dual-locale reconciliation never matches (both languages emitted); sanitizer strips `[` from `[Speaker 1]` (verified) and deletes genuine one-word answers ("yeah", "ok") in 2 s chunks. | S–M |
+| 14 | **INF-4** | Med | `Daemon/Daemonizer.swift:184` | `umask(0)` in the daemon → transcripts/audio created 0666 in `--detach` mode. Use `umask(0o077)`. | S |
+| 15 | **CAP-10** | Med | `SCKitSystemAudioSource.swift:419-436, 527` | `restartStream` has no in-progress latch → overlapping restarts can leak a live SCStream. | S |
+| 16 | **INF-2** | Med | `SonioxStreamingSession.swift:330-342`, `SonioxKeepaliveTimer.swift:49` | `finish()` racing a reconnect leaves a fresh socket + a 10 s keepalive loop alive forever. | S |
+| 17 | **INF-7** | Med | `Asking/AskConfig.swift:125,134,149,211` | Force-unwrapped `URL(string: env…)!` — a malformed `*_BASE_URL`/`OLLAMA_HOST` crashes the menu-bar app. | S |
+| 18 | **UI-2 / UI-3** *(fixed, plan-023)* | Med | `PopoverStatusBar.swift:108-129`, `RecordingController.swift:682-689` | Pause/Resume/Split are unreachable in the popover (ControlBar only shown idle/failed). Once exposed, pause tears down level meters and flashes the "stopped" UI. | S |
 
 ## 2. Highest-leverage speed & resource-efficiency improvements
 
@@ -53,7 +51,6 @@
 | 14 | **Smaller hot-path allocs** | CAP-12, CAP-15, CAP-16, CAP-17, C3, TR-18/INF-11 | Per-buffer `[[Float]]`/malloc in AEC extraction; mix computed twice in `.mixed`; stereo-split builds 4 arrays + new format description per frame, `pending.removeFirst()` O(n); `stateQueue.async`+`Date()` heartbeat per buffer (~94 closures/s); `PCMConvert.floatToInt16LE` 3 allocations/chunk; `JSONDecoder` per Soniox frame | Pointer access + `CMMemoryPool`, share the mix, cache format description + Deque, atomic `mach_absolute_time` heartbeat, in-place clamp into `Data(count:)`, static decoders. | S each |
 | 15 | **UI-7 / UI-8 / M3 / M8** | `AskingModeView.swift`, `ResizeHandle.swift`, `LiveTranscriptPanel.swift`, `RecordingStarter.swift` | Per-token main-actor publish + full-string `onChange` (O(L²)); `@AppStorage` write + sync layout per drag tick; non-lazy transcript list with animated scroll per partial; `.env` parsed up to 7× per Start click | Batch tokens ~50 ms; commit size on drag end; `LazyVStack`; read once from `ProcessInfo`. | S |
 | 16 | **INF-9 / A13** | `Asking/AskPromptBuilder.swift:104-116` | `.full` context: repeated `removeFirst()` + full `joined()` — ~300 MB copied per question on a 3 h meeting (50–150 ms on main) | Walk newest→oldest summing `utf8.count`, join once. | S |
-| 17 | **convo-coach B1/B5/CC-10/CC-11** *(fixed, plan-023)* | `stdin.ts:140,206`, `budget.ts:15-122`, `factory.ts` | Unbounded buffer + full re-parse and re-tokenize (~99 ms / 3k records) per trigger; first tiktoken call 111 ms; `--help` 160 ms due to eager LangChain/provider imports | Incremental parse with cached token counts; `js-tiktoken/lite` + o200k (also fixes B10); lazy `import()` of the selected provider. | S–M |
 
 ## 3. Resilience / safety items (non-perf, worth bundling)
 
@@ -62,7 +59,6 @@
 - **TR-17 / F24 remainder** — all four sidecar writers still `createFile(contents:nil)` → silent truncation of an existing sidecar. **TR-20** — writer goes permanently broken on first I/O error with only a log line.
 - **INF-5** — `start --detach` exits 0 before TCC/PID/writer checks; add a readiness pipe. **INF-13** — `stop` removes the PID file regardless of who owns it. **INF-14** — `SFSpeechRecognizer.supportedLocales()` runs before `fork()` (worsens A1).
 - **INF-6** — Gemini *Ask* client still sends the API key in the URL query (F13 fixed only the STT path). **INF-15** — all OSLog output `%{public}@`, including transcript text at debug.
-- **CC-5/CC-6/CC-7** — convo-coach: window/prompt errors outside the retry `try` still kill live mode, no per-request timeout (LangChain 6 retries / 10-min SDK timeout); `maxOutputTokens` never passed (unbounded output cost); Azure resource name derived from first hostname label breaks `*.cognitiveservices.azure.com`/custom domains.
 - **CAP-18** — mic `wasDisconnectedNotification` not observed in core → silent mic stall (feeds CAP-2). **UI-9** — cost estimate shown for free on-device providers. **UI-6** — Ask "Full"/"15 min" and Save transcript only see the 100-segment UI list.
 
 ---
@@ -81,20 +77,20 @@
 
 ## 4. Suggested attack order
 
-1. **Quick, high-value (all S):** CC-1, TR-1, TR-3, INF-4, INF-7, CAP-4, CAP-5, CAP-7/8, CAP-10, TR-8, TR-9, TR-17, INF-3, F17, H2 (`moveItem`), UI-4.
-2. **Transcript correctness:** INF-1 + INF-2 (Soniox reconnect), TR-13, TR-4, TR-5/6/7, UI-1 + UI-6, CC-2/CC-3.
+1. **Quick, high-value (all S):** TR-1, TR-3, INF-4, INF-7, CAP-4, CAP-5, CAP-7/8, CAP-10, TR-8, TR-9, TR-17, INF-3, F17, H2 (`moveItem`), UI-4.
+2. **Transcript correctness:** INF-1 + INF-2 (Soniox reconnect), TR-13, TR-4, TR-5/6/7, UI-1 + UI-6.
 3. **Aligner rewrite (one unit):** fix stress-test baseline → CAP-1 + CAP-2 + C1 + C5 + flush padding.
 4. **CPU/energy wave:** CAP-3 + CAP-6 + CAP-11 (AEC), TR-2 + TR-11 (on-device chunking + model cache), M1/M2/UI-5 (meters), TR-14/F1 (ordered fan-out), A6/A7 (logging).
-5. **Hygiene** *(done, plan-023)*: shared retry policy (F31) + TR-10/TR-16, F33 writer consolidation, A9 `.env` parser unification, UI-2/UI-3 pause controls, convo-coach perf (B1/B5/CC-10/CC-11), dead views (L3).
+5. **Hygiene** *(done, plan-023)*: shared retry policy (F31) + TR-10/TR-16, F33 writer consolidation, A9 `.env` parser unification, UI-2/UI-3 pause controls, dead views (L3).
 
 ---
 
 ## 5. Status of prior (2026-06-12) findings
 
-**Fixed and holding:** C4, C8, F7, F10/F11/F12, F13 (STT path), F19, F20, F21, F32, H1 (caveat: UI-4), H3, H4, B13 lockfile, B3 (with gaps → CC-5).
+**Fixed and holding:** C4, C8, F7, F10/F11/F12, F13 (STT path), F19, F20, F21, F32, H1 (caveat: UI-4), H3, H4.
 **Partially fixed:** C2, C3, F1 (inner seam only), F4 (round-trip remains), F9 (reconnect exists, but INF-1/INF-2), F15 (TR-10), F18 (TR-9), F24 (TR-17), M2/M3/L6.
-**Still open:** C1, C5, C6, C7 (worse: split throw also skips sidecar rotation), C9; F2, F3, F5, F6 (overflow metric never populated → UI always 0), F8, F14, F16, F17, F22, F23, F25–F31, F33, F34; H2, M1, M4–M10, L1–L5, L7–L10 (L3/L9 wider); A1–A14 (all); B1, B2, B4–B12.
-**Doc drift:** plan-017 T13/T14 checkboxes unticked although the code landed; CLAUDE.md + `docs/tools/convo-coach.md` still say "Vercel AI SDK" (implementation is LangChain); CLAUDE.md advertises popover pause/resume/split that are unreachable (UI-2).
+**Still open:** C1, C5, C6, C7 (worse: split throw also skips sidecar rotation), C9; F2, F3, F5, F6 (overflow metric never populated → UI always 0), F8, F14, F16, F17, F22, F23, F25–F31, F33, F34; H2, M1, M4–M10, L1–L5, L7–L10 (L3/L9 wider); A1–A14 (all).
+**Doc drift:** plan-017 T13/T14 checkboxes unticked although the code landed, CLAUDE.md advertises popover pause/resume/split that are unreachable (UI-2).
 
 ## 6. Positive observations
 

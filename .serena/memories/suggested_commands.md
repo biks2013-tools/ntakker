@@ -37,7 +37,6 @@
 ## TS tools (npm)
 Each tool builds via `npm run build` (`tsc`) and links via `npm link`:
 - `cd tools/dual-transcript-merger && npm install && npm link`
-- `cd tools/convo-coach && npm install && npm link`
 - `npm unlink -g <tool-name>`                      — remove the global symlink
 
 ## Darwin / git utilities

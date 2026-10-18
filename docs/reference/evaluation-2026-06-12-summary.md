@@ -2,13 +2,13 @@
 
 **Request:** "check and evaluate the application in terms of functionality and performance, and identify possible improvements and existing weaknesses, so that it becomes faster and more efficient."
 **Commit reviewed:** `e4cd174` (master, clean).
-**Method:** full-source review by four parallel analysis passes (capture pipeline, transcription subsystem, UI layer, CLI/infrastructure + convo-coach), plus a build and test-suite run.
+**Method:** full-source review by four parallel analysis passes (capture pipeline, transcription subsystem, UI layer, CLI/infrastructure), plus a build and test-suite run.
 
 **Detailed reports (full findings with code excerpts):**
 - [evaluation-2026-06-12-capture-pipeline.md](evaluation-2026-06-12-capture-pipeline.md) — 9 findings (C1–C9)
 - [evaluation-2026-06-12-transcription.md](evaluation-2026-06-12-transcription.md) — 34 findings (F1–F34)
 - [evaluation-2026-06-12-ui.md](evaluation-2026-06-12-ui.md) — 24 findings (H1–H4, M1–M10, L1–L10)
-- [evaluation-2026-06-12-cli-convo-coach.md](evaluation-2026-06-12-cli-convo-coach.md) — 27 findings (A1–A14, B1–B13)
+- [evaluation-2026-06-12-cli.md](evaluation-2026-06-12-cli.md) — 14 findings (A1–A14)
 
 ---
 
@@ -40,11 +40,8 @@ The architecture is sound: clean protocol seams around providers and sessions, c
 | 8 | H1 | UI | Double-click Start races two live sessions; the orphaned one is unstoppable and keeps writing | Correctness |
 | 9 | H2 | UI | Session Save copies/deletes audio files + parses JSONL synchronously on the main actor | UI freeze/beachball |
 | 10 | A1 | CLI | `fork()` after the Swift Concurrency runtime started (async `main`) — Daemonizer's own precondition violated; rare post-fork hangs | Daemon stability |
-| 11 | B1 | convo-coach | Stdin live mode: unbounded buffer + O(n²) full re-parse per trigger | Perf, memory |
-| 12 | B2 | convo-coach | Default provider (azure-openai) keyed by deployment name → 8k-token unknown-model fallback → silent aggressive truncation | Quality on default path |
-| 13 | H3/H4 | UI | Data races on static diag counters on audio queues + leftover `LEVELMETER_RT` warning-level logging in 30 Hz/per-buffer/per-partial hot paths | UB + log spam |
-| 14 | A2/A4 | CLI | `stop` SIGTERMs unverified PID (PID-reuse hazard); PID-file claim is TOCTOU-racy | Safety |
-| 15 | B3 | convo-coach | One transient provider error kills the live coaching session; no retries anywhere | Availability |
+| 11 | H3/H4 | UI | Data races on static diag counters on audio queues + leftover `LEVELMETER_RT` warning-level logging in 30 Hz/per-buffer/per-partial hot paths | UB + log spam |
+| 12 | A2/A4 | CLI | `stop` SIGTERMs unverified PID (PID-reuse hazard); PID-file claim is TOCTOU-racy | Safety |
 
 ## Highest-leverage performance improvements (speed/efficiency theme)
 
@@ -54,8 +51,7 @@ The architecture is sound: clean protocol seams around providers and sessions, c
 4. **Stop publishing levels at 30 Hz when nothing changed / popover closed** (M1/M2) and make the transcript list lazy (M3) — main-actor churn during every recording.
 5. **Async batched file logging** (A6) and log rotation (A7).
 6. **Ordered single-consumer audio fan-out** (F1): replaces ~10–20 unstructured Tasks/sec/source with one AsyncStream consumer per source — fixes a latent reordering correctness bug *and* reduces scheduling overhead.
-7. **convo-coach incremental parsing + token-count caching** (B1, B5) and fd-based sidecar appends (B4).
-8. **Faster stop:** F17 (Soniox unconditional 2 s grace sleep), F18 (drain deadline), M8 (.env parsed ~8× per Start click on the main actor).
+7. **Faster stop:** F17 (Soniox unconditional 2 s grace sleep), F18 (drain deadline), M8 (.env parsed ~8× per Start click on the main actor).
 
 ## Cross-cutting refactors that pay for themselves
 
@@ -71,14 +67,11 @@ The architecture is sound: clean protocol seams around providers and sessions, c
 - Quit "Stop & Quit" has no watchdog — a stalled finalize makes the app unquittable (M5); `cancelAll()` is never called (M6).
 - Fresh installs can never see the screen-recording permission prompt from `start` (A5).
 - `stop` runs full config validation — an unrelated config error makes a daemon unstoppable (A3).
-- convo-coach help text contradicts implementation (B9); SIGINT exits as PROVIDER_FAILURE (B6); no lockfile committed (B13).
-- Project doc drift: CLAUDE.md says convo-coach uses "Vercel AI SDK"; the implementation is LangChain (B13).
 
 ## Suggested attack order
 
 1. **Data-loss fixes (small, surgical):** F24, C4, F21, F20 → then F19 + F18 (teardown), H1 (start race).
-2. **Resilience:** F9 (Soniox reconnect via the Azure pattern), F10, F15 (circuit breaker), F13 (Gemini retry/timeout/header key), B3 (coach retry loop).
+2. **Resilience:** F9 (Soniox reconnect via the Azure pattern), F10, F15 (circuit breaker), F13 (Gemini retry/timeout/header key).
 3. **Performance wave 1 (hot path):** C1–C3, F4+F32, H3/H4 removal, F1 ordered fan-out.
 4. **Performance wave 2 (UX-perceived):** H2 off-main-actor save, M1–M3, M8, F17, A6/A7.
-5. **convo-coach:** B1, B2, B4, B5, B7.
-6. **Hygiene:** A1 (re-exec daemonization), A2/A4 (PID identity + O_EXCL), A9, L10, B13 lockfile, doc fixes.
+5. **Hygiene:** A1 (re-exec daemonization), A2/A4 (PID identity + O_EXCL), A9, L10, doc fixes.

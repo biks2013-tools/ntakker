@@ -26,16 +26,6 @@ Approved: 2026-10-16 ("yes please", after plan-019 was proposed as the step befo
   - Raise the ring to 15 s.
   - Done: the replay-tail calculation is unit-tested (`AzureRealtimeReplayTailTests`). The wiring is build-verified only, because the session forces `wss` and has no transport seam.
 
-### convo-coach transcript input
-
-- [x] **T4 (CC-2)** The JSONL parser only reads `channel: "A" | "B"`. ntakker writes `source: system | mic | mixed` plus `speaker`.
-  - Map `mic` to A (the user) and `system` to B (the remote side), matching the default system prompt.
-  - Render `speaker` in the prompt line.
-  - Add tests.
-- [x] **T5 (CC-3)** ntakker rewrites segments by id: a short in-place rewrite, or a tombstone plus an append. A `tail -f` stream sees the appended version as a second record.
-  - De-duplicate records by `id`, with the later line winning, in `parseJsonl` (used by file and stdin mode).
-  - Document that `tail -f` cannot see in-place rewrites and that file mode should be used for exact transcripts.
-
 ### Save and Ask completeness
 
 - [x] **T6 (UI-1)** The first pause renames segment 1's audio to `.part01` but leaves its transcript sidecars under the bare name. Save then probes `<stem>.part01.transcript.jsonl`, finds nothing, reads only the first audio source, and ignores the `.system` and `.microphone` sidecars.
@@ -62,7 +52,7 @@ Approved: 2026-10-16 ("yes please", after plan-019 was proposed as the step befo
 
 ## Verification
 
-- `swift build` clean; `convo-coach` `npm test` green.
+- `swift build` clean.
 - New tests pass. The full suite (`--skip NtakkerCoreTests.RecordingSessionTests`) shows no failures beyond the plan-018 baseline list, and the AppleSpeech reconciliation baseline failure should turn green.
 - Build-only items are called out in the wave result.
 
@@ -72,7 +62,6 @@ Approved: 2026-10-16 ("yes please", after plan-019 was proposed as the step befo
 - Test status:
   - Full suite (`--skip NtakkerCoreTests.RecordingSessionTests`): 471 tests. No new failures against the plan-018 baseline list.
   - The baseline failure `"higher-confidence final wins per utterance"` now passes (T10).
-  - convo-coach: 174/174.
 - Tests that fail on the old code: UI-4 (plan-019), INF-2, T6a. The INF-1 test asserts a replay size the old code could not produce.
 - Build-verified only:
   - T3: the Azure wiring. The tail math is tested.

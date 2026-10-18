@@ -233,29 +233,6 @@ This section records explicit, user-approved exceptions to the Structure & Conve
 - **Reason**: plan-005 adds on-device live transcription via `SpeechAnalyzer`, introduced in macOS 26 (Tahoe). The new API unlocks real-time partials (~80–250 ms first-partial latency), Swift-concurrency-native results streams, and dual-locale parallel recognition. Quality and latency materially exceed the macOS 14-compatible `SFSpeechRecognizer` on-device mode. The project's primary user runs macOS 26.4.1; the bump is acceptable for v1.5.
 - **Implication**: anyone running macOS 13–25 cannot build or run `ntakker-cli` after this change. If wider compatibility is needed later, the streaming provider could fall back to `SFSpeechRecognizer` via `#available(macOS 26, *)` gating.
 
-### Exception 003 — `convo-coach` default LLM provider
-
-- **Rule overridden**: "You must never create fallback solutions for configuration settings. In every case a configuration setting is not provided you must raise the appropriate exception."
-- **Approved**: 2026-05-02
-- **Scope**: The `convo-coach` TypeScript tool (`tools/convo-coach/`) only — strictly limited to its `COACH_PROVIDER` resolution.
-- **Reason**: Forcing the user to pass `--provider <name>` on every invocation (or to explicitly set `COACH_PROVIDER` in `~/.tool-agents/convo-coach/.env`) is unergonomic for a tool intended to be invoked many times during a single conversation. The user's primary LLM access in this project is through Azure OpenAI (the `AZURE_OPENAI_*` vars are already in the shell). Defaulting to `azure-openai` lets bare `convo-coach` invocations work out of the box on the user's machine while still raising clear errors if the Azure OpenAI credentials themselves are missing.
-- **Implication**: When neither `--provider` nor `COACH_PROVIDER` is set, `convo-coach` selects `azure-openai`. This is *only* the provider selection — every credential the chosen provider requires (`AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT`, `AZURE_OPENAI_API_VERSION`) must still be present in the resolution chain or the tool raises `ConfigError` with exit code 78 (MISSING_CONFIG). Default model IDs (e.g. `gpt-4o-mini` for openai) are NOT covered by this exception — they remain provider-recommended values applied when the user has explicitly chosen a provider but not a model, which the project treats as model-metadata, not a credential fallback.
-
-### Exception 004 — `convo-coach` operational defaults
-
-- **Rule overridden**: "You must never create fallback solutions for configuration settings. In every case a configuration setting is not provided you must raise the appropriate exception."
-- **Approved**: 2026-05-29
-- **Scope**: The `convo-coach` TypeScript tool (`tools/convo-coach/`) only — strictly limited to the four **operational** parameters listed below. Does NOT cover any credentials.
-- **Reason**: These four parameters control runtime *ergonomics* (where to scan for recordings, how often to debounce, how to handle context overflow, where local Ollama listens), not service authentication. Requiring an explicit value on every invocation produces no security or correctness benefit — only friction. They are explicitly documented in `docs/tools/convo-coach.md` with their defaults so users always know what they get.
-- **Implication**: When unset, these four parameters fall back to the documented defaults below. Every credential required by the selected provider continues to be governed by the strict no-fallback rule and raises `ConfigError` (exit 78) when absent.
-
-| Variable | Default when unset | Source |
-|---|---|---|
-| `NTAKKER_RECORDINGS_DIR` | `~/Recordings` | `tools/convo-coach/src/index.ts:88` |
-| `COACH_DEBOUNCE` | `15s` | `tools/convo-coach/src/index.ts:282` |
-| `COACH_ON_OVERFLOW` | `truncate-start` | `tools/convo-coach/src/index.ts:98` |
-| `OLLAMA_HOST` | `http://127.0.0.1:11434` | `tools/convo-coach/src/providers/ollama.ts:34` |
-
 ## Tools
 
 ### ntakker-cli
@@ -275,9 +252,3 @@ Documentation: [docs/tools/ntakker.md](docs/tools/ntakker.md)
 macOS Dock app (`com.giorgosmarinos.ntakker-studio`, plan-024) for exploring finished recordings: library and full-text search across every transcript, playback with the transcript followed line by line and click-to-jump, cutting ranges into a new copy with re-timed transcripts, Ask and meeting minutes over the whole transcript (ntakker's Ask settings), speaker renaming, transcript text edits, and re-transcription with ntakker's batch providers.
 
 Documentation: [docs/tools/ntakker-studio.md](docs/tools/ntakker-studio.md)
-
-### convo-coach
-
-TypeScript CLI that reads a `ntakker-cli` transcript sidecar and streams live conversational coaching advice from any of the eight standard LLM providers (OpenAI, Anthropic, Google Gemini, Azure OpenAI, Azure AI Inference, Ollama, LiteLLM, MLX-LM) via LangChain (`@langchain/*`), writing every response to a dated `.advice-*.md` sidecar. Defaults to `azure-openai` when neither `--provider` nor `COACH_PROVIDER` is set (Project Memory Exception 003); four operational parameters fall back to documented defaults (Exception 004).
-
-Documentation: [docs/tools/convo-coach.md](docs/tools/convo-coach.md)

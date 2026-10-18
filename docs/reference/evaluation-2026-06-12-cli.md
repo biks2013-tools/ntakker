@@ -1,17 +1,15 @@
-# ntakker — CLI / Infrastructure / convo-coach Review
+# ntakker — CLI / Infrastructure Review
 
 Date: 2026-06-12
 Reviewer: automated code review (performance / functionality / robustness)
 Repo: `/Users/giorgosmarinos/aiwork/coding-platform/recording-tool` @ `e4cd174` (master, clean)
 
-Scope A — Swift CLI + infrastructure: `Sources/ntakker-cli/main.swift`, `Sources/NtakkerCore/{Config,Daemon,Bootstrap,Logging,Permissions,Errors,Asking}/`
-Scope B — TypeScript tool: `tools/convo-coach/src/`
-
+Scope — Swift CLI + infrastructure: `Sources/ntakker-cli/main.swift`, `Sources/NtakkerCore/{Config,Daemon,Bootstrap,Logging,Permissions,Errors,Asking}/`
 Severity legend: **HIGH** = correctness/availability risk or material cost on the default path; **MEDIUM** = real but bounded impact or degraded UX; **LOW** = polish, latent risk, or maintenance burden.
 
 ---
 
-## Scope A — Swift CLI and infrastructure
+## Swift CLI and infrastructure
 
 ### A1. `fork()` is called after the Swift Concurrency runtime has started — violates the Daemonizer's own precondition (HIGH)
 
@@ -190,8 +188,8 @@ func value(_ key: String) -> String? {
 }
 ```
 
-- **Why it's a problem:** Setting `NTAKKER_TRANSCRIBE=` (empty) in `./.env` does **not** clear a value from `~/.tool-agents/.env` or the shell — the empty entry is invisible and the lower tier leaks through. convo-coach implements the opposite, deliberate semantics (`tools/convo-coach/src/config.ts:172-181`: empty value *clears* lower tiers). Two tools in the same project, same documented four-tier chain, opposite behaviour for the same `.env` line. Users moving between the tools will be surprised.
-- **Suggested fix:** Align on the convo-coach behaviour (empty = explicit unset) or document the difference prominently in both `docs/tools/*.md` files.
+- **Why it's a problem:** Setting `NTAKKER_TRANSCRIBE=` (empty) in `./.env` does **not** clear a value from `~/.tool-agents/.env` or the shell — the empty entry is invisible and the lower tier leaks through. A user who writes an empty value to switch a setting off will be surprised.
+- **Suggested fix:** Treat an empty value as an explicit unset, or document the behaviour prominently in the tool docs.
 - **Severity:** LOW
 
 ### A11. `~/.tool-agents` bootstrap chmods on every invocation; per-resolve formatter allocations (LOW)
@@ -249,202 +247,14 @@ while assembled.utf8.count > maxTranscriptBytes && !lines.isEmpty {
 
 ---
 
-## Scope B — convo-coach (TypeScript)
-
-### B1. Stdin mode: unbounded buffer + full re-parse of the entire history on every trigger (HIGH)
-
-- **Files:**
-  - `tools/convo-coach/src/transcript/stdin.ts:139-144` (accumulate), `:206-216` (re-parse, "Buffer is intentionally NOT reset")
-  - `tools/convo-coach/src/transcript/jsonl.ts:39-136` (`parseJsonl` walks every line)
-
-```ts
-stdinRl.on('line', (line: string) => {
-    buffer += line + '\n';            // grows forever
-    ...
-});
-...
-const records = parseBuffer(buffer, now);  // EVERY trigger re-parses EVERYTHING
-yield { records, transcriptEnd: now, reason };
-// Buffer is intentionally NOT reset — each yield contains the
-// accumulated history
-```
-
-- **Why it's a problem:** This is the tool's long-lived "live coaching" mode (`tail -f transcript | convo-coach`). Per trigger it: (1) string-concatenates the whole history (`buffer += line` is O(buffer) amortised but the buffer itself is unbounded — a multi-hour meeting at a few KB/min is fine, an all-day dual-channel session is tens of MB held twice: raw buffer + parsed records); (2) re-splits and re-`JSON.parse`s every line ever seen — O(n) work per trigger → O(n²) over the session; (3) re-emits the *same* `console.warn` for every previously-seen malformed line on every trigger (`jsonl.ts:56-58`), so one bad line warns dozens of times per hour. The windowing layer then throws most of the re-parsed records away (`--last 5m` is the documented usage).
-- **Suggested fix:** Parse incrementally: on each `line` event, parse that one line into a `NormalisedRecord` (or skip/warn once) and push to a persistent `records` array; each trigger then snapshots/filters the array. Optionally evict records older than the largest window in play (or cap at N records) to bound memory. The format sniff (`looksLikeJsonl`) only needs the first non-blank line, which is already available on first parse.
-- **Severity:** HIGH
-
-### B2. Default provider (azure-openai) almost always hits the 8 000-token "unknown model" fallback → silent aggressive truncation (HIGH)
-
-- **Files:**
-  - `tools/convo-coach/src/llm/model-context-windows.ts:53-69`
-  - `tools/convo-coach/src/llm/default-models.ts:52-62` (azure model id = deployment name)
-  - `tools/convo-coach/src/llm/budget.ts:119-120`
-
-```ts
-const UNKNOWN_MODEL_FALLBACK = 8_000;
-...
-console.warn(`Unknown model '${modelId}' — assuming 8000-token context window. ...`);
-return UNKNOWN_MODEL_FALLBACK;
-```
-
-- **Why it's a problem:** For `azure-openai` — the tool's **default** provider per Exception 003 — the "model id" used everywhere is the Azure *deployment name* (`resolveModel` returns `AZURE_OPENAI_DEPLOYMENT`). Deployment names ("gpt-5.1", "prod-coach", whatever the user typed in the portal) essentially never match the keys in `MODEL_CONTEXT_WINDOWS`, so every default-path run gets `8000 × 0.85 ≈ 6 800` usable tokens and `truncate-start` silently throws away most of a long transcript — while the actual deployment may have a 128k–1M window. The user sees one stderr warning per invocation (per *trigger* in stdin mode) and degraded advice quality with no obvious cause. The table is also already drifting (no gpt-5.x, no newer claude/gemini ids), which sends ever more traffic to the fallback.
-- **Suggested fix:** (1) Add a `COACH_CONTEXT_WINDOW` config key (the project pattern: documented operational default, explicit override) consulted before the table. (2) For azure, try a longest-prefix/substring match of the deployment name against known model families before falling back. (3) Raise the unknown fallback to something defensible for current chat models (e.g. 32k) or make `--on-overflow error` the behaviour for unknown models so truncation is never silent.
-- **Severity:** HIGH (quality/cost on the default path)
-
-### B3. One transient provider error kills the entire long-lived stdin session; no retries anywhere (MEDIUM→HIGH)
-
-- **Files:**
-  - `tools/convo-coach/src/index.ts:318-335` (throws out of the `for await` loop)
-  - `tools/convo-coach/src/output/stream.ts:154-181` (all errors flattened to `ProviderError`)
-
-```ts
-} catch (err) {
-    try { sidecar.appendFooter(...); sidecar.close(); } catch { }
-    throw err;        // ← exits runStdinMode → process exits (code 70)
-}
-```
-
-- **Why it's a problem:** In live mode the user has a coaching loop attached to an ongoing conversation. A single 429 (rate limit), momentary network blip, or provider 500 terminates the process; the user discovers it minutes later when no advice arrives. There is no retry/backoff at any layer, and `ProviderError(\`stream failed: ${message}\`)` discards the HTTP status / error class, so callers can't even distinguish retryable from fatal. (LangChain's `maxRetries` default may cover some setup errors, but mid-stream failures and the orchestrator level are unprotected.)
-- **Suggested fix:** In `runStdinMode`, catch per-iteration errors: write the error footer (already done), log to stderr, and `continue` to the next trigger — only exit on `ConfigError`/`UsageError` or N consecutive failures. Add bounded exponential backoff (e.g. 1s/4s/15s) for 429/5xx/network errors; preserve `status` on `ProviderError` (LangChain errors expose `status`/`error.code`) to drive the retryable classification.
-- **Severity:** HIGH for live-mode availability; MEDIUM in file mode.
-
-### B4. `SidecarWriter.write` does `appendFileSync` per streaming delta — open/write/close syscalls per token chunk (MEDIUM)
-
-- **File:** `tools/convo-coach/src/output/sidecar.ts:180-186`
-
-```ts
-write(chunk: string): void {
-    ...
-    fs.appendFileSync(this.tempPath, chunk, 'utf8');  // open+write+close EVERY delta
-}
-```
-
-- **Why it's a problem:** `appendFileSync(path, ...)` opens the file, writes, and closes it on every call. A streamed completion delivers hundreds of small deltas; that's hundreds of synchronous open/close round-trips blocking the event loop mid-stream (and `runOneAdvice` awaits each sink write before pulling the next chunk — `stream.ts:172-175` — so it directly adds to inter-token latency on stdout too).
-- **Suggested fix:** Open the temp file once in the constructor (`fs.openSync(tempPath, 'a')`), use `fs.writeSync(fd, chunk)` in `write()`, and `fs.closeSync(fd)` before the rename in `close()`. Durability is identical; syscall count drops ~3×, no per-call path resolution.
-- **Severity:** MEDIUM
-
-### B5. Token budget re-tokenizes the entire record set on every trigger (MEDIUM)
-
-- **File:** `tools/convo-coach/src/llm/budget.ts:89-99, 122-123, 148-154`
-
-```ts
-for (const r of records) {
-    total += estimateTokens(r.text, provider) + PER_RECORD_OVERHEAD_TOKENS;
-}
-```
-
-- **Why it's a problem:** In stdin mode every trigger runs `applyBudget` over the full (windowed) history; for OpenAI/Azure that's a real BPE encode of every record's text, every time — compounding B1's O(n²). The system prompt is also re-encoded per trigger though it never changes. js-tiktoken's `encode` is pure JS (no WASM), so this is meaningful CPU on big windows.
-- **Suggested fix:** Records are immutable — cache the token count per record (a `WeakMap<NormalisedRecord, number>` or compute at parse time and carry on the record). Hoist the system-prompt count to once per process. Truncation already decrements incrementally (good) — make the initial sum incremental too.
-- **Severity:** MEDIUM
-
-### B6. Ctrl-C (SIGINT) exits with code 70 "provider failure" instead of a signal/interrupt code (MEDIUM)
-
-- **Files:**
-  - `tools/convo-coach/src/index.ts:397-402` (abort on SIGINT)
-  - `tools/convo-coach/src/output/stream.ts:165-181` (abort surfaces as stream error → `ProviderError`)
-  - `tools/convo-coach/src/types.ts:242-249` (no interrupt code)
-
-```ts
-const onSigint = (): void => { ...; abortController.abort(); };
-...
-} catch (err) {
-    throw new ProviderError(`stream failed: ${message}`);  // AbortError lands here
-}
-```
-
-- **Why it's a problem:** A user-initiated abort propagates as `AbortError` out of the LangChain stream, gets wrapped in `ProviderError`, and the process exits 70 (`PROVIDER_FAILURE`) with an `# ERROR` footer in the sidecar — misclassifying a deliberate interrupt as a provider fault. Scripts keying on exit codes (and the metrics/footer in the sidecar) get the wrong story.
-- **Suggested fix:** In the catch, check `input.abortSignal?.aborted` (or `err.name === 'AbortError'`) and rethrow a distinct `InterruptedError`; map it to exit 130 (128+SIGINT convention) or 0, and write an `# INTERRUPTED` footer instead of `# ERROR`.
-- **Severity:** MEDIUM
-
-### B7. No change detection: triggers with zero new content re-send the identical prompt (paid tokens) (MEDIUM)
-
-- **File:** `tools/convo-coach/src/index.ts:287-303`; `tools/convo-coach/src/transcript/stdin.ts:155-157` (tty Enter fires unconditionally)
-
-- **Why it's a problem:** In stdin mode, hitting Enter twice (or a debounce firing after the consumer was busy) re-runs the full pipeline on an unchanged buffer: same window, same prompt, a full LLM round-trip billed at full input-token cost, plus a new sidecar file with duplicate advice. There is no "nothing new since last advice" guard.
-- **Suggested fix:** Track the record count (or last record timestamp) included in the previous successful advice; if unchanged at trigger time, print `[convo-coach] no new transcript since last advice — skipped` and continue. Offer `--force`/double-Enter to override.
-- **Severity:** MEDIUM (direct cost + noise)
-
-### B8. Debounce never fires under a continuous trickle — live advice can stall indefinitely in non-tty mode (MEDIUM→LOW)
-
-- **File:** `tools/convo-coach/src/transcript/stdin.ts:124-131, 139-144`
-
-```ts
-const armDebounce = (): void => {
-    ...
-    if (debounceTimer !== undefined) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => { ...; fireTrigger('debounce'); }, debounceMs);
-};
-stdinRl.on('line', ... armDebounce());   // every line RESETS the timer
-```
-
-- **Why it's a problem:** The debounce is silence-detection only: each incoming line resets the timer. A live transcription feed that emits a line every few seconds (typical for ntakker partial/final cadence) with the default `COACH_DEBOUNCE=15s` never reaches 15 s of silence during active conversation — exactly when the user wants coaching — and only fires when the conversation pauses. In `/dev/tty`-less environments (the documented fallback: containers, nohup) there is no Enter escape hatch, so advice may simply never arrive mid-conversation.
-- **Suggested fix:** Add a max-interval companion (`COACH_MAX_INTERVAL`, e.g. 60s): a second timer armed at the first buffered line that fires regardless of ongoing input, then re-arms. Document the pairing in `docs/tools/convo-coach.md`.
-- **Severity:** MEDIUM in headless live use; LOW for the typical tty workflow.
-
-### B9. `--help` text contradicts the implementation in three places (LOW)
-
-- **File:** `tools/convo-coach/src/args.ts:142-151`; vs `tools/convo-coach/src/index.ts:405-416`, `tools/convo-coach/src/transcript/reader.ts:17`, `tools/convo-coach/src/transcript/autodetect.ts:24`
-
-```
-INPUT MODE (auto-detected, in priority order)
-  1. stdin               When something is piped on stdin (no TTY).
-  2. --transcript <path> ...
-  ...
-  --transcript <path>    Path to a ntakker-cli sidecar (.jsonl, .txt, .srt, .vtt).
-  3. autodetect          Newest *.transcript.* file in --recordings-dir
-```
-
-- **Why it's a problem:** (1) Code gives `--transcript` priority over stdin (`index.ts:409` first branch, per AC-CC-8) — help says the opposite. (2) `.srt`/`.vtt` are advertised but `reader.ts` rejects anything except `.jsonl`/`.txt` (exit 66). (3) Autodetect matches any top-level `*.jsonl`/`*.txt`, not `*.transcript.*`. Help is self-declared "single source of truth for end-user usage" (`args.ts:130-131`) — it's the thing users read when the tool behaves unexpectedly.
-- **Suggested fix:** Correct the three statements (or implement srt/vtt if they were intended — types.ts:138 already mentions srt/vtt parsers that don't exist).
-- **Severity:** LOW
-
-### B10. cl100k_base used for models that tokenize with o200k_base (LOW)
-
-- **File:** `tools/convo-coach/src/llm/budget.ts:29-36, 62-70`
-- **Why it's a problem:** `gpt-4o*` and `gpt-4.1*` (the listed OpenAI models) use `o200k_base`, not `cl100k_base`. Counts are systematically off (commonly ~5–15 % high for English, more for non-Latin scripts — relevant given the project's Greek+English transcripts). The 15 % safety margin mostly hides it, but the "real BPE count" claim is inaccurate and the margin is being silently spent on tokenizer mismatch.
-- **Suggested fix:** Select the encoding by model family (`o200k_base` for 4o/4.1/5.x, `cl100k_base` for legacy), or just treat all counts as estimates and say so.
-- **Severity:** LOW
-
-### B11. `isFinal` is parsed but never used — interim/partial lines can duplicate content in the prompt (LOW)
-
-- **Files:** `tools/convo-coach/src/transcript/jsonl.ts:104-106`; no consumer of `isFinal` anywhere in `src/` (checked `window.ts`, `build.ts`, `index.ts`)
-- **Why it's a problem:** ntakker streaming providers emit partial hypotheses (`final: false`) that are superseded by finals. If those partials land in the sidecar/pipe, the prompt contains near-duplicate consecutive lines ("so I was thi" / "so I was thinking…"), inflating token cost and confusing the model. The field is faithfully extracted and then ignored.
-- **Suggested fix:** Filter `isFinal === false` records (or collapse consecutive same-channel partials into the final) in `stageAdvice` before windowing — behind a flag if partials are deemed useful.
-- **Severity:** LOW (depends on what ntakker actually writes to the sidecar; tombstone handling suggests finals-only, but the parser tolerates raw streams)
-
-### B12. Minor robustness nits (LOW)
-
-- `tools/convo-coach/src/index.ts:411`: `process.stdin.isTTY === false` → stdin mode is also selected for `convo-coach < /dev/null` (cron/launchd): immediate EOF yields nothing and exits 0 silently — a no-op success where the user probably wanted autodetect. Consider falling through to autodetect on instant-EOF-with-empty-buffer.
-- `tools/convo-coach/src/index.ts:59-73`: `readVersion()` silently falls back to a hardcoded `'0.1.0'` — will drift from package.json; harmless but the kind of silent default the project forbids elsewhere.
-- `tools/convo-coach/src/config.ts:121-130`: an unreadable (EACCES) `.env` is treated as "tier contributes nothing" with no warning — same silent-config-loss pattern as A9; one stderr line would save a debugging session.
-- `tools/convo-coach/src/output/sidecar.ts:64-69`: `fs.existsSync` probe loop for collision is check-then-act; two concurrent instances can pick the same path. Use `fs.openSync(path, 'wx')` to claim atomically. (Unlikely in practice — LOW.)
-
-### B13. Dependency pins — flags only (not a deep audit)
-
-- **File:** `tools/convo-coach/package.json`
-- **No lockfile** is present in the tool directory (no `package-lock.json` / `pnpm-lock.yaml`): builds are not reproducible and `npm audit` results are non-deterministic. Given the project's dependency-vetting rules (CLAUDE.md `<dependency-vetting>` requires audited, dated pins), commit a lockfile. **(most important item here)**
-- `overrides: { "@anthropic-ai/sdk": "^0.92.0" }` — registry latest is **0.104.x**; a caret on 0.x pins to 0.92.x, so the override freezes a transitive SDK ~12 minors behind. The project convention requires overrides to be documented in `Issues - Pending Items.md` with an expiry condition ("remove once @langchain/anthropic requires ≥X"); verify that entry exists and re-evaluate the pin.
-- Direct pins are within current majors as of 2026-06-12: `@langchain/core ^1.1.0` (latest 1.1.48), `@langchain/openai ^1.4.0` (1.4.7), `@langchain/anthropic ^1.3.0` (1.4.0 — minor behind), `@langchain/google-genai ^2.1.0` (2.1.31), `@langchain/ollama ^1.2.0` (1.2.7), `js-tiktoken ^1.0.0` (1.0.21). Nothing looks dangerous, but `^1.0.0` on js-tiktoken is very loose for a package whose rank data affects budgeting behaviour.
-- Doc mismatch: project `CLAUDE.md` ("Tools" section) says convo-coach streams "via the Vercel AI SDK" — the implementation migrated to LangChain (`stream.ts:4-6`). Update the tool entry and `docs/tools/convo-coach.md`.
-
----
-
 ## Strengths (brief)
 
-**Scope A**
 - Exemplary error surface: locked one-line description + actionable remediation per case, sysexits-aligned exit codes, `printToStderr` single format (`NtakkerError.swift`).
 - Daemonizer follows the Stevens recipe faithfully — pre-fork log-fd open for synchronous error surfacing, `_exit` vs `exit` reasoning documented, fd hygiene correct (`Daemonizer.swift`). (The flaw is *when* it's called — A1 — not *what* it does.)
 - Config resolver: strict no-fallback enforcement with precise `invalidConfigValue` messages, fail-fast credential checks before any audio capture, pre-validated Apple locales for deterministic failures.
 - Permission gate ordering (screen first so one relaunch fixes both) is thoughtful; test-injectable `PermissionGating` protocol.
 - Logging: cached timestamp formatter, runtime-mutable level via `LogLevelBox` without re-bootstrap, 0600/0700 permission discipline everywhere.
 - `SSELineParser` handles CRLF + cancellation propagation cleanly; `AskPromptBuilder` reports exactly what window/truncation was sent for auditability.
-
-**Scope B**
-- Clean typed error hierarchy mirrored to sysexits, shared with the Swift side's conventions.
-- Atomic temp-rename sidecar with frontmatter-first writes (crash leaves a parseable file) and collision suffixes.
-- Lazy tiktoken load; provenance-tracking four-tier config with documented alias map and deliberate empty-clears-lower-tier semantics.
-- stdin generator has careful resource cleanup (`try/finally`, tty fd, timers) and a graceful JSONL→plaintext degradation path.
-- Tolerant JSONL parser with a sensible "all lines failed" wholesale-format error vs per-line skip.
 
 ---
 
@@ -461,21 +271,8 @@ INPUT MODE (auto-detected, in priority order)
 | A7 | No log rotation / size cap | MEDIUM |
 | A8 | Ask HTTP errors reported as `transcriptionProviderUnavailable` | MEDIUM |
 | A9 | Two divergent .env parsers; UI swallows parse errors | MEDIUM/LOW |
-| A10 | Empty-string tier fall-through diverges from convo-coach semantics | LOW |
+| A10 | Empty-string tier fall-through semantics | LOW |
 | A11 | Per-invocation chmods, per-resolve formatter allocations | LOW |
 | A12 | `NTAKKER_ASK_CONTEXT_MINUTES` silent default/clamp on invalid input | LOW |
 | A13 | O(n²) prompt truncation; no Ask timeout/retry tuning | LOW |
 | A14 | Exit-code nits (`pidFileWriteFailed`→66, `staleRecording`→75) | LOW |
-| B1 | Stdin mode: unbounded buffer + O(n²) full re-parse per trigger | HIGH |
-| B2 | Azure default provider falls to 8k-token unknown-model window → silent truncation | HIGH |
-| B3 | One provider error kills the live session; no retries, status discarded | HIGH/MEDIUM |
-| B4 | `appendFileSync` per streaming delta in sidecar writer | MEDIUM |
-| B5 | Full re-tokenization of records on every trigger | MEDIUM |
-| B6 | SIGINT exits 70 (PROVIDER_FAILURE) | MEDIUM |
-| B7 | No change detection — duplicate prompts billed on no-op triggers | MEDIUM |
-| B8 | Silence-only debounce never fires under continuous input | MEDIUM/LOW |
-| B9 | Help text contradicts implementation (priority, srt/vtt, autodetect glob) | LOW |
-| B10 | cl100k_base used for o200k_base models | LOW |
-| B11 | `isFinal` parsed but never used — partials can duplicate prompt content | LOW |
-| B12 | Minor robustness nits (stdin-from-/dev/null, version fallback, silent EACCES, sidecar path race) | LOW |
-| B13 | Dependencies: missing lockfile; stale `@anthropic-ai/sdk` override; "Vercel AI SDK" doc mismatch | flag |

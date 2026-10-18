@@ -19,18 +19,6 @@ Approved: 2026-10-17. The user said "Do the cleanup items". One commit per task.
   - Done. `loadIntoProcess` now throws, and `AppDelegate` logs the error at launch; a malformed file loads nothing, as in the CLI. `read` still returns nil on a bad file. `upsert` quotes values with surrounding whitespace, a `#`, or a leading quote.
 - [x] **T4 (UI-2 / UI-3)** Pause, Resume and Split are unreachable in the popover. Expose them in the status bar while recording, and stop a pause from tearing down the level meters or flashing the stopped UI.
   - Done. Cause of UI-3: `SessionCoordinator.pause()` relayed the engine's own `.stopping` / `.stopped`, and the controller treats `.stopped` as the end of the session (meters torn down, Save / Discard shown) until `.paused` arrives. Those two states are now held back while a pause stops the segment; a new test fails on the old coordinator. The buttons are build-verified only (SwiftUI view in the app target). Manual check: Pause, Resume and Split from the popover.
-- [x] **T5 (convo-coach B1 / B5 / B10 / CC-10 / CC-11)**
-  - Parse stdin records incrementally instead of re-parsing the whole history on every trigger.
-  - Cache token counts per record and for the system prompt.
-  - Use `o200k_base` for the models that use it.
-  - Import the selected provider lazily so `--help` does not load every SDK.
-  - Done.
-    - `JsonlAccumulator` parses one line at a time; `parseJsonl` uses it, and stdin mode keeps a `StdinTranscript` for the session, so each malformed line warns once.
-    - `applyBudget` caches per-record and system-prompt counts.
-    - `encodingForModel` picks `o200k_base` or `cl100k_base`, loaded on demand through `js-tiktoken/lite` (no new dependency).
-    - The provider registry is a set of lazy `import()` loaders, so `buildLanguageModel` is now async.
-    - Measured on 3,000 records: 31.5 ms → 0.14 ms per stdin trigger; `--help` 140 ms → 75 ms.
-    - Tests: 182/182, including 8 new ones; the incremental snapshots are checked against a full re-parse after every line.
 - [x] **T6 (L3)** Delete the dead `LevelMeterView` and `ElapsedTimeView`. Done; neither was referenced anywhere.
 - [x] **T7 (C6)** Bound the M4A recorder's pending-buffer queue.
   - Done. Past 600 queued frames (a minute of audio) the writer is failed as stalled; the failure surfaces from the next `append` / `finalize` as for any encoder error, and the queue is freed. Build-verified plus the existing M4A tests; a stalled `AVAssetWriterInput` cannot be produced in a unit test.
@@ -46,7 +34,7 @@ Approved: 2026-10-17. The user said "Do the cleanup items". One commit per task.
 
 ## Verification
 
-- `swift build` clean, release build green, convo-coach `npm test` green.
+- `swift build` clean, release build green.
 - Full `swift test`: no new failures; T10 should take one failure off the baseline list.
 
 ## Wave result (2026-10-17)
@@ -55,8 +43,7 @@ Approved: 2026-10-17. The user said "Do the cleanup items". One commit per task.
 - **Baseline failures: 11 → 5.**
   - T1 fixed five Gemini REST test bugs; T10 fixed the "Shell env" resolver bug.
   - Still failing: gemini-live API-key test, partNN sidecar naming, SonioxConfigBuilder V1 (XCTest), AudioDownsampler:144, UIErrorPresenter:220.
-- Tests: 522 Swift Testing + 218 UI + 70 XCTest; two full runs in a row were clean apart from those 5. The release build is green, and convo-coach passes 182/182.
-- Measured (convo-coach, T5): 3,000 records, 31.5 ms → 0.14 ms per stdin trigger; `--help` 140 ms → 75 ms.
+- Tests: 522 Swift Testing + 218 UI + 70 XCTest; two full runs in a row were clean apart from those 5. The release build is green.
 - Build-verified only:
   - T4: the popover buttons.
   - T7: the M4A stall cap.

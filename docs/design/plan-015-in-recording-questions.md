@@ -114,8 +114,7 @@ Determinism guarantee (NFR-IRQ-Export-Determinism).
 ### Phase 4 — Q&A LLM integration
 
 Add `QASessionHistory` model + `QAService` in `MacrecCore`. Wire the eight
-standard providers via vendor-canonical env vars (matches `convo-coach`
-provider set; reuse its `LLMClient` abstraction). Streaming answers into the
+standard providers via vendor-canonical env vars. Streaming answers into the
 Asking pane. Privacy disclosure on first cloud invocation (FR-IRQ-18).
 No-fallback on missing key (FR-IRQ-19). Q&A sidecar persistence on Stop
 (FR-IRQ-14, FR-IRQ-15).

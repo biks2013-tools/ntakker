@@ -27,14 +27,13 @@
 - SRT / VTT / TXT sidecars are not read; JSONL is the source.
 
 
-### EVAL-2026-10-16 — Quality / speed / resource-efficiency scan: 74 new findings registered
+### EVAL-2026-10-16 — Quality / speed / resource-efficiency scan: 62 new findings registered
 **RESOLUTION UPDATE (2026-10-17) — plan-023 hygiene wave landed** ([docs/plans/plan-023-eval-2026-10-16-hygiene.md](docs/plans/plan-023-eval-2026-10-16-hygiene.md)):
 - **Fixed, one commit each:**
   - F31 + TR-10 + TR-16: shared HTTP retry policy, `Retry-After` capped at 30 s, half-open breaker re-opens on a failed probe, and Gemini 401/403 trip the breaker.
   - F33: one rewrite engine for the four transcript writers.
   - A9: the app reads `.env` with the CLI's parser.
   - UI-2 / UI-3: Pause, Resume and Split in the popover, with no stopped-state flash on pause.
-  - convo-coach B1 / B5 / B10 / CC-10 / CC-11.
   - L3: dead views deleted.
   - C6: M4A stall cap.
   - C7: split completes forward when the old part fails to finalize.
@@ -61,46 +60,45 @@
 - **Remaining pre-existing failures (11):** Gemini REST ×5, gemini-live, partNN sidecar naming, Shell-env keys, SonioxConfigBuilder V1 policy, AudioDownsampler:144, UIErrorPresenter:220.
 
 **RESOLUTION UPDATE (2026-10-16) — plan-020 transcript-correctness wave landed** ([docs/plans/plan-020-eval-2026-10-16-transcript-correctness.md](docs/plans/plan-020-eval-2026-10-16-transcript-correctness.md)):
-- Fixed, one commit each: INF-1, INF-2 (Soniox reconnect), TR-13 (Azure replay), CC-2, CC-3 (convo-coach), UI-1 (Save bundles every part's and source's sidecars), UI-6 (uncapped session transcript for Ask and Save), TR-6, TR-7 (sanitizer), TR-5 (dual-locale reconciliation), TR-4 (Apple Cloud rotation).
+- Fixed, one commit each: INF-1, INF-2 (Soniox reconnect), TR-13 (Azure replay), UI-1 (Save bundles every part's and source's sidecars), UI-6 (uncapped session transcript for Ask and Save), TR-6, TR-7 (sanitizer), TR-5 (dual-locale reconciliation), TR-4 (Apple Cloud rotation).
 - **New bug found and fixed:** `JSONLTranscriptReader` dropped every segment that had been rewritten via tombstone-and-append (the tombstone shares the id), so Save lost every grown batch segment.
 - The baseline failure "higher-confidence final wins per utterance" now passes. No new failures.
 - Manual checks pending: multi-part Save, and Apple Cloud longer than 60 s.
 
-**RESOLUTION UPDATE (2026-10-16) — plan-019 landed** ([docs/plans/plan-019-eval-2026-10-16-leftovers-and-doc-drift.md](docs/plans/plan-019-eval-2026-10-16-leftovers-and-doc-drift.md)): UI-4 (coordinator events stream now unbounded; regression test fails on the old policy), INF-3 (not reproduced — `test_scripts/ws-resource-timeout-probe.swift`), F17 (Soniox `finish()` returns on the server's `finished` frame, 2 s cap), and the doc drift below (Vercel → LangChain in CLAUDE.md and `docs/tools/convo-coach.md`; CLAUDE.md popover controls corrected; plan-017 T13/T14 ticked). UI-2 itself (unreachable pause/resume/split) stays open.
+**RESOLUTION UPDATE (2026-10-16) — plan-019 landed** ([docs/plans/plan-019-eval-2026-10-16-leftovers-and-doc-drift.md](docs/plans/plan-019-eval-2026-10-16-leftovers-and-doc-drift.md)): UI-4 (coordinator events stream now unbounded; regression test fails on the old policy), INF-3 (not reproduced — `test_scripts/ws-resource-timeout-probe.swift`), F17 (Soniox `finish()` returns on the server's `finished` frame, 2 s cap), and the doc drift below (CLAUDE.md popover controls corrected; plan-017 T13/T14 ticked). UI-2 itself (unreachable pause/resume/split) stays open.
 
-**RESOLUTION UPDATE (2026-10-16) — plan-018 wave 1 landed** ([docs/plans/plan-018-eval-2026-10-16-quick-fixes.md](docs/plans/plan-018-eval-2026-10-16-quick-fixes.md)): CC-1, TR-1, TR-3, INF-4, CAP-4, CAP-5 (not reproduced — downgraded), CAP-7, CAP-8, CAP-10, INF-7, TR-8, TR-9, TR-17 (as an open-path registry), H2 — one commit each; zero new test failures vs `bf69be5`. **Newly documented test-suite facts:** `RecordingSessionTests` spins forever in `HostClockAligner.appendSamples` (pre-existing; makes plain `swift test` look hung — use `--skip NtakkerCoreTests.RecordingSessionTests`); `AudioDownsamplerTests:144` and `UIErrorPresenterTests:220` are pre-existing failures missing from the plan-017 baseline list. Manual check pending: popover Save (T14). Remaining findings stay open per the report.
+**RESOLUTION UPDATE (2026-10-16) — plan-018 wave 1 landed** ([docs/plans/plan-018-eval-2026-10-16-quick-fixes.md](docs/plans/plan-018-eval-2026-10-16-quick-fixes.md)): TR-1, TR-3, INF-4, CAP-4, CAP-5 (not reproduced — downgraded), CAP-7, CAP-8, CAP-10, INF-7, TR-8, TR-9, TR-17 (as an open-path registry), H2 — one commit each; zero new test failures vs `bf69be5`. **Newly documented test-suite facts:** `RecordingSessionTests` spins forever in `HostClockAligner.appendSamples` (pre-existing; makes plain `swift test` look hung — use `--skip NtakkerCoreTests.RecordingSessionTests`); `AudioDownsamplerTests:144` and `UIErrorPresenterTests:220` are pre-existing failures missing from the plan-017 baseline list. Manual check pending: popover Save (T14). Remaining findings stay open per the report.
 
-**Status (2026-10-16).** Read-only re-scan at commit `bf69be5`. Full report: [docs/reference/evaluation-2026-10-16-quality-performance.md](docs/reference/evaluation-2026-10-16-quality-performance.md) (CAP-1…18, TR-1…20, INF-1…15, UI-1…9, CC-1…12 + status of every open EVAL-2026-06-12 finding). Nothing fixed yet.
+**Status (2026-10-16).** Read-only re-scan at commit `bf69be5`. Full report: [docs/reference/evaluation-2026-10-16-quality-performance.md](docs/reference/evaluation-2026-10-16-quality-performance.md) (CAP-1…18, TR-1…20, INF-1…15, UI-1…9 + status of every open EVAL-2026-06-12 finding). Nothing fixed yet.
 
 **Most critical:**
-1. **CC-1** — convo-coach live (stdin) mode unreachable: `process.stdin.isTTY === false` never matches pipes (`undefined`) (`tools/convo-coach/src/index.ts:458`).
-2. **CAP-1 / CAP-2** — `HostClockAligner` ignores incoming PTS when leftover exists (gaps never silence-filled → permanent track offset) and stalls/grows unbounded when one source stalls (`Aligning/HostClockAligner.swift:458-462, 536-566`). Likely root cause of the 2 failing `HostClockAlignerStress` tests.
-3. **TR-1** — concurrent inference on non-thread-safe Parakeet/WhisperKit engines (`maxInFlightPerSource = 2`).
-4. **TR-3** — Azure realtime `finish()` drops the last utterance (no commit / no wait).
-5. **UI-1** — Session Save loses transcript for multi-part / source-split sessions (`SessionExporter.swift:61-90`).
-6. **INF-1 / INF-2 / INF-3** — Soniox reconnect duplicates and loses audio; finish/reconnect race leaks a socket + keepalive; possible forced 5-min WebSocket drop (INF-3 not reproduced 2026-10-16, plan-019 T2 — the resource timeout does not close upgraded sockets).
-7. **INF-4** — daemon `umask(0)` → recordings/transcripts world-writable in `--detach` mode.
+1. **CAP-1 / CAP-2** — `HostClockAligner` ignores incoming PTS when leftover exists (gaps never silence-filled → permanent track offset) and stalls/grows unbounded when one source stalls (`Aligning/HostClockAligner.swift:458-462, 536-566`). Likely root cause of the 2 failing `HostClockAlignerStress` tests.
+2. **TR-1** — concurrent inference on non-thread-safe Parakeet/WhisperKit engines (`maxInFlightPerSource = 2`).
+3. **TR-3** — Azure realtime `finish()` drops the last utterance (no commit / no wait).
+4. **UI-1** — Session Save loses transcript for multi-part / source-split sessions (`SessionExporter.swift:61-90`).
+5. **INF-1 / INF-2 / INF-3** — Soniox reconnect duplicates and loses audio; finish/reconnect race leaks a socket + keepalive; possible forced 5-min WebSocket drop (INF-3 not reproduced 2026-10-16, plan-019 T2 — the resource timeout does not close upgraded sockets).
+6. **INF-4** — daemon `umask(0)` → recordings/transcripts world-writable in `--detach` mode.
 
 **Top efficiency wins:** AEC NLMS ≈1.6 G MAC/s (CAP-3/6/11); on-device STT 7.5–15× wasted compute from 2 s chunks padded to 15/30 s (TR-2) + model reloaded every recording (TR-11); SCStream video frames at display rate (CAP-4); aligner rewrite (C1); level meters at 30 Hz with popover closed (M1/M2/UI-5); Save on main actor (H2 → `moveItem`).
 
-**Doc drift found (fixed 2026-10-16, plan-019 T4):** plan-017 T13/T14 unticked although landed; CLAUDE.md/`docs/tools/convo-coach.md` still say "Vercel AI SDK"; CLAUDE.md advertises popover pause/resume/split which are unreachable (UI-2).
+**Doc drift found (fixed 2026-10-16, plan-019 T4):** plan-017 T13/T14 unticked although landed; CLAUDE.md advertises popover pause/resume/split which are unreachable (UI-2).
 
-### EVAL-2026-06-12 — Application-wide functionality/performance evaluation: 94 findings registered
-**RESOLUTION UPDATE (2026-06-13) — plan-017 waves 1–3 (attack-order items 1, 2, 3).** 16 of 18 planned fixes landed; build green; `convo-coach` 166/166 tests green; changed Swift suites green (TranscriptionManager incl. new F24 regression test, Soniox/SourceSplit, SoftwareAECProcessor, BufferSummer, M4ARecorder/WAVRecorder — 46 tests across the focused runs). See [docs/design/plan-017-eval-fixes-waves-1-3.md](docs/design/plan-017-eval-fixes-waves-1-3.md).
+### EVAL-2026-06-12 — Application-wide functionality/performance evaluation: 81 findings registered
+**RESOLUTION UPDATE (2026-06-13) — plan-017 waves 1–3 (attack-order items 1, 2, 3).** 15 of 17 planned fixes landed; build green; changed Swift suites green (TranscriptionManager incl. new F24 regression test, Soniox/SourceSplit, SoftwareAECProcessor, BufferSummer, M4ARecorder/WAVRecorder — 46 tests across the focused runs). See [docs/design/plan-017-eval-fixes-waves-1-3.md](docs/design/plan-017-eval-fixes-waves-1-3.md).
 - **Wave 1 — data loss (DONE):** F24 (per-source sidecar tag threaded through `rotateSidecar` + new regression test), C4 (strong dispatcher capture in the live tap), F21 (Apple Cloud force-finish re-arms while a final is in flight), F20 (`AppleSpeechSession.finish()` awaits result forwarders), F19 (late-attached streaming session finished + open tasks cancelled on stop), F18 (`TranscriptionManager.stop()` drain races every await against one deadline; sidecar close always runs), H1 (synchronous `.starting` transition closes the double-click start race).
-- **Wave 2 — resilience (DONE):** F9 (Soniox reconnect-with-replay + single terminal error on dead transport), F10/F11/F12 (Azure realtime gates audio behind session config, `isReconnecting` latch, 0/1/4 s backoff), F15 (batch circuit breaker), F13 (Gemini retry + 30 s timeout + key moved to `x-goog-api-key` header), B3 (convo-coach per-trigger error recovery + retryable classification on `ProviderError`).
+- **Wave 2 — resilience (DONE):** F9 (Soniox reconnect-with-replay + single terminal error on dead transport), F10/F11/F12 (Azure realtime gates audio behind session config, `isReconnecting` latch, 0/1/4 s backoff), F15 (batch circuit breaker), F13 (Gemini retry + 30 s timeout + key moved to `x-goog-api-key` header).
 - **Wave 3 — hot-path perf (PARTIAL):** H3/H4 (removed racy `LEVELMETER_RT` static counters + per-buffer locks/logging; per-event transcript logs → `.trace`), F4/F32/F7 (new vDSP-backed `PCMConvert` replaces 5 scalar impls ×3 conventions; WAV encoder bulk-append), C2 (AEC output scratch reuse + C8 vDSP deinterleave), C3 (BufferSummer in-place whole-buffer vDSP sum drops the 3rd allocation), **F1 partial** (`TranscriptionManager.ingest`/`ingestFrame` made `async` to `await buf.append` inline instead of fire-and-forget `Task` — removes the inner reorder seam AND a lost-final-sample race; made `TranscriptionManagerTests.ingestProducesSegment` deterministic, 8/8).
 - **DEFERRED (still pending):** C1 (T17 — aligner ring-buffer rewrite: deferred until the 2 pre-existing `HostClockAlignerStress` failures are fixed to give a green baseline) and the OUTER seam of F1 (T18 — the per-frame `Task { dispatcher.ingestFrame }` in `RecordingSession`'s tap still needs an `AsyncStream`-fed serial consumer per source + teardown rework + a new ordering test). Rationale in plan-017.
-- **Remaining unstarted findings** (everything not listed above — F1, F2, F3, F5, F6, F8, F14, F16, F17, F22, F23, F25–F31, F33, F34; H2, M1–M10, L1–L10; A1–A14; B1, B2, B4–B13; C1, C5–C9) remain open per the detail reports.
+- **Remaining unstarted findings** (everything not listed above — F1, F2, F3, F5, F6, F8, F14, F16, F17, F22, F23, F25–F31, F33, F34; H2, M1–M10, L1–L10; A1–A14; C1, C5–C9) remain open per the detail reports.
 
 **Pre-existing test baseline (unchanged by plan-017) — VERIFIED 2026-06-13 by running baseline `e4cd174` with the changes stashed.** plan-017 adds **zero** new failures (every failure seen with changes applied reproduces identically on baseline). Full pre-existing failing set (all in files plan-017 does not modify, or test-harness bugs): `GeminiRESTTranscriptionProvider` ×5 (stub `handler` niled by `makeProvider()`→`reset()` before `transcribe` → "stub error -1"; + a key-in-URL assertion — F13 moves the key to the `x-goog-api-key` header, failures are pre/post-identical); `SessionCoordinatorTranscriptionIntegration` ×3 (`partNN` expects no `.transcript.` infix; `gemini-live` id; mic-source conflict); `ConfigResolver — live transcription` ×1 (mic-source conflict); `SonioxConfigBuilderTests.testDefaultsMatchNtakkerV1Policy` ×1 (diarize now default-on); `AppleSpeechSessionReconciliation.higher-confidence final wins` ×1 (winner selection); `StreamingTranscriptionPipelineTests.partialDispatchOrdering` ×1 (TCC-dependent); `HostClockAlignerStress` ×2 (gap-fill counts). The two Soniox tests plan-017 momentarily broke during F9 were fixed within F9 and now pass.
 
-**Status (2026-06-12).** A full-source evaluation of the application (capture pipeline, transcription subsystem, UI layer, CLI/infrastructure, convo-coach) at commit `e4cd174` identified **94 findings** (15 high, ~45 medium, rest low). `swift build` is green. Full details with file:line evidence and concrete fixes live in:
+**Status (2026-06-12).** A full-source evaluation of the application (capture pipeline, transcription subsystem, UI layer, CLI/infrastructure) at commit `e4cd174` identified **81 findings** (13 high, ~45 medium, rest low). `swift build` is green. Full details with file:line evidence and concrete fixes live in:
 - [docs/reference/evaluation-2026-06-12-summary.md](docs/reference/evaluation-2026-06-12-summary.md) — consolidated summary, prioritized fix-first list, suggested attack order
 - [docs/reference/evaluation-2026-06-12-capture-pipeline.md](docs/reference/evaluation-2026-06-12-capture-pipeline.md) (C1–C9)
 - [docs/reference/evaluation-2026-06-12-transcription.md](docs/reference/evaluation-2026-06-12-transcription.md) (F1–F34)
 - [docs/reference/evaluation-2026-06-12-ui.md](docs/reference/evaluation-2026-06-12-ui.md) (H1–H4, M1–M10, L1–L10)
-- [docs/reference/evaluation-2026-06-12-cli-convo-coach.md](docs/reference/evaluation-2026-06-12-cli-convo-coach.md) (A1–A14, B1–B13)
+- [docs/reference/evaluation-2026-06-12-cli.md](docs/reference/evaluation-2026-06-12-cli.md) (A1–A14)
 
 **Most critical (data loss / hangs / leaks):**
 1. **F24** — `rotateSidecar` in `--transcribe-source both`: both children open the SAME untagged sidecar file; `createFile` truncates → every post-split transcript corrupted/lost (`Transcription/SourceSplitTranscriptionManager.swift:111-114`, `TranscriptionManager.swift:230-233`).
@@ -112,13 +110,11 @@
 7. **H1** — Double-click Start races two live recording sessions; the orphaned one is unstoppable (`NtakkerUIKit/RecordingController.swift:292-427`).
 8. **H2** — Session Save copies/deletes audio files + parses JSONL synchronously on the main actor → popover freeze (`ntakker/Views/Asking/SessionExporter.swift`).
 9. **A1** — `fork()` after the Swift Concurrency runtime has started; Daemonizer's own precondition violated (`ntakker-cli` `--detach` path).
-10. **B1 / B2 / B3** — convo-coach live mode: O(n²) re-parse per trigger; azure-openai default path silently truncates to an 8k-token assumed window; one transient provider error kills the session.
 
 **Top performance improvements (faster/more efficient):** hot-path allocation elimination (C1 aligner ring buffers, C2 AEC scratch reuse, C3 mixer scratch pool — multi-MB/s of transient allocations); single vDSP-backed PCM conversion replacing 5 scalar implementations ×3 conventions (F4+F32); removal of leftover `LEVELMETER_RT` debug counters/logging with data races on audio queues (H3/H4); 30 Hz level publishing gated on change/visibility (M1/M2); lazy transcript list (M3); ordered single-consumer audio fan-out replacing unstructured per-frame Tasks (F1 — also a latent reordering bug); async batched file logging + rotation (A6/A7); `.env` parsed ~8× per Start click (M8).
 
 **Cross-cutting refactors:** shared HTTP retry policy (F31), shared byte-range rewriting sidecar writer (F33), one provider→env-key table for UI key badges (L10), unify the two divergent `.env` parsers (A9).
 
-**Doc/dependency hygiene:** convo-coach has no lockfile committed; `@anthropic-ai/sdk ^0.92.0` override is ~12 minors behind without a registered expiry condition; CLAUDE.md still says convo-coach uses "Vercel AI SDK" while the implementation is LangChain (B13); convo-coach `--help` contradicts the implementation in three places (B9).
 
 ### PLAN-015-PHASE-2..6 — In-recording Q&A + Pattern C popover redesign
 **Status (2026-05-13).** Phase 1 (pure UI shell) landed. The popover now renders the Pattern-C target-state visual layout: top `Transcription | Asking` segmented switch, default-collapsed Engine & Language section, Asking-mode body with empty-state + bottom-pinned input row, bottom status bar with bouncing mic/sys bars + state pill + clock + action area, post-stop `[ New Session ][ Save… ]` pair, New-Session 3-option confirm modal, Save dialog with folder-name input + path preview + file-list. Resizable in both axes within 440-760 × 440-820 bounds; default width 480 pt. Builds cleanly (`swift build` green).
@@ -126,7 +122,7 @@
 **Remaining work (per [docs/design/plan-015-in-recording-questions.md](docs/design/plan-015-in-recording-questions.md) roadmap):**
 - **Phase 2 — Save flow → real folder write.** Wire the Save dialog's `onConfirm` to a real `~/Recordings/<folder>/` write (`transcript.md`, `qa.md`, `recording-001.m4a`). Atomic `.tmp` + rename. Collision handling (Replace / Append-timestamp / Cancel). Saved toast with Finder-reveal click. Reuse `RecordingController.completedSegments` for the audio file.
 - **Phase 3 — `TranscriptExporter` module + CLI.** New `Sources/MacrecCore/Export/TranscriptExporter.swift`. Markdown layout per FR-IRQ-29 (interleaved speech + Q&A blockquotes). `macrec export --session <id> --folder <path>` (FR-IRQ-33, FR-IRQ-54). Determinism guarantee.
-- **Phase 4 — Q&A LLM integration.** Lift `AskingSessionStore` into `MacrecCore` as `QASessionHistory`. Wire eight standard providers (reuse `convo-coach`'s LLM client patterns + vendor-canonical env vars). Streaming answers. Privacy disclosure on first cloud invocation (FR-IRQ-18). No-fallback on missing key. Q&A sidecar persistence on Stop (FR-IRQ-14, FR-IRQ-15).
+- **Phase 4 — Q&A LLM integration.** Lift `AskingSessionStore` into `MacrecCore` as `QASessionHistory`. Wire eight standard providers (vendor-canonical env vars). Streaming answers. Privacy disclosure on first cloud invocation (FR-IRQ-18). No-fallback on missing key. Q&A sidecar persistence on Stop (FR-IRQ-14, FR-IRQ-15).
 - **Phase 5 — Global hotkey + floating overlay.** Register `⌥⇧Space` (FR-IRQ-1, FR-IRQ-16). Build the frameless `NSWindow` floating Ask overlay (FR-IRQ-3). Share `QASessionHistory` with the popover (FR-IRQ-38).
 - **Phase 6 — Refinements + acceptance gate.** Engine & Language collapsed-summary row (Engine • Language • Source • ▾) per FR-IRQ-44a. `clearSession()` step 7 (auto-restart recording). Visual-continuity screenshot test (AC-IRQ-Pat-C-4). Latency budgets. 10-question audio-non-blocking stress test (NFR-IRQ-Audio-Non-Blocking).
 
@@ -251,29 +247,6 @@ Multiple `#Preview { … }` macro blocks in the `macrec-ui` executable target (`
 - past cap, late `.segmentFinalized` for an evicted utterance re-appears once at the tail with the final text.
 
 End-to-end `swift test` execution is currently gated by ENV-PENDING-1 above; the user is verifying the fix in real use.
-
-### PLAN-011-CC-PENDING-5 — convo-coach `Unknown model` warning for current models (cosmetic)
-The `model-context-windows.ts` lookup table does not include several current models (notably `gpt-5.1`, `gpt-5`, `gpt-5-mini`). When the user passes `--model gpt-5.1` the budget guard logs `Unknown model 'gpt-5.1' — assuming 8000-token context window` and falls back to a conservative 8000-token budget. Advice still works (the budget guard truncates more aggressively than necessary), but the warning is noisy and the truncation may be over-aggressive on long transcripts. Recommendation: extend the table with current OpenAI / Anthropic / Google model IDs in a small follow-up. Severity: cosmetic (no functional impact for short transcripts).
-
-### PLAN-011-CC-PENDING-1 — convo-coach SRT/VTT parsers + autodetect coverage missing (important)
-Phase 7 code review (2026-05-02) found that the implementation deviates from plan-011 (§U4 file list lines 131-132, §"NEW" file list 519-521) and design CC-DSGN-6 ("`src/transcript/txt.ts, srt.ts, vtt.ts` (U4)"). Only `.jsonl` and `.txt` are wired:
-- `tools/convo-coach/src/transcript/reader.ts:17` — `SUPPORTED_EXTENSIONS = ['.jsonl', '.txt']` (no `.srt` / `.vtt`).
-- `tools/convo-coach/src/transcript/autodetect.ts:24` — same restriction; AC-CC-7 wording ("most recent `*.transcript.{jsonl,txt,srt,vtt}` sidecar") is therefore only partially satisfied.
-- FR-CC-4 explicitly mandates SRT/VTT best-effort parsing including channel tags (`EN: …` / `<v EN>…</v>`).
-The user-facing tool docs (`docs/tools/convo-coach.md`) only document `.jsonl`/`.txt`, so the gap is internally consistent across docs+code, but it is a documented deviation from the refined request. Recommendation: implement `srt.ts` and `vtt.ts` parsers in a small follow-up lane and broaden `SUPPORTED_EXTENSIONS` in both `reader.ts` and `autodetect.ts`, or have integration verification (Phase 10) explicitly accept the narrowed scope by amending the refined request and AC-CC-7. Severity: important (does not block dev install / smoke; affects AC-CC-7 strict pass).
-
-### PLAN-011-CC-PENDING-2 — convo-coach orchestrator drops several design-listed CLI flags (nice-to-have)
-Design CC-DSGN-5's `CliArgs` type lists: `adviceOut`, `adviceBasename`, `language`, `logLevel`, `showConfig`. The implementation in `tools/convo-coach/src/types.ts:118-130` ships a slimmer set (no `--advice-out`, `--advice-basename`, `--language`, `--log-level`, `--show-config`). Effects:
-- FR-CC-11 sidecar-output overrides for stdin mode (`--advice-out <dir>` / `--advice-basename <stem>`) are not exposed; the orchestrator hard-codes the recordings-dir + `convo-coach-stdin` stem in `index.ts:308-316`.
-- FR-CC-12 `--language <bcp-47>` hint is missing.
-- FR-CC-14 `--log-level` is missing; logging always goes to stderr at info level via `process.stderr.write` (still per the spirit of NFR-CC-6 — no API keys are logged).
-Help text in `args.ts:133-196` does not advertise these flags either, so end users have no expectation gap. Severity: nice-to-have (no AC-CC-* directly fails — AC-CC-15 is observed; the missing flags are only enumerated in design CliArgs, not in the AC table).
-
-### PLAN-011-CC-PENDING-3 — convo-coach stdin precedence inverted vs FR-CC-3 (nice-to-have)
-`tools/convo-coach/src/index.ts:407-416` resolves explicit `--transcript` BEFORE checking `process.stdin.isTTY === false`. FR-CC-3 §1 specifies the opposite — stdin should win even when `--transcript` is supplied, with a stderr warning. AC-CC-8 only requires stdin to be consumed when no `--transcript` is supplied, so the AC technically passes; integration verifier should confirm whether to treat the FR-CC-3 wording or AC-CC-8 wording as authoritative. Severity: nice-to-have (clarification, not a defect).
-
-### PLAN-011-CC-PENDING-4 — convo-coach internal-invariant throws use plain Error (cosmetic)
-`tools/convo-coach/src/output/sidecar.ts:182, 190, 219` throw `new Error(...)` for SidecarWriter post-close calls and rename failures. These are internal-invariant programming-error paths (write/append after close, or fs rename failure) so they are arguably acceptable per the project's "internal invariant failure that should bubble up uncategorised" carve-out, but tightening them to `ConvoCoachError('GENERIC', …)` would route them through the consistent exit-code mapping in `runCli`. Severity: cosmetic.
 
 ### PLAN-010-PENDING-L11-WIRING — Per-channel metrics polling wiring (deferred per Phase 7 + Phase 10 verification — non-blocking, follow-up lane recommended)
 Phase 7 review (2026-05-01) and Phase 10 integration verification (2026-05-01) both confirmed this entry remains the right shape — the recommended fix (Option 1: add `TranscriptionEvent.dualMetricsTick(DualChannelMetrics)` emitted by `DualTranscriptionManager`, forwarded through `SessionCoordinator` to `RecordingController.applyDualMetrics(_:)`) requires touching `RecordingSession.swift` / `SessionCoordinator.swift` + the four sidecar writers' exhaustive switches over `TranscriptionEvent`. Deferred to a follow-up lane after Phase 10 ship. Until it lands, `DualTranscriptionMetricsView` renders `EmptyView()` at runtime in dual-mode sessions (the row is invisible). All other dual-mode UI surfaces work; only the per-channel metrics rows are dark. Phase 10 impact on AC-9: PARTIAL — slot exists, producer does not.
@@ -1376,39 +1349,6 @@ posture and ships full speaker support across the Soniox stack:
 Closes OQ-SX-3 (project-functions.md §1647). All paths preserve DT-INV
 byte-equivalence for non-diarized output (Sidecar 64/64, Persistence
 6/6, Soniox 35/35 suites green).
-
-### PLAN-011-CC-REFACTOR-LANGCHAIN — convo-coach LLM stack swapped from Vercel AI SDK to LangChain.js (Closed 2026-05-02)
-
-User requested replacing the Vercel AI SDK with LangChain.js. **Straight swap with the same 8-provider surface preserved.** Removed `ai@^6` + `@ai-sdk/openai` + `@ai-sdk/anthropic` + `@ai-sdk/google` + `@ai-sdk/azure` + `@ai-sdk/openai-compatible`. Added `@langchain/core@^1.1` + `@langchain/openai@^1.4` + `@langchain/anthropic@^1.3` + `@langchain/google-genai@^2.1` + `@langchain/ollama@^1.2`. js-tiktoken kept for OpenAI-family token counting.
-
-Changes:
-- `tools/convo-coach/src/types.ts` — `LanguageModel` re-export now imports `BaseChatModel` from `@langchain/core/language_models/chat_models` (was `import type { LanguageModel } from 'ai'`).
-- `tools/convo-coach/src/llm/providers/*.ts` (all 8) — rewritten to instantiate `ChatOpenAI` / `AzureChatOpenAI` / `ChatAnthropic` / `ChatGoogleGenerativeAI` / `ChatOllama` directly. Provider routing preserved: 5 OpenAI-compat providers (openai, azure-openai-v1-mode, azure-ai-inference, litellm, mlx) all use `ChatOpenAI` with appropriate `apiKey` + `configuration.baseURL`; `azure-openai` legacy mode uses `AzureChatOpenAI`; `ollama` uses dedicated `ChatOllama` (native `/api/...` paths, no `/v1` suffix needed).
-- `tools/convo-coach/src/output/stream.ts` — `runOneAdvice` rewritten: `streamText({...}).textStream` → `model.stream([SystemMessage, HumanMessage])` returning `AsyncIterable<AIMessageChunk>`; aggregates chunks via `concat()` from `@langchain/core/utils/stream`; usage metadata pulled from final aggregated chunk's `usage_metadata` (snake-case fields `input_tokens`/`output_tokens`/`total_tokens` projected onto our flat camelCase `AdviceUsage` shape). AbortSignal flows through `model.stream(messages, { signal })`.
-- `tools/convo-coach/test/llm-factory-smoke.test.ts` — fixture-only updates (no logic change).
-- `tools/convo-coach/test/output-sinks.test.ts` — `runOneAdvice` stub simplified from a complex `doStream` + `ReadableStream` shape to a plain `async function* () { yield { content, usage_metadata? } }` generator. The previously-skipped "Implementation gap" assertion now runs and passes (full shape + collected text + usage metrics asserted).
-- `tools/convo-coach/package.json` — `overrides: { "@anthropic-ai/sdk": "^0.92.0" }` added to clear an upstream moderate-severity advisory (Anthropic SDK's filesystem-memory tool, which `convo-coach` doesn't use).
-
-Verified: `npx tsc --noEmit` 0 errors; `npm test` 166/166 pass; `npm audit` 0 vulnerabilities; end-to-end smoke against the user's `gpt-5.1` Azure deployment streams 30 lines of advice (584/424/1008 tokens, 1.30 s TTFT, 4.51 s latency, exit 0). Public CLI / env-var / exit-code surface unchanged. Sidecar format unchanged. Four-tier config resolver unchanged.
-
-### PLAN-011-CC-FIX-CONFIG-EMPTY-OVERRIDE — convo-coach config resolver "delete-on-empty" semantic (Closed 2026-05-02)
-
-When the user uncommented `AZURE_OPENAI_API_VERSION=` (empty) in `~/.tool-agents/convo-coach/.env` to override their shell-exported `AZURE_OPENAI_API_VERSION=2024-12-01-preview`, the tool kept reading the shell value. Root cause: `loadConfig`'s `applyTier` skipped empty-string values (`if (raw === undefined || raw === '') continue;`), so a tier-2 empty assignment never wiped a tier-1 set value. **Fix**: changed the semantic so empty strings at any tier explicitly DELETE the key from the resolver's working map (clearing whatever a lower tier contributed) without contributing a value of their own. Now:
-- Shell sets `KEY=value` + .env sets `KEY=` (empty) → resolver returns `undefined` (correct override).
-- Shell sets `KEY=` (empty) only → resolver returns `undefined` (unchanged behavior — the existing test still passes).
-- Shell sets `KEY=value` + .env unsets the line → resolver returns `value` (unchanged).
-
-Added new test `config: empty string at tier-2 wipes the shell value (delete-on-empty override)`. All 166 tests pass. Verified end-to-end: with the user's shell still exporting `AZURE_OPENAI_API_VERSION=2024-12-01-preview`, an empty `.env` override now correctly routes to Azure's v1 GA endpoint, gpt-5.1 streams cleanly (586/438/1024 tokens). Documented in the .env template comment that this is the intended override mechanism.
-
-### PLAN-011-CC-FIX-AZURE-V1 — convo-coach Azure provider switched to v1 GA API (Closed 2026-05-02)
-
-User reported `error: stream failed: API version not supported` when running `convo-coach --provider azure-openai --model gpt-5.1` against the existing shell environment (`AZURE_OPENAI_API_VERSION=2024-12-01-preview`). Root cause: Azure GA'd a new `/openai/v1/...` endpoint in August 2025 that does not accept dated api-versions. The provider was always passing `apiVersion` to `createAzure`, which forced the SDK to append `?api-version=2024-12-01-preview` to v1 URLs — Azure rejected the call. **Fix** (in `tools/convo-coach/src/llm/providers/azure-openai.ts`): made `AZURE_OPENAI_API_VERSION` optional and auto-paired with `useDeploymentBasedUrls`:
-- When unset → SDK defaults to `'v1'` and routes to `/openai/v1/...` (correct path for current models including gpt-5.x).
-- When set → also enables `useDeploymentBasedUrls: true` so the provider switches to the legacy `/openai/deployments/<id>/...?api-version=<x>` URL pattern (correct for older deployments that still need a dated api-version).
-
-Updated docs: `docs/tools/convo-coach.md` Azure OpenAI section now marks `AZURE_OPENAI_API_VERSION` as Optional with a migration tip; `~/.tool-agents/convo-coach/.env` template now explains the v1 GA default. Added new test `buildLanguageModel: azure-openai builds without AZURE_OPENAI_API_VERSION (v1 GA default)`. Test suite: 165/165 pass (was 164). Verified end-to-end with the user's actual gpt-5.1 deployment: v1 mode (api-version unset) returns exit 0 with full advice streamed (1049 tokens, 1.4 s TTFT, 5.4 s latency). Legacy mode (api-version set) returns the appropriate "Resource not found" / "API version not supported" error with exit 70 depending on deployment vintage.
-
-**User action required to take advantage of the fix**: `unset AZURE_OPENAI_API_VERSION` in your shell profile (or set it to empty in `~/.tool-agents/convo-coach/.env`) before running `convo-coach --provider azure-openai`. Otherwise the legacy URL pattern stays active.
 
 ### PLAN-010 — Dual-provider live transcription mode (Closed 2026-05-01)
 

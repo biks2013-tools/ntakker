@@ -19,7 +19,7 @@
   2. `~/.tool-agents/<tool-name>/.env` (auto-created mode 0700, .env mode 0600 on first run).
   3. Local `.env`.
   4. CLI flags.
-- **No fallbacks for missing config** (raise descriptive errors). Sole approved exception: `convo-coach`'s `COACH_PROVIDER` default to `azure-openai` (Exception 003 — provider selection only, NOT credentials).
+- **No fallbacks for missing config** (raise descriptive errors).
 - LLM env vars use vendor-canonical names — never tool-prefixed.
 
 ## Documentation rules (CLAUDE.md)

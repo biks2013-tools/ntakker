@@ -26,7 +26,7 @@ in an app is the CLI's default too, and flags still override it per run.
   `NTAKKER_TRANSCRIBE_SOURCE`, `NTAKKER_TRANSCRIBE_FORMAT`,
   `NTAKKER_TRANSCRIBE_LANGUAGE` (comma-separated).
 - New keys: `NTAKKER_RECORDINGS_DIR` (folder ntakker records into, the studio's
-  library, convo-coach's recordings folder) and `NTAKKER_STUDIO_ECHO_STRENGTH`
+  library) and `NTAKKER_STUDIO_ECHO_STRENGTH`
   (0–1), `NTAKKER_STUDIO_ECHO_SUPPRESSION` (`off` / `low` / `high`),
   `NTAKKER_STUDIO_ECHO_ADAPTATION` (`stable` / `fast`). Unset echo keys mean
   1 / off / fast.

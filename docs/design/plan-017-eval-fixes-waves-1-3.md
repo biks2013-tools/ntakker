@@ -2,7 +2,7 @@
 
 **Specification source (authoritative):**
 - `docs/reference/evaluation-2026-06-12-summary.md` (suggested attack order, items 1–3)
-- Detail reports: `evaluation-2026-06-12-capture-pipeline.md` (C*), `evaluation-2026-06-12-transcription.md` (F*), `evaluation-2026-06-12-ui.md` (H*/M*/L*), `evaluation-2026-06-12-cli-convo-coach.md` (A*/B*)
+- Detail reports: `evaluation-2026-06-12-capture-pipeline.md` (C*), `evaluation-2026-06-12-transcription.md` (F*), `evaluation-2026-06-12-ui.md` (H*/M*/L*), `evaluation-2026-06-12-cli.md` (A*)
 - Registered as `EVAL-2026-06-12` in `Issues - Pending Items.md`.
 
 **Baseline (commit `e4cd174`) pre-existing test failures — VERIFIED 2026-06-13 by running the baseline with this plan's changes stashed.** `swift build` green. **This plan adds ZERO new failures**: every failure observed with the changes applied reproduces identically on the clean baseline. The pre-existing set (each in a file this plan does not modify, or a test-harness bug):
@@ -18,7 +18,7 @@ No task below may add a NEW failure beyond this baseline. (The two Soniox tests 
 
 **Note on F9 (T8):** the receive-loop fix makes a mid-session transport drop *reconnect* (when a `transportFactory` is present — always true via the provider) rather than emit a per-chunk error. To keep operator visibility (and satisfy `SonioxIntegrationTests.testTransportReceiveErrorIsNonFatalThroughPipeline`), a SINGLE transient `.error(detail: "… — reconnecting")` is emitted per drop (mirrors Azure realtime), not per chunk.
 
-**Execution rules:** one task at a time; `swift build` + targeted tests after each task; commit after each task (standing user authorization for plan execution). convo-coach tasks use `npm` build/tests inside `tools/convo-coach/`.
+**Execution rules:** one task at a time; `swift build` + targeted tests after each task; commit after each task (standing user authorization for plan execution).
 
 ---
 
@@ -62,9 +62,6 @@ No task below may add a NEW failure beyond this baseline. (The two Soniox tests 
 - [x] **T11 (F13)** Gemini: no retry, no timeout, API key in URL query.
   File: `Providers/GeminiRESTTranscriptionProvider.swift`. Fix: `timeoutInterval = 30`, retry on 429/5xx/transient URLError (mirror Azure batch policy), move key to `x-goog-api-key` header.
 
-- [x] **T12 (B3)** convo-coach: one transient provider error kills the live session.
-  Files: `tools/convo-coach/src/index.ts` (stdin loop), `src/output/stream.ts` (preserve status/class on ProviderError).
-  Fix: per-trigger catch — log, footer, continue; exit only on ConfigError/UsageError or N consecutive failures; bounded backoff for 429/5xx/network.
 
 ## Wave 3 — Hot-path performance
 
@@ -92,5 +89,4 @@ No task below may add a NEW failure beyond this baseline. (The two Soniox tests 
 ## Acceptance
 
 - `swift build` green after every task; full `swift test` at the end of each wave with no NEW failures vs baseline.
-- convo-coach: `npm run build` (tsc) green + existing tests pass after T12.
 - Each completed task: commit referencing the finding IDs; tick the checkbox here; move the corresponding finding toward resolution in `Issues - Pending Items.md` at wave boundaries.

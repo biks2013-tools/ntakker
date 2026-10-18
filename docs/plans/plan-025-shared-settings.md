@@ -10,7 +10,7 @@ Decisions with the user: one shared Settings in each app (every shared setting, 
 
   | Key | Was (app preference) | Meaning |
   |---|---|---|
-  | `NTAKKER_RECORDINGS_DIR` | `com.ntakker-cli.ui.outputFolder`, studio `studio.libraryFolder` | Where ntakker saves and the studio reads recordings (convo-coach's name). |
+  | `NTAKKER_RECORDINGS_DIR` | `com.ntakker-cli.ui.outputFolder`, studio `studio.libraryFolder` | Where ntakker saves and the studio reads recordings. |
   | `NTAKKER_FORMAT` | `…ui.format` | m4a / wav / caf |
   | `NTAKKER_LAYOUT` | `…ui.layout` | mixed / split / stereo-split |
   | `NTAKKER_MIC_DEVICE` | `…ui.micUID` (`__default__` → unset) | Mic device UID; unset = system default |
