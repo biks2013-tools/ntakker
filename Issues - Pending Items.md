@@ -1305,6 +1305,12 @@ Plan-002 dispatches Phase F (quit-while-recording flow) and Phase G (error-mappi
 
 ## Completed items
 
+### TEST-FLAKE-2026-10-18 (RESOLVED 2026-10-18) — FakeAudioSource skip / PTS-jump tests failed under a full test run
+
+- **Issue:** `skipNextEmission produces a one-tick PTS gap` and `injectPTSJump shifts subsequent PTS by the requested delta` failed in the ntakker-cli 0.2.0 release gate (e.g. "Expected one PTS diff ~1.005s after the jump, got [0.005, 0.005, 0.005]") and passed when run alone.
+- **Cause:** the tests injected the skip / jump after buffer 2 and then waited for buffer 4. Under load the waiting thread woke several 5 ms ticks late, so buffer 4 had already been collected before the injection and the gap was never observed.
+- **Fix:** `Tests/NtakkerCoreTests/FakeAudioSourceTests.swift` now records the buffer count at the injection and waits for three buffers emitted after it. Three full `NtakkerCoreTests` runs: only the known baseline failures.
+
 ### PLAN-012-PHASE-C — True source-split transcription (Closed 2026-05-02)
 
 Plan-012 Phase C lifts the v1 `--transcribe-source both` limitation.

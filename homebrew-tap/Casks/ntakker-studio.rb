@@ -1,6 +1,6 @@
 cask "ntakker-studio" do
-  version "0.2.0"
-  sha256 "97dd077cea68b2ea4923dd9d8011675344fbf8bf89f1434ece6de8b369bdd2e8"
+  version "0.3.0"
+  sha256 "879d1df1ab314322674040a52897961bb639207d5e79a8e7d66707ad00a4ec73"
 
   url "https://github.com/biks2013-tools/ntakker/releases/download/ntakker-studio-v#{version}/ntakker-studio-#{version}.zip"
   name "ntakker studio"
@@ -25,9 +25,8 @@ cask "ntakker-studio" do
   ]
 
   caveats <<~EOS
-    ntakker studio opens the recordings ntakker saved. On first launch it uses
-    ntakker's recording folder, or asks you to choose one.
-    Ask, minutes and re-transcription use ntakker's settings in
-    ~/.tool-agents/ntakker/.env (NTAKKER_ASK_PROVIDER and the provider's key).
+    ntakker studio opens the recordings ntakker saved (NTAKKER_RECORDINGS_DIR).
+    It shares one settings file with ntakker and ntakker-cli:
+    ~/.tool-agents/ntakker/.env (Ask provider, keys, echo filter).
   EOS
 end

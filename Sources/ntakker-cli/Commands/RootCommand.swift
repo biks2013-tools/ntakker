@@ -23,7 +23,7 @@ public struct RootCommand: AsyncParsableCommand {
     public static let configuration = CommandConfiguration(
         commandName: "ntakker-cli",
         abstract: "macOS system audio + microphone recording tool.",
-        version: "0.1.1",
+        version: "0.2.0",
         subcommands: [
             StartCommand.self,
             StopCommand.self,

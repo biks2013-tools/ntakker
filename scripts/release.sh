@@ -142,7 +142,8 @@ cask "ntakker" do
   caveats <<~EOS
     ntakker lives in the menu bar (no Dock icon). On the first recording macOS
     asks for Microphone and Screen Recording (system audio); allow both.
-    Settings and provider keys are kept in ~/.tool-agents/ntakker/.env.
+    Settings and provider keys are kept in ~/.tool-agents/ntakker/.env,
+    shared with ntakker studio and ntakker-cli.
     Companion apps: brew install --cask $TAP_NAME/ntakker-studio
                     brew install --cask $TAP_NAME/ntakker-cli
   EOS
@@ -177,10 +178,9 @@ cask "ntakker-studio" do
   ]
 
   caveats <<~EOS
-    ntakker studio opens the recordings ntakker saved. On first launch it uses
-    ntakker's recording folder, or asks you to choose one.
-    Ask, minutes and re-transcription use ntakker's settings in
-    ~/.tool-agents/ntakker/.env (NTAKKER_ASK_PROVIDER and the provider's key).
+    ntakker studio opens the recordings ntakker saved (NTAKKER_RECORDINGS_DIR).
+    It shares one settings file with ntakker and ntakker-cli:
+    ~/.tool-agents/ntakker/.env (Ask provider, keys, echo filter).
   EOS
 end
 CASKEOF
@@ -208,7 +208,8 @@ cask "ntakker-cli" do
   caveats <<~EOS
     Run: ntakker-cli start --output ~/Recordings/test.m4a   (Ctrl-C stops)
     macOS asks your terminal app for Microphone and Screen Recording access
-    on the first recording. Settings: ~/.tool-agents/ntakker-cli/.env.
+    on the first recording. Settings (shared with ntakker and ntakker studio):
+    ~/.tool-agents/ntakker/.env.
   EOS
 end
 CASKEOF

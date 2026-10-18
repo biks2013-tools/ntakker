@@ -188,28 +188,37 @@ struct FakeAudioSourceTests {
         // Strategy: collect all 4 in one pass, inject the skip after the
         // second one lands using a separate GCD semaphore.
 
+        // Under a loaded test run the waiter can wake several ticks after
+        // buffer 2, so "buffer 4" may already precede the injection. Wait
+        // instead for three buffers emitted after it (one tick may already be running) (`target`, set when
+        // injecting).
         var allBuffers: [CaptureBuffer] = []
+        var target = Int.max
         let lock = NSLock()
         let got2 = DispatchSemaphore(value: 0)
-        let got4 = DispatchSemaphore(value: 0)
+        let gotAfter = DispatchSemaphore(value: 0)
 
         source.onSampleBuffer = { cb in
             lock.lock()
             allBuffers.append(cb)
             let n = allBuffers.count
+            let reached = n == target
             lock.unlock()
             if n == 2 { got2.signal() }
-            if n == 4 { got4.signal() }
+            if reached { gotAfter.signal() }
         }
 
         try await source.start()
 
         // Wait for buffer 2, then inject skip.
         _ = got2.wait(timeout: .now() + 2.0)
+        lock.lock()
         source.skipNextEmission()
+        target = allBuffers.count + 3
+        lock.unlock()
 
-        // Wait for buffer 4.
-        _ = got4.wait(timeout: .now() + 2.0)
+        // Wait for three buffers after the skip.
+        _ = gotAfter.wait(timeout: .now() + 2.0)
 
         lock.lock()
         let collected = allBuffers
@@ -255,24 +264,33 @@ struct FakeAudioSourceTests {
         )
         defer { Task { await source.stop() } }
 
+        // Under a loaded test run the waiter can wake several ticks after
+        // buffer 2, so "buffer 4" may already precede the injection. Wait
+        // instead for three buffers emitted after it (one tick may already be running) (`target`, set when
+        // injecting).
         var allBuffers: [CaptureBuffer] = []
+        var target = Int.max
         let lock = NSLock()
         let got2 = DispatchSemaphore(value: 0)
-        let got4 = DispatchSemaphore(value: 0)
+        let gotAfter = DispatchSemaphore(value: 0)
 
         source.onSampleBuffer = { cb in
             lock.lock()
             allBuffers.append(cb)
             let n = allBuffers.count
+            let reached = n == target
             lock.unlock()
             if n == 2 { got2.signal() }
-            if n == 4 { got4.signal() }
+            if reached { gotAfter.signal() }
         }
 
         try await source.start()
         _ = got2.wait(timeout: .now() + 2.0)
+        lock.lock()
         source.injectPTSJump(by: jumpDelta)
-        _ = got4.wait(timeout: .now() + 2.0)
+        target = allBuffers.count + 3
+        lock.unlock()
+        _ = gotAfter.wait(timeout: .now() + 2.0)
 
         lock.lock()
         let collected = allBuffers
