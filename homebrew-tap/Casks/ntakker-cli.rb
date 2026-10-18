@@ -1,6 +1,6 @@
 cask "ntakker-cli" do
-  version "0.2.0"
-  sha256 "1dff4130d6604d459de0eb244d1483832dd7916cc1f6afccc64b481a2a90e64a"
+  version "0.2.1"
+  sha256 "b3bb49da464abd79bd0451357f0073ffa17c477f2b44e04417c9f410150dfb45"
 
   url "https://github.com/biks2013-tools/ntakker/releases/download/ntakker-cli-v#{version}/ntakker-cli-#{version}.zip"
   name "ntakker-cli"
