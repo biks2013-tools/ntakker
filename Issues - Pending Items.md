@@ -6,8 +6,14 @@
 
 ## Pending items (most critical first)
 
+### Studio meeting matching — open items (2026-10-18)
+- **Long recordings across back-to-back meetings** are flagged ("spans several meetings") but stay one recording; splitting one into per-meeting copies at the meeting boundaries (with the Cut export) is not offered yet.
+- **Linking from the app was not clicked through live** (it writes `<stem>.studio.json` into the user's library); the save/load round trip is unit-tested and *Find in Calendar* was checked live.
+- **Calendar command needs a full path** when the studio is started from the Dock (short PATH). Documented; the studio does not search for the program.
+- **Recording start comes from the audio file's creation date** when `studio.json` has no `audioStart`; a copied file gets a new date and would match the wrong day.
+
 ### plan-025 shared settings — open items (2026-10-17)
-- **Concurrent writes can lose a change.** `EnvFileStore.upsert` reads, edits and rewrites the whole file; two writers at the same instant (two apps, or an app and an editor) can drop one update. Seen once in testing. Fix if it matters: a file lock (`flock`) around read-modify-write.
+- **Concurrent writes can lose a change.** `EnvFileStore.upsert` reads, edits and rewrites the whole file; two writers at the same instant (two apps, or an app and an editor) can drop one update. Not observed: the "lost line" seen in testing on 2026-10-17 was the missing-final-newline bug (resolved 2026-10-18, below). Fix if it matters: a file lock (`flock`) around read-modify-write.
 - **Behaviour change for the CLI:** it now follows the apps' choices (format, layout, mic, transcription provider) because it reads the shared file. Flags still override.
 - **Provider panes read the file when shown**, not live; a change made in the other app shows after switching panes. The Recording / Transcription / Studio panes and the popover update live.
 - Manual check pending: launch the new ntakker once (it copies its preferences into the file), then confirm the popover, the studio's Settings and `ntakker-cli start` agree.
@@ -1277,6 +1283,12 @@ The default build (Swift 5.9 mode) is clean — no warnings, no errors. This iss
 Plan-002 dispatches Phase F (quit-while-recording flow) and Phase G (error-mapping banner) in parallel within Wave 5. The design (`docs/design/project-design.md` §15.15 "Wave 4 → Wave 5" boundary table) shows that both phases edit `Sources/MacrecUIKit/Views/RootView.swift`: F adds a Quit button at the bottom of the popover stack; G inserts an `ErrorBanner` at the top. Concurrent agents editing the same file will race or merge-conflict. **Mitigation**: Phase 6 orchestrator MUST dispatch F and G **sequentially** within Wave 5 — F first (adds the Quit affordance) then G (adds the ErrorBanner) is the recommended order, but either ordering is acceptable as long as the two are not concurrent. Each individual phase remains a single-file edit; only the Wave 5 dispatch order matters. Owner: Phase 6 orchestrator + Phase 7 Code Reviewer.
 
 ## Completed items
+
+### ENV-NEWLINE-2026-10-18 (RESOLVED 2026-10-18) — shared settings file: a written value lost its final newline, so the next appended line was glued onto it
+
+- **Issue:** the studio showed its library as `~/RecordingsNTAKKER_STUDIO_ECHO_SUPPRESSION=low` and found no recordings. In `~/.tool-agents/ntakker/.env` the line was `NTAKKER_RECORDINGS_DIR=/Users/…/RecordingsNTAKKER_STUDIO_ECHO_SUPPRESSION=low`.
+- **Cause:** `EnvFileStore.rewrite` appended a new key and joined the lines without a trailing newline. On 2026-10-17 the studio appended `NTAKKER_RECORDINGS_DIR` as the last line; a test line appended to the file by hand (`>>`) then landed on the same line. This is also the "hand-appended line vanished" seen during plan-025, which had been put down to two writers racing.
+- **Fix:** `rewrite` always ends a non-empty file with a newline (`Sources/NtakkerCore/Bootstrap/EnvFileStore.swift`); new test `EnvFileStoreTests.rewriteEndsWithNewline` (fails on the old code). The user's file was repaired: the line split back to `NTAKKER_RECORDINGS_DIR=/Users/…/Recordings`, and the test value `NTAKKER_STUDIO_ECHO_SUPPRESSION=low` dropped; mode 600 kept.
 
 ### TEST-FLAKE-2026-10-18 (RESOLVED 2026-10-18) — FakeAudioSource skip / PTS-jump tests failed under a full test run
 

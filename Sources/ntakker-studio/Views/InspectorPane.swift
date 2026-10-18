@@ -431,12 +431,100 @@ struct RetranscribePanel: View {
 
 // MARK: - Info
 
+/// Info ▸ Meeting: the calendar meeting this recording is. Linked
+/// meetings are saved in `<stem>.studio.json`; "Find in Calendar" runs the
+/// configured calendar command (Settings ▸ Studio ▸ Calendar).
+struct MeetingSection: View {
+    let workspace: RecordingWorkspace
+
+    var body: some View {
+        Section("Meeting") {
+            if let m = workspace.metadata.meeting {
+                linked(m)
+            } else {
+                lookup
+            }
+        }
+    }
+
+    private func linked(_ m: LinkedMeeting) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(m.subject).font(.headline).textSelection(.enabled)
+            Text(timeRange(m.start, m.end)).font(.callout).foregroundStyle(.secondary)
+            if let o = m.organizer { Text("Organizer: \(o)").font(.caption) }
+            if !m.attendees.isEmpty {
+                Text("\(m.attendees.count) attendees: " + m.attendees.prefix(8).joined(separator: ", ") + (m.attendees.count > 8 ? ", …" : ""))
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(3)
+            }
+            HStack {
+                if let link = m.webLink, let url = URL(string: link) {
+                    Button("Open in Calendar") { NSWorkspace.shared.open(url) }
+                }
+                Button("Unlink") { workspace.unlinkMeeting() }
+            }
+            .padding(.top, 2)
+        }
+    }
+
+    @ViewBuilder
+    private var lookup: some View {
+        HStack {
+            Button(workspace.meetingResult == nil ? "Find in Calendar" : "Search Again") { workspace.findMeeting() }
+                .disabled(workspace.findingMeeting)
+            if workspace.findingMeeting { ProgressView().controlSize(.small) }
+        }
+        if let error = workspace.meetingError {
+            Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+        }
+        if let r = workspace.meetingResult {
+            if r.matches.isEmpty {
+                Text("No meeting in your calendar overlaps this recording.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                if r.spansSeveralMeetings {
+                    Text("This recording spans \(r.covered.count) meetings: " + r.covered.map(\.event.subject).joined(separator: " · "))
+                        .font(.caption).foregroundStyle(.orange)
+                }
+                ForEach(Array(r.matches.prefix(5).enumerated()), id: \.offset) { i, m in
+                    candidate(m, best: i == 0, confidence: i == 0 ? r.confidence : nil)
+                }
+            }
+        }
+    }
+
+    private func candidate(_ m: MeetingMatch, best: Bool, confidence: MeetingMatch.Confidence?) -> some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(m.event.subject).fontWeight(best ? .semibold : .regular).lineLimit(2)
+                Text(timeRange(m.event.start, m.event.end)).font(.caption).foregroundStyle(.secondary)
+                Text(detail(m, confidence: confidence)).font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Link") { workspace.linkMeeting(m.event) }
+        }
+    }
+
+    private func detail(_ m: MeetingMatch, confidence: MeetingMatch.Confidence?) -> String {
+        var parts: [String] = []
+        if let confidence { parts.append(confidence.rawValue) }
+        parts.append("\(Int((m.meetingCoverage * 100).rounded())) % of the meeting recorded")
+        parts.append("\(Int((m.recordingCoverage * 100).rounded())) % of the recording")
+        if m.nameMatches { parts.append("name matches") }
+        return parts.joined(separator: " · ")
+    }
+
+    private func timeRange(_ start: Date, _ end: Date) -> String {
+        start.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated).hour().minute())
+            + "–" + end.formatted(.dateTime.hour().minute())
+    }
+}
+
 struct InfoPanel: View {
     let workspace: RecordingWorkspace
 
     var body: some View {
         let rec = workspace.recording
         Form {
+            MeetingSection(workspace: workspace)
             Section("Timing") {
                 LabeledContent("Audio started") {
                     Text(workspace.audioStart, format: .dateTime.day().month().year().hour().minute().second())

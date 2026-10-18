@@ -39,4 +39,21 @@ struct EnvFileStoreTests {
         #expect(try EnvFileStore.quoted("plain") == "plain")
         #expect(throws: NtakkerError.self) { try EnvFileStore.quoted(" both \" and ' ") }
     }
+
+    @Test("a rewritten file always ends with a newline, so a later append starts on its own line")
+    func rewriteEndsWithNewline() throws {
+        let sources = ["A=1\n", "A=1", "# comment\nA=1\n", ""]
+        for source in sources {
+            for (key, value) in [("B", "2"), ("A", "3"), ("A", "")] {
+                let out = EnvFileStore.rewrite(source: source, key: key, value: value)
+                if !out.isEmpty {
+                    #expect(out.hasSuffix("\n"), "\(source.debugDescription) + \(key)=\(value) → \(out.debugDescription)")
+                }
+                // What an `echo C=4 >> file` does next.
+                let appended = try DotEnvParser.parse(out + "C=4\n")
+                #expect(appended["C"] == "4")
+                if !value.isEmpty { #expect(appended[key] == value) }
+            }
+        }
+    }
 }

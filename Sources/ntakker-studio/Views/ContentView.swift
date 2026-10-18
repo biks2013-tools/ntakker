@@ -52,9 +52,28 @@ struct ChooseLibraryView: View {
     }
 }
 
-/// The studio's Settings window: the shared settings view (plan-025).
+/// The studio's Settings window: the studio's own General pane, then the
+/// shared settings (plan-025).
 struct StudioSettingsView: View {
     var body: some View {
-        SharedSettingsView(selectionKey: "studio.settings.selectedPane")
+        SharedSettingsView(
+            leading: [SettingsPane(id: "general", title: "General", systemImage: "gearshape") { StudioGeneralSettingsPane() }],
+            selectionKey: "studio.settings.selectedPane"
+        )
+    }
+}
+
+/// Settings ▸ General: the studio's own preferences (kept in its own
+/// preferences, not in the shared file).
+struct StudioGeneralSettingsPane: View {
+    var body: some View {
+        Form {
+            Section("Appearance") {
+                StudioAppearancePicker(label: "Theme", style: .segmented)
+                Text("Dark or light for every studio window. System follows your macOS appearance.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
     }
 }

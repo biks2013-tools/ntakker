@@ -41,6 +41,9 @@ public enum SharedSettings {
         public static let studioEchoStrength = "NTAKKER_STUDIO_ECHO_STRENGTH"
         public static let studioEchoSuppression = "NTAKKER_STUDIO_ECHO_SUPPRESSION"
         public static let studioEchoAdaptation = "NTAKKER_STUDIO_ECHO_ADAPTATION"
+        /// Shell command line printing calendar JSON for `{from}`…`{to}`
+        /// (YYYY-MM-DD); the studio maps recordings to meetings with it.
+        public static let calendarCommand = "NTAKKER_CALENDAR_COMMAND"
     }
 
     // MARK: - Reading and writing

@@ -251,7 +251,7 @@
 
         | File | Written when | Content |
         |---|---|---|
-        | `<stem>.studio.json` | only when the user changes something | `audioStart`, `speakerNames`, `syncOffsetSec`, `exactTimingTranscripts` |
+        | `<stem>.studio.json` | only when the user changes something | `audioStart`, `speakerNames`, `syncOffsetSec`, `exactTimingTranscripts`, `echoDelayMs`, `meeting` (the linked calendar meeting: `id`, `subject`, `start`, `end`, `organizer`, `attendees`, `location`, `webLink`) |
         | `<stem>.minutes.md` | Minutes generated | meeting minutes |
         | `<stem>.studio-qa.md` | Ask used | question and answer log |
         | `<transcript>.orig` | first text edit of a transcript | backup of the unedited JSONL |
@@ -271,9 +271,9 @@
         (`EnvFileStore.loadIntoProcess(toolName: "ntakker")`) and reuses
         ntakker's settings; a load failure is logged and the app
         continues, with Ask and re-transcription then failing on their
-        own missing-configuration errors. Edit those settings in
-        ntakker's Settings (or the file itself, mode `0600`); the studio
-        never writes the file. As in ntakker, missing required
+        own missing-configuration errors. Edit those settings in either
+        app's Settings window (plan-025: both write the file) or in the
+        file itself (mode `0600`). As in ntakker, missing required
         configuration raises an error - there are no fallback values.
 
         Variable names consumed (values are never documented here):
@@ -285,11 +285,15 @@
         | `NTAKKER_ASK_CONTEXT_MINUTES` | Part of ntakker's Ask settings, but **not used** by the studio: it sends the whole transcript |
         | Provider keys and endpoints (`OPENAI_*`, `ANTHROPIC_*`, `GOOGLE_API_KEY`, `AZURE_OPENAI_*`, `AZURE_AI_INFERENCE_*`, `OLLAMA_HOST`, `LITELLM_*`, `SONIOX_API_KEY`, `ELEVENLABS_*`, ... ) | Exactly as in ntakker: whatever the chosen Ask or re-transcription provider requires |
         | `NTAKKER_TRANSCRIBE_LANGUAGE` | Set in the process from the Re-transcribe panel's languages field |
+        | `NTAKKER_RECORDINGS_DIR` | The library folder (shared with ntakker) |
+        | `NTAKKER_STUDIO_ECHO_STRENGTH` / `_SUPPRESSION` / `_ADAPTATION` | The echo filter |
+        | `NTAKKER_CALENDAR_COMMAND` | The calendar command for meeting matching (below); no default — unset means the feature reports "not configured" |
 
         The resolution chain for these values is the one documented for
         ntakker ([ntakker.md](ntakker.md) -> "Resolution chain"): shell
         environment, then `~/.tool-agents/ntakker/.env`, then a local
-        `.env`; the studio has no CLI flags.
+        `.env`. The studio's only command-line options are those of
+        `ntakker-studio match-meetings` (below).
 
         UI state is stored in `UserDefaults` under `com.giorgosmarinos.ntakker-studio`
         (for example `studio.libraryFolder`). It is UI persistence, not
@@ -322,7 +326,8 @@
 
         ## Shared settings file (plan-025)
 
-        The Settings window (⌘,) is the same shared settings view as
+        The Settings window (⌘,) starts with the studio's own **General**
+        pane (Appearance, below), then the same shared settings view as
         ntakker's: Recording, Transcription, Asking, each provider and Studio,
         all stored in `~/.tool-agents/ntakker/.env`. The library is the shared
         recordings folder `NTAKKER_RECORDINGS_DIR` (the one ntakker records
@@ -331,6 +336,98 @@
         `NTAKKER_STUDIO_ECHO_*` there; the per-recording echo delay stays in
         `<stem>.studio.json`. Changes made in ntakker or in the file show up at
         once.
+
+        ## Appearance
+
+        System, Light or Dark for every studio window (main window, Settings,
+        popovers, sheets, open/save panels). Choose it in **Settings ▸ General ▸
+        Theme** or **View ▸ Appearance**; it applies at once and is restored
+        before the first window opens on the next launch. *System* follows the
+        macOS appearance. Stored per app in the studio's preferences
+        (`studio.appearance` = `system` / `light` / `dark`; missing means
+        `system`), not in the shared file. Implemented with `NSApp.appearance`
+        (`Sources/ntakker-studio/Model/StudioAppearance.swift`).
+
+        ## Meetings from the calendar
+
+        The studio can tell which calendar meeting a recording is. It runs
+        a configured command that prints the calendar as JSON and matches
+        each recording's time span against the meetings in it.
+
+        **Configure** `NTAKKER_CALENDAR_COMMAND` in
+        `~/.tool-agents/ntakker/.env` (or Settings ▸ Studio ▸ Calendar):
+        a shell command line with `{from}` and `{to}`, which are replaced by
+        the first and last day (`YYYY-MM-DD`, local time, both included).
+        It runs through `/bin/sh -c` with the app's environment; apps
+        started from the Dock have a short PATH, so give the program's full
+        path. It may take up to 120 s. With M365Mail
+        (`m365mail calendar export`, Microsoft 365 via Graph):
+
+        ```sh
+        NTAKKER_CALENDAR_COMMAND="/Users/<you>/.local/bin/m365mail calendar export --from {from} --to {to} --no-description"
+        ```
+
+        `--no-description` keeps meeting bodies out (only a short preview
+        is printed); the studio does not need them.
+
+        **Calendar JSON accepted** (`CalendarDocument`): `{"events": [ … ]}`
+        (m365mail's document) or a bare `[ … ]`. Each event needs
+        `subject`, `start`, `end` — ISO 8601 with an offset, or a bare day
+        for all-day events. Optional and used: `id`, `allDay`,
+        `myResponse`, `organizer {name, address}`, `attendees [{name,
+        address}]`, `location`, `webLink` / `onlineMeeting.joinUrl`. Any
+        other tool printing this shape works.
+
+        **Matching** (`MeetingMatcher`). A recording spans its start
+        (`studio.json` `audioStart`, else the audio file's creation date)
+        plus the length of its longest track. All-day and declined events
+        are ignored. Every overlapping meeting is a candidate, ranked by
+        *fit* — overlap ÷ the span both cover together — plus a bonus when
+        a word of the recording's name is in the subject
+        (`fireblocks-recording-…` → "NBG | FIREBLOCKS"; words of 3+
+        letters, stems by the first five letters, generic words such as
+        "recording", "meeting", "nbg" ignored); ties go to accepted or
+        organised meetings. Confidence: **strong** (fit ≥ 0.5, or a name
+        match with fit ≥ 0.25, and no close runner-up), **likely** (fit ≥
+        0.2 or a name match), **weak** (only touches it — in practice
+        clips of a few minutes). A recording left running across
+        back-to-back meetings is reported as **spanning several meetings**
+        (each ≥ 80 % recorded; clashing meetings counted once), listed in
+        order.
+
+        **In the app:** Info ▸ Meeting ▸ *Find in Calendar* lists the
+        best match and up to four alternatives with their confidence and
+        coverage; *Link* saves one in `<stem>.studio.json` (`meeting`),
+        after which its subject shows under the recording's title and
+        *Open in Calendar* / *Unlink* are offered.
+
+        **From the command line:**
+
+        ```sh
+        /Applications/ntakker-studio.app/Contents/MacOS/ntakker-studio match-meetings \
+            [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--name TEXT] [--library DIR]
+        ```
+
+        prints one JSON document: `library`, `recordings`, `matched`
+        (counts per confidence, and `spansSeveralMeetings`), and `results`
+        — per recording `recording`, `stem`, `folder`, `start`, `end`,
+        `durationMinutes`, `confidence`, `meeting` (subject, times,
+        organizer, attendees, `overlapMinutes`, `fitPercent`,
+        `recordingCoveragePercent`, `meetingCoveragePercent`,
+        `nameMatches`, `webLink`), `alternatives`, and `meetingsCovered`
+        when it spans several. The calendar is fetched once per range of
+        at most 31 days. Exit codes: 0, 64 usage, 78 missing
+        configuration (no command / no library), 1 when the command or its
+        JSON fails. Without a command word the binary opens the app.
+
+        **Validated 2026-10-18** on the user's library (124 recordings,
+        29 Apr – 17 Oct 2026, M365 calendar, 41 s): 51 strong, 18 likely,
+        26 weak, 29 none; 10 spanning several meetings. Of the 63
+        recordings the user had named after the meeting, 33 matched a
+        subject sharing a word, and nearly all the others were right by
+        content (bancassurance ↔ "NBG-Allianz Asphodel", 11labs ↔
+        ElevenLabs, fidelity ↔ FIL, paloalto ↔ Unit42, Greek subjects);
+        "none" and "weak" were test clips and recordings outside meetings.
 
         ## Releasing
 

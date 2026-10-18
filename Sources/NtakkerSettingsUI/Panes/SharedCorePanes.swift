@@ -192,9 +192,17 @@ public struct StudioSettingsPane: View {
                 Text("Used by ntakker studio's Remove echo while listening and by Export Copy with echo removal. The echo delay is set per recording, in the studio's player.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
+            Section("Calendar") {
+                SettingsTextRow(
+                    label: "Calendar command",
+                    envVarName: SharedSettings.Keys.calendarCommand,
+                    placeholder: "/full/path/m365mail calendar export --from {from} --to {to} --no-description",
+                    helpText: "A command line that prints your calendar as JSON. {from} and {to} are replaced by the first and last day (YYYY-MM-DD). Give the program's full path: apps started from the Dock do not see your shell's PATH. Used by the studio to find the meeting a recording is (Info ▸ Meeting, and `ntakker-studio match-meetings`)."
+                )
+            }
             Section {
                 SharedFileFootnote(keys: [SharedSettings.Keys.studioEchoStrength, SharedSettings.Keys.studioEchoSuppression,
-                                          SharedSettings.Keys.studioEchoAdaptation])
+                                          SharedSettings.Keys.studioEchoAdaptation, SharedSettings.Keys.calendarCommand])
             }
         }
         .formStyle(.grouped)

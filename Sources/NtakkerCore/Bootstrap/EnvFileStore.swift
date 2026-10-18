@@ -225,6 +225,11 @@ public enum EnvFileStore {
             lines = collapsed
         }
 
-        return lines.joined(separator: "\n")
+        // Always end with a newline. Without it a line appended later by
+        // hand, or with `echo … >>`, is glued onto the last value
+        // (2026-10-18: `NTAKKER_RECORDINGS_DIR=…/RecordingsNTAKKER_STUDIO_…`).
+        var result = lines.joined(separator: "\n")
+        if !result.isEmpty && !result.hasSuffix("\n") { result += "\n" }
+        return result
     }
 }

@@ -249,6 +249,6 @@ Documentation: [docs/tools/ntakker.md](docs/tools/ntakker.md)
 
 ### ntakker-studio
 
-macOS Dock app (`com.giorgosmarinos.ntakker-studio`, plan-024) for exploring finished recordings: library and full-text search across every transcript, playback with the transcript followed line by line and click-to-jump, cutting ranges into a new copy with re-timed transcripts, Ask and meeting minutes over the whole transcript (ntakker's Ask settings), speaker renaming, transcript text edits, and re-transcription with ntakker's batch providers.
+macOS Dock app (`com.giorgosmarinos.ntakker-studio`, plan-024) for exploring finished recordings: library and full-text search across every transcript, playback with the transcript followed line by line and click-to-jump, cutting ranges into a new copy with re-timed transcripts, Ask and meeting minutes over the whole transcript (ntakker's Ask settings), speaker renaming, transcript text edits, re-transcription with ntakker's batch providers, a System/Light/Dark appearance, and mapping recordings to calendar meetings through a configurable command (`NTAKKER_CALENDAR_COMMAND`, e.g. `m365mail calendar export`) — in Info ▸ Meeting and as `ntakker-studio match-meetings` (JSON).
 
 Documentation: [docs/tools/ntakker-studio.md](docs/tools/ntakker-studio.md)

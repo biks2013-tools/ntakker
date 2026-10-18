@@ -12,7 +12,8 @@ import Logging
 import NtakkerCore
 import SwiftUI
 
-@main
+/// The app; started by `StudioMain` (StudioCommandLine.swift) when no
+/// command is given.
 struct NtakkerStudioApp: App {
     @NSApplicationDelegateAdaptor(StudioAppDelegate.self) private var appDelegate
     @State private var library = LibraryStore()
@@ -30,6 +31,9 @@ struct NtakkerStudioApp: App {
                     .keyboardShortcut("o", modifiers: [.command, .shift])
                 Button("Rescan Library") { Task { await library.rescan() } }
                     .keyboardShortcut("r", modifiers: .command)
+            }
+            CommandGroup(after: .toolbar) {
+                StudioAppearancePicker()
             }
             CommandMenu("Playback") {
                 Button("Play / Pause") { library.workspace?.player.togglePlay() }
@@ -52,6 +56,8 @@ final class StudioAppDelegate: NSObject, NSApplicationDelegate {
     private let logger = Logger(label: "ntakker-studio.app")
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        // Before any window opens, so a dark choice never flashes light.
+        StudioAppearance.apply(StudioAppearance.current.rawValue)
         do {
             let loaded = try EnvFileStore.loadIntoProcess(toolName: "ntakker")
             logger.info("loaded \(loaded.count) settings from ~/.tool-agents/ntakker/.env")

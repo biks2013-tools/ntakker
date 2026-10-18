@@ -7,6 +7,7 @@
 import AppKit
 import Foundation
 import NtakkerCore
+import NtakkerSettingsUI
 import NtakkerStudioKit
 import Observation
 
@@ -203,6 +204,41 @@ final class RecordingWorkspace {
         } catch {
             lastError = "Could not save \(recording.metadataURL.lastPathComponent): \(error.localizedDescription)"
         }
+    }
+
+    // MARK: - Meeting (calendar)
+
+    /// The last lookup for this recording.
+    private(set) var meetingResult: MeetingMatchResult?
+    private(set) var meetingError: String?
+    private(set) var findingMeeting = false
+
+    /// Run the calendar command for the recording's days and match it.
+    func findMeeting() {
+        guard !findingMeeting else { return }
+        findingMeeting = true
+        meetingError = nil
+        let start = audioStart, length = duration, name = recording.displayName + " " + recording.stem
+        let values = SharedSettingsStore.shared.values
+        Task {
+            defer { findingMeeting = false }
+            do {
+                let command = try CalendarCommand.configured(in: values)
+                let events = try await command.events(from: start, to: start.addingTimeInterval(length))
+                meetingResult = MeetingMatcher.match(recordingStart: start, duration: length, name: name, events: events)
+            } catch {
+                meetingResult = nil
+                meetingError = error.localizedDescription
+            }
+        }
+    }
+
+    func linkMeeting(_ event: CalendarEvent) {
+        saveMetadata { $0.meeting = LinkedMeeting(event) }
+    }
+
+    func unlinkMeeting() {
+        saveMetadata { $0.meeting = nil }
     }
 
     func renameSpeaker(raw: String, to name: String) {

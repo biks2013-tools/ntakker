@@ -57,6 +57,10 @@ struct RecordingHeader: View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(workspace.recording.displayName).font(.title2.bold()).lineLimit(1)
+                if let meeting = workspace.metadata.meeting {
+                    Label(meeting.subject, systemImage: "calendar")
+                        .font(.callout).lineLimit(1).help("Linked meeting (Info ▸ Meeting)")
+                }
                 HStack(spacing: 10) {
                     Text(workspace.audioStart, format: .dateTime.weekday(.wide).day().month(.wide).year().hour().minute())
                     if workspace.duration > 0 {

@@ -30,6 +30,17 @@ in an app is the CLI's default too, and flags still override it per run.
   (0–1), `NTAKKER_STUDIO_ECHO_SUPPRESSION` (`off` / `low` / `high`),
   `NTAKKER_STUDIO_ECHO_ADAPTATION` (`stable` / `fast`). Unset echo keys mean
   1 / off / fast.
+- `NTAKKER_CALENDAR_COMMAND` (2026-10-18): the shell command line the studio
+  runs to get calendar JSON for meeting matching; `{from}` and `{to}` are
+  replaced by days (`YYYY-MM-DD`). Example with M365Mail:
+  `"/Users/<you>/.local/bin/m365mail calendar export --from {from} --to {to} --no-description"`
+  (quote it; give the full path, because apps started from the Dock have a
+  short PATH). How to get it: install the M365Mail CLI and sign in
+  (`m365mail auth login`); any tool printing `{"events":[…]}` with `subject`,
+  `start`, `end` works. No default: unset means meeting matching reports
+  "not configured". Recommended storage: the shared file, set from Settings ▸
+  Studio ▸ Calendar. Not a secret, but the command runs with your account,
+  so keep the file at mode 0600.
 - UI state stays in each app's own preferences: window sizes, expanded
   sections, appearance, the last Settings pane, privacy acknowledgements, the
   next recording's base name, the provider remembered while transcription is

@@ -25,13 +25,16 @@ public struct StudioMetadata: Codable, Sendable, Equatable {
     /// The echo filter's delay set by hand (ms), instead of the measured
     /// one. `nil` = measured automatically.
     public var echoDelayMs: Double?
+    /// The calendar meeting the user linked this recording to.
+    public var meeting: LinkedMeeting?
 
     public init(
         audioStart: Date? = nil,
         speakerNames: [String: String] = [:],
         syncOffsetSec: Double = 0,
         exactTimingTranscripts: [String] = [],
-        echoDelayMs: Double? = nil
+        echoDelayMs: Double? = nil,
+        meeting: LinkedMeeting? = nil
     ) {
         self.version = Self.currentVersion
         self.audioStart = audioStart
@@ -39,10 +42,11 @@ public struct StudioMetadata: Codable, Sendable, Equatable {
         self.syncOffsetSec = syncOffsetSec
         self.exactTimingTranscripts = exactTimingTranscripts
         self.echoDelayMs = echoDelayMs
+        self.meeting = meeting
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, audioStart, speakerNames, syncOffsetSec, exactTimingTranscripts, echoDelayMs
+        case version, audioStart, speakerNames, syncOffsetSec, exactTimingTranscripts, echoDelayMs, meeting
     }
 
     public init(from decoder: Decoder) throws {
@@ -53,6 +57,7 @@ public struct StudioMetadata: Codable, Sendable, Equatable {
         syncOffsetSec = try c.decodeIfPresent(Double.self, forKey: .syncOffsetSec) ?? 0
         exactTimingTranscripts = try c.decodeIfPresent([String].self, forKey: .exactTimingTranscripts) ?? []
         echoDelayMs = try c.decodeIfPresent(Double.self, forKey: .echoDelayMs)
+        meeting = try c.decodeIfPresent(LinkedMeeting.self, forKey: .meeting)
     }
 
     /// Display name for a raw speaker id: the user's name, else `S1`-style.
@@ -106,4 +111,33 @@ public struct StudioMetadata: Codable, Sendable, Equatable {
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return f
     }()
+}
+
+/// A calendar meeting saved with a recording (`studio.json` → `meeting`).
+public struct LinkedMeeting: Codable, Sendable, Equatable {
+    public var id: String
+    public var subject: String
+    public var start: Date
+    public var end: Date
+    public var organizer: String?
+    public var attendees: [String]
+    public var location: String?
+    public var webLink: String?
+
+    public init(id: String, subject: String, start: Date, end: Date, organizer: String? = nil,
+                attendees: [String] = [], location: String? = nil, webLink: String? = nil) {
+        self.id = id
+        self.subject = subject
+        self.start = start
+        self.end = end
+        self.organizer = organizer
+        self.attendees = attendees
+        self.location = location
+        self.webLink = webLink
+    }
+
+    public init(_ e: CalendarEvent) {
+        self.init(id: e.id, subject: e.subject, start: e.start, end: e.end, organizer: e.organizer?.display,
+                  attendees: e.attendees.map(\.display), location: e.location, webLink: e.webLink)
+    }
 }
