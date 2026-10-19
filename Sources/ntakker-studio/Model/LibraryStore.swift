@@ -34,8 +34,35 @@ final class LibraryStore {
     private(set) var hits: [SearchHit] = []
     private(set) var searching = false
 
-    var selectedID: String? { didSet { if selectedID != oldValue { openSelected() } } }
+    /// The recordings selected in the sidebar. One opens in the detail
+    /// view; several show the join panel.
+    var selection: Set<String> = [] {
+        didSet {
+            if selectedID != (oldValue.count == 1 ? oldValue.first : nil) { openSelected() }
+            if selection != oldValue { prepareJoin() }
+        }
+    }
+    /// The one selected recording (nil when none or several are).
+    var selectedID: String? {
+        get { selection.count == 1 ? selection.first : nil }
+        set { selection = newValue.map { [$0] } ?? [] }
+    }
     private(set) var workspace: RecordingWorkspace?
+    /// The selected recordings, oldest first.
+    var selectedRecordings: [Recording] {
+        recordings.filter { selection.contains($0.id) }.sorted { $0.createdAt < $1.createdAt }
+    }
+    /// The other parts of `recording`'s session (same folder, same stem
+    /// without `.partNN`), itself included, when it has any.
+    func sessionParts(of recording: Recording) -> [Recording] {
+        guard recording.partNumber != nil else { return [] }
+        let base = RecordingJoiner.baseStem(recording.stem)
+        let parts = recordings.filter {
+            $0.folder.standardizedFileURL == recording.folder.standardizedFileURL
+                && $0.partNumber != nil && RecordingJoiner.baseStem($0.stem) == base
+        }
+        return parts.count >= 2 ? parts : []
+    }
 
     @ObservationIgnored private let index = TranscriptSearchIndex()
     @ObservationIgnored private var searchTask: Task<Void, Never>?
@@ -139,10 +166,64 @@ final class LibraryStore {
         }
     }
 
-    /// Open a recording by folder (after a cut export).
+    /// Open a recording by folder (after a cut export or a join).
     func reveal(folder: URL) {
         if let rec = recordings.first(where: { $0.folder.standardizedFileURL == folder.standardizedFileURL }) {
             selectedID = rec.id
+        }
+    }
+
+    // MARK: - Join
+
+    /// The join of the selected recordings, when two or more are selected.
+    private(set) var joinPlan: JoinPlan?
+    private(set) var joinPlanError: String?
+    private(set) var joinPreparing = false
+    private(set) var joinProgress: Double?
+    private(set) var joinError: String?
+    @ObservationIgnored private var joinPrepareTask: Task<Void, Never>?
+
+    /// Read the selected recordings and check they can be joined.
+    private func prepareJoin() {
+        joinPrepareTask?.cancel()
+        joinPlan = nil
+        joinPlanError = nil
+        joinError = nil
+        let recs = selectedRecordings
+        guard recs.count >= 2 else { joinPreparing = false; return }
+        joinPreparing = true
+        joinPrepareTask = Task {
+            let result = await Task.detached(priority: .userInitiated) { () -> Result<JoinPlan, Error> in
+                Result { try RecordingJoiner.plan(try recs.map(JoinPart.load)) }
+            }.value
+            guard !Task.isCancelled else { return }
+            switch result {
+            case .success(let plan): joinPlan = plan
+            case .failure(let error): joinPlanError = error.localizedDescription
+            }
+            joinPreparing = false
+        }
+    }
+
+    /// Write the joined recording, then open it.
+    func join() {
+        guard let plan = joinPlan, joinProgress == nil else { return }
+        joinProgress = 0
+        joinError = nil
+        Task {
+            do {
+                let result = try await Task.detached(priority: .userInitiated) {
+                    try RecordingJoiner.join(plan) { p in
+                        Task { @MainActor in if self.joinProgress != nil { self.joinProgress = p } }
+                    }
+                }.value
+                joinProgress = nil
+                await rescan()
+                reveal(folder: result.folder)
+            } catch {
+                joinProgress = nil
+                joinError = "Join failed: \(error.localizedDescription)"
+            }
         }
     }
 

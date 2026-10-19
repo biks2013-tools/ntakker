@@ -5,12 +5,17 @@
 //
 //   ntakker-studio match-meetings [--from YYYY-MM-DD] [--to YYYY-MM-DD]
 //                                 [--name <text>] [--library <folder>]
+//   ntakker-studio join --name <text> [--library <folder>] [--dry-run]
 //
 // `match-meetings` runs the calendar command (NTAKKER_CALENDAR_COMMAND in
 // ~/.tool-agents/ntakker/.env) and prints, as JSON, the meeting each
 // recording of the library most likely is. Options narrow the recordings:
 // by start day (both included), by a case-insensitive part of the name,
 // and the library folder (default: NTAKKER_RECORDINGS_DIR).
+//
+// `join` joins the recordings whose name contains <text> into one, in the
+// order they were recorded (see RecordingJoiner), and prints the result
+// as JSON; `--dry-run` prints the plan without writing anything.
 //
 // Exit codes: 0 success, 64 usage, 78 missing configuration, 1 failure.
 
@@ -33,6 +38,8 @@ enum StudioMain {
         switch first {
         case "match-meetings":
             code = runBlocking { await MatchMeetingsCommand.run(Array(args.dropFirst())) }
+        case "join":
+            code = runBlocking { await JoinCommand.run(Array(args.dropFirst())) }
         case "help", "--help", "-h":
             print(StudioCommandLine.usage)
             code = 0
@@ -67,6 +74,10 @@ enum StudioCommandLine {
           --to DAY          only recordings that started on or before DAY
           --name TEXT       only recordings whose name contains TEXT (any case)
           --library DIR     the library folder (default: NTAKKER_RECORDINGS_DIR)
+      join                join recordings into one, in the order they were recorded
+          --name TEXT       the recordings whose name contains TEXT (any case); at least two
+          --library DIR     the library folder (default: NTAKKER_RECORDINGS_DIR)
+          --dry-run         print the plan, write nothing
 
     The calendar comes from NTAKKER_CALENDAR_COMMAND in ~/.tool-agents/ntakker/.env:
     a command line printing calendar JSON, with {from} and {to} replaced by days, e.g.
@@ -226,5 +237,92 @@ enum MatchMeetingsCommand {
             "results": rows,
         ]
         return try JSONSerialization.data(withJSONObject: doc, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+    }
+}
+
+enum JoinCommand {
+    static func run(_ args: [String]) async -> Int32 {
+        var name: String?
+        var library: URL?
+        var dryRun = false
+        var i = 0
+        while i < args.count {
+            switch args[i] {
+            case "--name", "--library":
+                guard i + 1 < args.count else {
+                    StudioCommandLine.fail("\(args[i]) needs a value\n\n\(StudioCommandLine.usage)")
+                    return 64
+                }
+                if args[i] == "--name" { name = args[i + 1] } else {
+                    library = URL(fileURLWithPath: (args[i + 1] as NSString).expandingTildeInPath, isDirectory: true)
+                }
+                i += 1
+            case "--dry-run": dryRun = true
+            default:
+                StudioCommandLine.fail("unknown option \(args[i])\n\n\(StudioCommandLine.usage)")
+                return 64
+            }
+            i += 1
+        }
+        guard let name, !name.isEmpty else {
+            StudioCommandLine.fail("join needs --name\n\n\(StudioCommandLine.usage)")
+            return 64
+        }
+        if library == nil {
+            do { _ = try EnvFileStore.loadIntoProcess(toolName: SharedSettings.toolName) } catch {
+                StudioCommandLine.fail("could not read \(SharedSettings.fileURL.path): \(error.localizedDescription)")
+                return 78
+            }
+            library = ProcessInfo.processInfo.environment[SharedSettings.Keys.recordingsDir].map {
+                URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true)
+            }
+        }
+        guard let root = library else {
+            StudioCommandLine.fail("no library folder: set \(SharedSettings.Keys.recordingsDir) in \(SharedSettings.fileURL.path) or pass --library")
+            return 78
+        }
+        let recordings = RecordingLibraryScanner.scan(root: root).filter {
+            $0.displayName.localizedCaseInsensitiveContains(name) || $0.stem.localizedCaseInsensitiveContains(name)
+        }
+        do {
+            let plan = try RecordingJoiner.plan(try recordings.map(JoinPart.load))
+            var doc: [String: Any] = ["plan": describe(plan)]
+            if !dryRun {
+                let r = try RecordingJoiner.join(plan)
+                doc["joined"] = ["folder": r.folder.path, "stem": r.stem, "parts": r.parts,
+                                 "durationSeconds": (r.duration * 10).rounded() / 10, "lines": r.lines]
+            }
+            let data = try JSONSerialization.data(withJSONObject: doc, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+            print(String(decoding: data, as: UTF8.self))
+            return 0
+        } catch {
+            StudioCommandLine.fail(error.localizedDescription)
+            return 1
+        }
+    }
+
+    static func describe(_ plan: JoinPlan) -> [String: Any] {
+        let iso = ISO8601DateFormatter()
+        iso.timeZone = .current
+        func s(_ x: Double) -> Double { (x * 10).rounded() / 10 }
+        return [
+            "stem": plan.stem,
+            "start": iso.string(from: plan.audioStart),
+            "durationSeconds": s(plan.duration),
+            "tracks": plan.roles.map(\.fileToken),
+            "transcripts": plan.transcriptLabels.map { $0.isEmpty ? "main" : $0 },
+            "parts": plan.items.map { item -> [String: Any] in
+                var d: [String: Any] = [
+                    "recording": item.part.recording.displayName,
+                    "folder": item.part.recording.folder.path,
+                    "start": iso.string(from: item.part.audioStart),
+                    "durationSeconds": s(item.part.duration),
+                    "offsetSeconds": s(item.offset),
+                    "lines": item.part.entriesByTranscript.values.reduce(0) { $0 + $1.count },
+                ]
+                if let p = item.pauseBefore { d["pauseBeforeSeconds"] = s(p) }
+                return d
+            },
+        ]
     }
 }

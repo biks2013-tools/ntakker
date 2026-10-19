@@ -12038,6 +12038,14 @@ ntakker stamps segments with wall-clock time. The studio places a line at `times
 - `ResidualEchoSuppressor`: STFT 512 / hop 256, √Hann analysis and synthesis (perfect reconstruction, tested), per-bin gain `max(floor, 1 − k·S_echo/S_out)` with smoothed powers and gains; low k 0.6 / floor 0.3, high k 1.6 / floor 0.08. Latency 512 samples: the processor delays the dry mic by the same amount for the strength mix; `EchoCleaner` trims it so the cleaned track stays sample-aligned. In playback the mic is 10.7 ms behind the system track while the second stage is on (inaudible).
 - The echo delay override is per recording (`StudioMetadata.echoDelayMs`); the player and the export use it instead of the measured delay.
 
+### STU-4.3 — Joining recordings (added 2026-10-19)
+
+- `RecordingJoiner` (kit, `Joining/`): `JoinPart.load` reads a recording's metadata (a corrupt `studio.json` throws), audio length (`RecordingTiming.duration`) and placed transcript entries; `plan(_:)` orders parts by audio start, requires the same set of track roles, and computes each part's offset and the pause before it; `join(_:)` writes the result and removes the folder on failure.
+- `AudioJoiner.concatenate`: per role, writes in the first source's file settings; same processing format → direct copy (reads bounded by the file length: `AVAudioFile.read` throws eofErr past the end), else `AVAudioConverter`; pads each source with silence to its part's length.
+- Transcripts: segments get `timestamp = joinedStart + partOffset + entry.start`, listed in `exactTimingTranscripts`.
+- App: `LibraryStore.selection: Set<String>` (the sidebar list is multi-select; `selectedID` is the single selection); ≥ 2 selected → `JoinView`; `sessionParts(of:)` finds a part's siblings (same folder, same base stem).
+- **STU-ADR-6** Joining writes a new recording and leaves the pauses out (no silence for the gap); the gap is shown before joining. (2026-10-19.)
+
 ### STU-5 — Decisions
 
 - **STU-ADR-1** Cuts write a new copy; originals are read-only to the studio except for explicit text edits (backed up) and the studio's own sidecars. (User decision, 2026-10-17.)

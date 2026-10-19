@@ -18,7 +18,7 @@ struct LibrarySidebar: View {
 
     var body: some View {
         @Bindable var library = library
-        List(selection: $library.selectedID) {
+        List(selection: $library.selection) {
             if library.query.isEmpty {
                 ForEach(months, id: \.title) { month in
                     Section(month.title) {

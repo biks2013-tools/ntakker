@@ -52,6 +52,7 @@ struct RecordingDetailView: View {
 
 struct RecordingHeader: View {
     let workspace: RecordingWorkspace
+    @Environment(LibraryStore.self) private var library
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
@@ -73,6 +74,15 @@ struct RecordingHeader: View {
                 .foregroundStyle(.secondary)
             }
             Spacer()
+            let parts = library.sessionParts(of: workspace.recording)
+            if !parts.isEmpty {
+                Button {
+                    library.selection = Set(parts.map(\.id))
+                } label: {
+                    Label("Join the \(parts.count) Parts…", systemImage: "rectangle.stack.badge.plus")
+                }
+                .help("This session was recorded in \(parts.count) parts: select them all to join them into one recording")
+            }
             TranscriptPicker(workspace: workspace)
         }
         .padding(.horizontal, 16)

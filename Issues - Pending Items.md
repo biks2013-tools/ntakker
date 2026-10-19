@@ -6,6 +6,13 @@
 
 ## Pending items (most critical first)
 
+### ntakker left a part's mic file outside its session folder (2026-10-19)
+- Session `Daily-Projects-recording-2026-10-19-09-55` (six parts): `recording-2026-10-19-09-26.part01.mic.m4a` stayed in `~/Recordings` while every other file was moved into the folder by Save (`SessionExporter`, which logs and skips a failed move). The studio therefore shows part 1 without its mic, plus a stray `recording-2026-10-19-09-26.part01` recording, and refuses to join the parts. The cause is not known yet (no log lines were found for 09:55); the move loop's failures should be surfaced to the user. Fix for this session: the file was moved into the folder on 2026-10-19; all six parts now plan for joining. Still open: why the move was skipped.
+
+### Studio join — open items (2026-10-19)
+- **Speaker ids are per part** in live transcripts; the join keeps raw ids, so "Speaker 1" of two parts may be two people. Renaming in the joined recording fixes it by hand.
+- **Not clicked through live in the app:** the plan view (both the refusal and a 5-part plan) was checked on the real library; the Join button was not pressed there (it writes into the library). The write path was run through `ntakker-studio join` on a copy and unit-tested.
+
 ### Studio meeting matching — open items (2026-10-18)
 - **Long recordings across back-to-back meetings** are flagged ("spans several meetings") but stay one recording; splitting one into per-meeting copies at the meeting boundaries (with the Cut export) is not offered yet.
 - **Linking from the app was not clicked through live** (it writes `<stem>.studio.json` into the user's library); the save/load round trip is unit-tested and *Find in Calendar* was checked live.

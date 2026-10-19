@@ -304,7 +304,7 @@
         ntakker ([ntakker.md](ntakker.md) -> "Resolution chain"): shell
         environment, then `~/.tool-agents/ntakker/.env`, then a local
         `.env`. The studio's only command-line options are those of
-        `ntakker-studio match-meetings` (below).
+        `ntakker-studio match-meetings` and `ntakker-studio join` (below).
 
         UI state is stored in `UserDefaults` under `com.giorgosmarinos.ntakker-studio`
         (for example `studio.libraryFolder`). It is UI persistence, not
@@ -439,6 +439,65 @@
         content (bancassurance ↔ "NBG-Allianz Asphodel", 11labs ↔
         ElevenLabs, fidelity ↔ FIL, paloalto ↔ Unit42, Greek subjects);
         "none" and "weak" were test clips and recordings outside meetings.
+
+        ## Joining recordings (added 2026-10-19)
+
+        A session that was paused and resumed (or split) is saved as
+        several `.partNN` recordings. Joining makes **one new recording**
+        from them; the originals are not changed.
+
+        **In the app:** select two or more recordings in the library
+        (⌘-click / ⇧-click). The detail area shows the join: the parts
+        in the order they were recorded, the pause before each (left
+        out of the joined audio), where each part begins in the result,
+        its length and lines, and the joined length. A part of a session
+        also shows **Join the N Parts…** next to its title, which selects
+        all the parts of that session. *Join* writes the recording,
+        rescans the library and opens it.
+
+        **What is written:**
+        - audio: per track (mixed, or mic + system), the parts end to
+          end in the first part's file format; a track shorter than its
+          part is padded with silence so mic and system stay aligned; a
+          part in another sample rate or channel count is converted;
+        - a transcript for every label any part has (main, microphone,
+          system, re-transcriptions), each part's lines placed as the
+          studio shows them (sync nudge applied) and shifted to where the
+          part begins, written with exact timing;
+        - `<stem>.studio.json`: start = the first part's start, speaker
+          names merged (an id named in an earlier part keeps that name),
+          the first linked meeting. Minutes and Q&A notes are not carried
+          over.
+        - where: a sibling folder `<folder>-joined-<yyyy-MM-dd-HH-mm-ss>`
+          when the first part's folder holds only the joined parts,
+          otherwise a subfolder `<stem>-joined-<…>` of that folder. Files
+          are named after the parts' stem without `.partNN`.
+
+        Recordings with different tracks (e.g. one part without its mic
+        file) are refused with a message naming both. Speaker ids are
+        per part in live transcripts (Soniox's "1" in one part need not be
+        the same person in the next); rename speakers in the joined
+        recording when they differ.
+
+        **From the command line:**
+
+        ```sh
+        ntakker-studio join --name TEXT [--library DIR] [--dry-run]
+        ```
+
+        joins every recording whose name contains TEXT (at least two) and
+        prints JSON: `plan` (stem, start, `durationSeconds`, tracks,
+        transcripts, and per part `recording`, `start`, `durationSeconds`,
+        `offsetSeconds`, `pauseBeforeSeconds`, `lines`) and, unless
+        `--dry-run`, `joined` (folder, stem, parts, duration, lines).
+        Exit codes as for `match-meetings`.
+
+        **Validated 2026-10-19** on a copy of the user's six-part
+        "Daily-Projects" session (with part 1's mic file put back): 24:34
+        of audio in 12 s, both tracks 1474.1 s (the sum of the parts),
+        307 lines (the sum), in order; the audio of parts 5 and 6 sits at
+        684.7 s and 1402.7 s of the joined track with zero shift
+        (envelope correlation 1.0).
 
         ## Releasing
 

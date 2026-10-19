@@ -16,6 +16,8 @@ struct ContentView: View {
         } detail: {
             if library.root == nil {
                 ChooseLibraryView()
+            } else if library.selection.count >= 2 {
+                JoinView()
             } else if let ws = library.workspace {
                 RecordingDetailView(workspace: ws)
                     .id(ws.recording.id)
@@ -23,7 +25,7 @@ struct ContentView: View {
                 ContentUnavailableView(
                     "No recording selected",
                     systemImage: "waveform",
-                    description: Text("Pick a recording on the left, or search inside every transcript.")
+                    description: Text("Pick a recording on the left, or search inside every transcript. Select several (⌘-click or ⇧-click) to join them into one.")
                 )
             }
         }
