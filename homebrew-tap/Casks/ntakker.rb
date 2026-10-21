@@ -1,6 +1,6 @@
 cask "ntakker" do
-  version "0.3.2"
-  sha256 "cffb3307f6cf2204ee04ec12176778dc74274542aeed515c67a559f2bc5e2708"
+  version "0.3.3"
+  sha256 "f565139b1e0070b6c36a4f5d812104694f1f71e5e43b1409fa27ee1d0de88531"
 
   url "https://github.com/biks2013-tools/ntakker/releases/download/ntakker-v#{version}/ntakker-#{version}.zip"
   name "ntakker"
