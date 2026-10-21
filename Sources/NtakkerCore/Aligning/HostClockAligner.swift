@@ -143,6 +143,24 @@ public final class HostClockAligner: @unchecked Sendable {
         }
     }
 
+    /// Mute or unmute a source (2026-10-21). A muted source's slice of
+    /// every following window is emitted as silence — to the recorder
+    /// and every live tap (transcription) alike — while its timing and
+    /// the other source are untouched, so the tracks stay aligned.
+    /// The source keeps being captured (meters and the echo-canceller
+    /// reference still see it). Takes effect from the next window.
+    /// Thread-safe; must not be called from a tap closure.
+    public func setMuted(_ muted: Bool, for source: CaptureSourceTag) {
+        serialQueue.sync {
+            if muted { _muted.insert(source) } else { _muted.remove(source) }
+        }
+    }
+
+    /// The sources currently muted. Thread-safe.
+    public var mutedSources: Set<CaptureSourceTag> {
+        serialQueue.sync { _muted }
+    }
+
     /// Snapshot of the current stats. Thread-safe — read-only access
     /// hops onto the serial queue.
     public var stats: Stats {
@@ -169,6 +187,9 @@ public final class HostClockAligner: @unchecked Sendable {
     /// the token alongside the closure so `removeLiveTap(_:)` can look
     /// up entries by reference equality.
     private var _liveTaps: [(token: TapToken, closure: @Sendable (AlignedFrame) -> Void)] = []
+
+    /// Sources emitted as silence (see `setMuted(_:for:)`).
+    private var _muted: Set<CaptureSourceTag> = []
 
     /// Format description used to wrap silence + emitted buffers.
     private let formatDescription: CMAudioFormatDescription
@@ -564,7 +585,7 @@ public final class HostClockAligner: @unchecked Sendable {
 
         let overlapping = track.live.filter { $0.start < we && $0.end > ws }
         let buffer: CMSampleBuffer
-        if overlapping.isEmpty {
+        if overlapping.isEmpty || _muted.contains(tag) {
             buffer = SilenceBufferFactory.make(
                 pts: CMTime(value: ws, timescale: timescale),
                 sampleRate: targetSampleRate,

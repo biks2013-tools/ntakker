@@ -1631,6 +1631,17 @@ with the disposition "validate during Phase 10".
   after plan-008 (`FilenameField.swift`, `FolderPicker.swift`,
   `SonioxKeyField.swift`, `GeminiKeyField.swift`, `ProviderKeyField.swift`).
 
+### Added 2026-10-21 — Muting a source during a recording
+
+**FR-MUTE-1** — While a recording runs or is paused, the user can mute
+and unmute the microphone and the system audio independently, as
+often as needed (the `mic` / `sys` meters in the ntakker status bar).
+A muted source is recorded and live-transcribed as silence of the
+same length (tracks stay aligned), the other source is untouched, the
+meter keeps showing the live input (dimmed), and the choice holds
+across pause / resume / split; each new recording starts unmuted.
+IMPLEMENTED (ntakker app; not in `ntakker-cli`).
+
 ### Added by plan-012 — Source-split transcription
 
 **FR-SS-1** — `--transcribe-source both` runs two parallel

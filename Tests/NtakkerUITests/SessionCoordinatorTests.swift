@@ -90,6 +90,13 @@ final class MockRecordingSession: RecordingSessionLike, @unchecked Sendable {
         // for the coordinator's stop-and-stitch behaviour do not
         // exercise it.
     }
+
+    /// Every `setMuted` call, in order.
+    private(set) var muteCalls: [(muted: Bool, source: CaptureSourceTag)] = []
+
+    func setMuted(_ muted: Bool, source: CaptureSourceTag) {
+        muteCalls.append((muted, source))
+    }
 }
 
 // MARK: - Tests
@@ -157,6 +164,32 @@ struct SessionCoordinatorTests {
         #expect(producedURLs.count == 2)
         #expect(producedURLs.first?.lastPathComponent == "recording-2026-04-26-18-30.m4a")
         #expect(producedURLs.last?.lastPathComponent == "recording-2026-04-26-18-30.part02.m4a")
+        await coordinator.teardown()
+    }
+
+    @Test("a muted source stays muted in the part built after a pause (2026-10-21)")
+    func muteCarriesAcrossResume() async throws {
+        var sessions: [MockRecordingSession] = []
+        let coordinator = SessionCoordinator(
+            baseOptions: baseOptions(),
+            logger: .init(label: "test"),
+            factory: { _ in
+                let m = MockRecordingSession()
+                sessions.append(m)
+                return m
+            }
+        )
+        try await coordinator.start()
+        await coordinator.setMuted(true, source: .microphone)
+        #expect(sessions.first?.muteCalls.map(\.source) == [.microphone])
+        try await coordinator.pause()
+        try await coordinator.resume()
+        #expect(sessions.count == 2)
+        #expect(sessions.last?.muteCalls.map(\.muted) == [true])
+        #expect(sessions.last?.muteCalls.map(\.source) == [.microphone])
+        await coordinator.setMuted(false, source: .microphone)
+        #expect(sessions.last?.muteCalls.last?.muted == false)
+        #expect(await coordinator.mutedSources.isEmpty)
         await coordinator.teardown()
     }
 

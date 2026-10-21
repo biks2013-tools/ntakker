@@ -103,6 +103,43 @@ public final class RecordingController {
     /// session starts.
     public private(set) var latestError: NtakkerError?
 
+    /// Sources muted in the current recording (2026-10-21): recorded and
+    /// transcribed as silence until unmuted. Cleared when a recording
+    /// starts; kept across pause / resume / split.
+    public private(set) var mutedSources: Set<CaptureSourceTag> = []
+
+    /// Whether a source can be muted now: while a recording is running
+    /// or paused (not before it starts or after it stops).
+    public var canMute: Bool {
+        guard coordinator != nil else { return false }
+        switch state {
+        case .starting, .recording, .pausing, .paused, .resuming, .splitting: return true
+        case .idle, .stopping, .stopped, .failed: return false
+        }
+    }
+
+    /// Mute or unmute `source` in the current recording.
+    public func setMuted(_ muted: Bool, source: CaptureSourceTag) {
+        guard canMute, let coordinator else { return }
+        if muted { mutedSources.insert(source) } else { mutedSources.remove(source) }
+        logger.info("\(source.rawValue) \(muted ? "muted" : "unmuted") by the user")
+        // Chained so quick mute / unmute clicks reach the coordinator
+        // in the order they were made.
+        let previous = muteTask
+        muteTask = Task {
+            await previous?.value
+            await coordinator.setMuted(muted, source: source)
+        }
+    }
+
+    /// The latest mute change on its way to the coordinator.
+    private var muteTask: Task<Void, Never>?
+
+    /// Flip `source` between muted and unmuted.
+    public func toggleMute(_ source: CaptureSourceTag) {
+        setMuted(!mutedSources.contains(source), source: source)
+    }
+
     /// Configured options for the next session. Set by the views via
     /// `setOptions(_:)`. `nil` until the user has provided enough
     /// inputs to construct a `RecordingOptions` (`output` is required).
@@ -341,6 +378,7 @@ public final class RecordingController {
 
         // Reset per-session bookkeeping.
         completedSegments = []
+        mutedSources = []
         latestError = nil
         segmentElapsed = 0
         totalElapsed = 0

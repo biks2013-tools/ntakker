@@ -24,6 +24,39 @@ struct HostClockAlignerPlacementTests {
         return (aligner, collector)
     }
 
+    @Test("a muted source is emitted as silence, the other untouched; unmuting brings it back (2026-10-21)")
+    func muteSilencesOneSource() {
+        let (aligner, collector) = makeAligner()
+        var taps: [AlignedFrame] = []
+        let lock = NSLock()
+        _ = aligner.addLiveTap { f in lock.lock(); taps.append(f); lock.unlock() }
+
+        aligner.setMuted(true, for: .microphone)
+        #expect(aligner.mutedSources == [.microphone])
+        aligner.ingest(capture(.system, start: 0, frames: 9_600, value: 1))
+        aligner.ingest(capture(.microphone, start: 0, frames: 9_600, value: 0.5))
+        // Both sides delivered → the first two windows are out already.
+        #expect(aligner.stats.framesEmitted == 2)
+        aligner.setMuted(false, for: .microphone)
+        #expect(aligner.mutedSources.isEmpty)
+        aligner.ingest(capture(.system, start: 9_600, frames: 4_800, value: 1))
+        aligner.ingest(capture(.microphone, start: 9_600, frames: 4_800, value: 0.5))
+        aligner.flush()
+
+        let frames = collector.frames
+        #expect(frames.count == 3)
+        let mic = frames.flatMap { channel0($0.micBuffer) }
+        let sys = frames.flatMap { channel0($0.systemBuffer) }
+        #expect(mic.count == 14_400 && sys.count == 14_400, "timing kept: every window has both sides")
+        #expect(mic[0..<9_600].allSatisfy { $0 == 0 }, "muted → silence")
+        #expect(mic[9_600...].allSatisfy { $0 == 0.5 }, "unmuted → the live audio again")
+        #expect(sys.allSatisfy { $0 == 1 }, "the other source is untouched")
+        lock.lock(); let tapped = taps; lock.unlock()
+        #expect(tapped.prefix(2).allSatisfy { channel0($0.micBuffer).allSatisfy { $0 == 0 } },
+                "live taps (transcription) get the silence too")
+        #expect(aligner.stats.micGapFills == 0, "muting is not counted as a gap")
+    }
+
     @Test("an in-stream hole is silence at its true position, not collapsed")
     func holeIsPlacedByPTS() {
         let (aligner, collector) = makeAligner()

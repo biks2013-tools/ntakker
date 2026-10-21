@@ -219,6 +219,9 @@ public final class RecordingSession: @unchecked Sendable {
     private var _maxDurationTimer: DispatchSourceTimer?
     private var _terminalErrorPollTimer: DispatchSourceTimer?
     private var _aligner: HostClockAligner?
+    /// Sources the user muted (2026-10-21). Applied to the aligner when
+    /// `run()` builds it and on every `setMuted(_:source:)` after that.
+    private var _mutedSources: Set<CaptureSourceTag> = []
 
     /// Current encoder. Wrapped in an `OSAllocatedUnfairLock` so the
     /// `aligner.onAlignedFrame` callback (which fires on the aligner's
@@ -377,6 +380,21 @@ public final class RecordingSession: @unchecked Sendable {
         }
     }
 
+    /// Mute or unmute a source (2026-10-21): while muted, the source is
+    /// recorded — and transcribed — as silence, keeping its track's
+    /// timing; unmuting brings the live audio back from the next
+    /// aligned window. Callable before `run()` (applied when the
+    /// pipeline is built) or at any time during it. Safe to call from
+    /// any thread.
+    public func setMuted(_ muted: Bool, source: CaptureSourceTag) {
+        serialQueue.async { [weak self] in
+            guard let self else { return }
+            if muted { self._mutedSources.insert(source) } else { self._mutedSources.remove(source) }
+            self._aligner?.setMuted(muted, for: source)
+            self.logger.info("\(source.rawValue) \(muted ? "muted" : "unmuted")")
+        }
+    }
+
     /// Run a recording session to completion. See file-level docs
     /// for the algorithm.
     ///
@@ -491,6 +509,9 @@ public final class RecordingSession: @unchecked Sendable {
         // §15.3.2 / AMB-2) so the aligner-frame callback can read it
         // atomically while `split(nextOutput:)` rotates the reference.
         serialQueue.sync {
+            for source in self._mutedSources {
+                aligner.setMuted(true, for: source)
+            }
             self._aligner = aligner
             self._systemSource = systemSource
             self._micSource = micSource

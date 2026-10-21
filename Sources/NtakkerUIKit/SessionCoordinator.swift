@@ -84,6 +84,10 @@ public protocol RecordingSessionLike: AnyObject, Sendable {
     /// this; the production session wires it into the capture
     /// sources' `levelTap` properties.
     func setLevelTapSink(_ sink: (@Sendable (CaptureBuffer) -> Void)?)
+
+    /// Mute or unmute a source: recorded and transcribed as silence
+    /// while muted, timing kept (2026-10-21). Callable before `run()`.
+    func setMuted(_ muted: Bool, source: CaptureSourceTag)
 }
 
 /// Closure factory that builds a `RecordingSessionLike` for the given
@@ -128,6 +132,10 @@ public final class LiveRecordingSessionAdapter: RecordingSessionLike, @unchecked
 
     public func setLevelTapSink(_ sink: (@Sendable (CaptureBuffer) -> Void)?) {
         session.levelTapSink = sink
+    }
+
+    public func setMuted(_ muted: Bool, source: CaptureSourceTag) {
+        session.setMuted(muted, source: source)
     }
 }
 
@@ -454,6 +462,19 @@ public actor SessionCoordinator {
     /// `buildAndRun(...)`. Backs `setLevelTapSink(_:)`.
     private var levelTapSink: (@Sendable (CaptureBuffer) -> Void)?
 
+    /// Mute or unmute a source for the rest of this recording
+    /// (2026-10-21). Applied to the in-flight session and to every part
+    /// built after a pause, so a muted source stays muted across
+    /// pause / resume / split until the user unmutes it. A new
+    /// recording gets a new coordinator, so it starts unmuted.
+    public func setMuted(_ muted: Bool, source: CaptureSourceTag) {
+        if muted { mutedSources.insert(source) } else { mutedSources.remove(source) }
+        current?.setMuted(muted, source: source)
+    }
+
+    /// The sources muted for this recording. Backs `setMuted(_:source:)`.
+    public private(set) var mutedSources: Set<CaptureSourceTag> = []
+
     /// the events stream so consumers' `for await` loops exit. Called
     /// by `RecordingController.cancelAll()` on app shutdown.
     public func teardown() {
@@ -496,6 +517,9 @@ public actor SessionCoordinator {
         // applies to every segment.
         if let sink = levelTapSink {
             session.setLevelTapSink(sink)
+        }
+        for source in mutedSources {
+            session.setMuted(true, source: source)
         }
         state = .recording(segment: segmentNumber)
         startStateForward(for: session)

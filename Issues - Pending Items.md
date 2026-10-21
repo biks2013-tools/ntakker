@@ -6,6 +6,11 @@
 
 ## Pending items (most critical first)
 
+### ntakker mute — open items (2026-10-21)
+- **The mute buttons were not clicked in the live popover.** The engine path is tested end to end (`RecordingSessionMuteTests`: fake sources → split WAV, muted stretch silent, unmuted stretch live, both tracks the same length), plus the aligner and coordinator tests; the status-bar button itself was only built, not clicked during a real recording.
+- **No marker of muted stretches** is written to the recording or its sidecars; the studio cannot show where a source was muted.
+- **No click-free fade:** mute / unmute switch at a 100 ms window edge, which can leave a small click if the source was loud at that instant.
+
 ### ntakker System audio / Microphone lane controls — open items (2026-10-21)
 - **Checked in a harness, not in a live recording.** Collapse, the divider drag, scrolling together / separately, re-aligning when switched on, and following new lines after a resize were driven with real mouse events on the real `SourceLane` / `SourceSplitTranscriptView` (stub controller and palette, sample lines). Not yet tried in the menu-bar popover during a `--transcribe-source both` recording.
 - **Scrolling together relies on the scroll phase** (interacting / decelerating) to tell the user's scrolling from the code's; it worked with mouse-wheel events in the harness. If a device reports no phase, the lanes would simply scroll separately.

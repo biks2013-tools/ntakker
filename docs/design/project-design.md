@@ -12085,3 +12085,33 @@ Added 2026-10-17. Plan: `docs/plans/plan-025-shared-settings.md`. Configuration:
 - **Decision (user, 2026-10-17)**: real settings only in the file; UI state stays per app.
 - **Known limit**: `EnvFileStore.upsert` is read-modify-write; two writers at the same instant can lose one change (seen once in testing with a hand edit). Acceptable for settings changed by hand; see the issues register.
 
+## Muting a source during a recording (2026-10-21)
+
+**Where:** `HostClockAligner` — the one point both the recorder
+(`onAlignedFrame`) and the live transcription (`addLiveTap`) are fed
+from. `setMuted(_:for:)` puts a source in a queue-confined `_muted`
+set; `render(...)` emits a muted source's slice of each window as the
+same silence buffer it uses for holes (without counting a gap fill).
+So a muted stretch is silence of the right length in every layout,
+the other source is untouched, the transcription sees silence, and
+the tracks stay aligned. Capture, the level taps and the AEC
+reference (all upstream of the aligner) keep the real signal.
+
+**Plumbing:** `RecordingSession.setMuted(_:source:)` (stores the set
+and forwards to the aligner; the set is applied when `run()` builds
+the aligner, so it can be set before `run()`) →
+`RecordingSessionLike.setMuted` → `SessionCoordinator.setMuted`
+(keeps `mutedSources` and re-applies it to every part built by
+`buildAndRun`, i.e. across pause / resume; split keeps the same
+aligner) → `RecordingController.setMuted / toggleMute` (observable
+`mutedSources`, `canMute` while starting … paused; changes chained in
+one task so quick clicks arrive in order; reset in `start()`, and a
+new coordinator per recording) → `PopoverStatusBar.SourceMeterButton`.
+
+**Why not at the source or recorder:** zeroing `CMSampleBuffer`s at
+the source would also blank the meters and the AEC reference;
+muting in each recorder would miss the transcription tap and need
+per-layout code. Tests: `HostClockAlignerPlacementTests.muteSilencesOneSource`,
+`RecordingSessionMuteTests` (fake sources → split WAV on disk),
+`SessionCoordinatorTests.muteCarriesAcrossResume`.
+

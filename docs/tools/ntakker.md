@@ -269,6 +269,30 @@
         (no animation timer), so they redraw only when the level
         changes.
 
+        ### Muting the microphone or system audio (added 2026-10-21)
+
+        While a recording runs (or is paused), the **`mic`** and **`sys`**
+        meters in the popover status bar are buttons: click one to mute
+        that source, click again to unmute it. Mute and unmute as often
+        as you like — e.g. mute the mic while someone types or coughs, or
+        mute system audio while a notification sound plays.
+
+        - A muted source is **recorded as silence** for as long as it is
+          muted — in every layout (`mixed`, `split`, `stereo-split`) — and
+          its live transcription gets silence too, so nothing is
+          transcribed from it. The other source is untouched.
+        - The timing is kept: a muted stretch is silence of the same
+          length, so the two tracks stay in sync and the transcript times
+          stay right.
+        - The source keeps being captured, so its meter still moves
+          (grey and dimmed, with a slashed icon and an orange label) —
+          you can see when the noise has stopped. Echo cancellation keeps
+          using the real system audio.
+        - The choice holds across Pause / Resume and Split, and every new
+          recording starts unmuted. Mute applies from the next ~100 ms
+          window of audio.
+        - Not available from `ntakker-cli`.
+
         ### Live transcription picker (FR-49)
 
         Dropdown labelled **"Live transcription"** with one entry per

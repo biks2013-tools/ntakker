@@ -46,21 +46,21 @@ struct PopoverStatusBar: View {
         VStack(spacing: 0) {
             Divider().overlay(palette.separator)
             HStack(spacing: 10) {
-                BouncingBars(
+                SourceMeterButton(
+                    source: .microphone,
                     color: palette.successDot, // mic green
                     intensity: micIntensity,
                     isActive: barsActive
                 )
-                BarsLabel(text: String(localized: "mic"))
 
                 hairline
 
-                BouncingBars(
+                SourceMeterButton(
+                    source: .system,
                     color: palette.accent, // system audio accent
                     intensity: systemIntensity,
                     isActive: barsActive
                 )
-                BarsLabel(text: String(localized: "sys"))
 
                 hairline
 
@@ -338,6 +338,73 @@ private struct BouncingBars: View {
         guard isActive else { return 3 }
         let level = max(0, min(1, intensity))
         return CGFloat(3 + 11 * level * weight)
+    }
+}
+
+/// A source's meter and label, which mutes / unmutes the source
+/// while a recording runs or is paused (2026-10-21). Muted, the
+/// source is recorded and transcribed as silence; the bars keep
+/// showing the live input (dimmed, grey) so the user can see when the
+/// noise has stopped and unmute.
+private struct SourceMeterButton: View {
+    @Environment(\.palette) private var palette
+    @Environment(\.recordingController) private var recordingController
+
+    let source: CaptureSourceTag
+    let color: Color
+    let intensity: Double
+    let isActive: Bool
+
+    private var muted: Bool { recordingController?.mutedSources.contains(source) ?? false }
+    private var canMute: Bool { recordingController?.canMute ?? false }
+
+    private var label: String {
+        source == .microphone ? String(localized: "mic") : String(localized: "sys")
+    }
+
+    private var name: String {
+        source == .microphone ? String(localized: "microphone") : String(localized: "system audio")
+    }
+
+    var body: some View {
+        Button {
+            recordingController?.toggleMute(source)
+        } label: {
+            HStack(spacing: 10) {
+                BouncingBars(
+                    color: muted ? palette.tertiary : color,
+                    intensity: intensity,
+                    isActive: isActive
+                )
+                .opacity(muted ? 0.5 : 1)
+                if muted {
+                    HStack(spacing: 2) {
+                        Image(systemName: source == .microphone ? "mic.slash.fill" : "speaker.slash.fill")
+                            .font(.system(size: 9))
+                        Text(label)
+                            .font(.system(size: 10, design: .monospaced))
+                    }
+                    .foregroundStyle(.orange)
+                } else {
+                    BarsLabel(text: label)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!canMute)
+        .help(help)
+        .accessibilityLabel(muted ? String(localized: "Unmute \(name)") : String(localized: "Mute \(name)"))
+        .accessibilityValue(muted ? String(localized: "Muted") : String(localized: "On"))
+    }
+
+    private var help: String {
+        guard canMute else {
+            return String(localized: "Level of the \(name). While recording, click to mute it.")
+        }
+        return muted
+            ? String(localized: "The \(name) is muted — recorded and transcribed as silence. Click to unmute.")
+            : String(localized: "Click to mute the \(name): it is recorded and transcribed as silence until you unmute it.")
     }
 }
 
