@@ -10843,8 +10843,28 @@ Layout details:
   bottom anchored to that lane's latest segment (independent of the
   other lane).
 - The two lane heights split the available transcript area 50/50 by
-  default; user-resizable by dragging the divider (deferred to v2 if
-  the divider proves complex; v1 ships with fixed 50/50).
+  default; user-resizable by dragging the divider (implemented
+  2026-10-21 — `SourceSplitTranscriptView`: the System lane's share
+  is `com.ntakker-cli.ui.sourceSplit.systemFraction`, clamped to
+  15%–85% by `SourceSplitLayout`; double-click resets to 50/50; the
+  drag is measured in global coordinates because the handle moves with
+  it).
+- Each lane collapses from its header (`…sourceSplit.systemCollapsed` /
+  `…micCollapsed`); a collapsed lane keeps only its header and the
+  other lane takes the space (2026-10-21).
+- Scrolling together (`…sourceSplit.syncScroll`, default on;
+  2026-10-21): a lane being scrolled by the user (scroll phase
+  interacting / decelerating) asks the other, through
+  `LaneScrollSync`, to show `SourceSplitLayout.alignedSegmentID` — the
+  last line that started at or before its own top visible line — or
+  the bottom when it is following the live text. A lane moved by code
+  never drives back, so there is no feedback loop. Switching the
+  option on aligns Microphone to System at once.
+- Following the live text: each lane keeps a `followLive` flag, set
+  only by the user's scrolling (at the bottom or not) or by the
+  partner's request; new lines, a resize and opening/expanding the lane
+  keep a following lane at its last line (2026-10-21; before, every
+  event scrolled to the bottom, even while the user was reading).
 - Lane header includes the channel's inline error display when
   `dualChannelErrors?.channelX != nil` — error text rendered in the
   app's destructive-color token (`SemanticColors.destructive`) below

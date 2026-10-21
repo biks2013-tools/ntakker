@@ -438,6 +438,27 @@
           `None` (no panel space wasted in the no-transcription
           configuration).
 
+        #### System audio / Microphone lanes (added 2026-10-21)
+
+        With **Transcribe source: Both** the panel shows two lanes,
+        System audio above and Microphone below:
+
+        - **Collapse / expand** a lane by clicking its header (the
+          chevron). A collapsed lane shows `· N lines`; the other lane
+          takes the space.
+        - **Resize** by dragging the handle between the lanes (each keeps
+          at least 15%); double-click the handle for half and half.
+        - **Scroll together or separately** with the
+          ⇕ button in the panel header (filled = together, the default).
+          Together: scrolling one lane brings the other to the line that
+          started at the same moment (the last one at or before it);
+          scrolling one to the bottom brings both back to the live text.
+          Separately: each lane scrolls on its own.
+        - A lane follows the live text while it is at the bottom; scroll
+          up to read and it stays put until you scroll back down.
+        - All four choices are remembered (`com.ntakker-cli.ui.sourceSplit.*`
+          in the app's defaults).
+
         ### Privacy disclosure dialog (FR-53)
 
         The first time the user picks any non-`None` provider on a

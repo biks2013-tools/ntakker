@@ -1649,6 +1649,15 @@ auto-scrolling lanes (`System audio` / `Microphone`) when
 single-mode + `transcribeSource == .both`. Dual-mode
 (`--transcribe dual`) is unaffected.
 
+**FR-SS-2a** (added 2026-10-21) — In those two lanes the user can
+collapse / expand each lane from its header, resize the space between
+them by dragging the divider (15%–85%, double-click → 50/50), and
+choose whether the lanes scroll together (time-aligned: the other lane
+shows the line that started at or before the scrolled lane's top line;
+the bottom follows the bottom) or separately. A lane follows the live
+text only while it is at the bottom. The choices persist in the app's
+defaults. IMPLEMENTED.
+
 **FR-SS-3** — When `--transcribe-source both` is selected with
 provider == `elevenlabs`, `ntakker-cli` logs a warning at session start
 about the Free/Starter tier concurrent-request cap (8). The recording

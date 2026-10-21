@@ -6,8 +6,9 @@
 
 ## Pending items (most critical first)
 
-### ntakker left a part's mic file outside its session folder (2026-10-19)
-- Session `Daily-Projects-recording-2026-10-19-09-55` (six parts): `recording-2026-10-19-09-26.part01.mic.m4a` stayed in `~/Recordings` while every other file was moved into the folder by Save (`SessionExporter`, which logs and skips a failed move). The studio therefore shows part 1 without its mic, plus a stray `recording-2026-10-19-09-26.part01` recording, and refuses to join the parts. The cause is not known yet (no log lines were found for 09:55); the move loop's failures should be surfaced to the user. Fix for this session: the file was moved into the folder on 2026-10-19; all six parts now plan for joining. Still open: why the move was skipped.
+### ntakker System audio / Microphone lane controls — open items (2026-10-21)
+- **Checked in a harness, not in a live recording.** Collapse, the divider drag, scrolling together / separately, re-aligning when switched on, and following new lines after a resize were driven with real mouse events on the real `SourceLane` / `SourceSplitTranscriptView` (stub controller and palette, sample lines). Not yet tried in the menu-bar popover during a `--transcribe-source both` recording.
+- **Scrolling together relies on the scroll phase** (interacting / decelerating) to tell the user's scrolling from the code's; it worked with mouse-wheel events in the harness. If a device reports no phase, the lanes would simply scroll separately.
 
 ### Studio join — open items (2026-10-19)
 - **Speaker ids are per part** in live transcripts; the join keeps raw ids, so "Speaker 1" of two parts may be two people. Renaming in the joined recording fixes it by hand.
@@ -1290,6 +1291,12 @@ The default build (Swift 5.9 mode) is clean — no warnings, no errors. This iss
 Plan-002 dispatches Phase F (quit-while-recording flow) and Phase G (error-mapping banner) in parallel within Wave 5. The design (`docs/design/project-design.md` §15.15 "Wave 4 → Wave 5" boundary table) shows that both phases edit `Sources/MacrecUIKit/Views/RootView.swift`: F adds a Quit button at the bottom of the popover stack; G inserts an `ErrorBanner` at the top. Concurrent agents editing the same file will race or merge-conflict. **Mitigation**: Phase 6 orchestrator MUST dispatch F and G **sequentially** within Wave 5 — F first (adds the Quit affordance) then G (adds the ErrorBanner) is the recommended order, but either ordering is acceptable as long as the two are not concurrent. Each individual phase remains a single-file edit; only the Wave 5 dispatch order matters. Owner: Phase 6 orchestrator + Phase 7 Code Reviewer.
 
 ## Completed items
+
+### SAVE-MIC-2026-10-21 (RESOLVED 2026-10-21) — Save left part 1's mic file behind for paused/split sessions in the split layout
+
+- **Issue:** session `Daily-Projects-recording-2026-10-19-09-55` (six parts, split layout): `recording-2026-10-19-09-26.part01.mic.m4a` stayed in `~/Recordings` while every other file was moved into the folder. The studio showed part 1 without its mic plus a stray `…part01` recording, and refused to join the parts.
+- **Cause:** on the first pause/split, `SessionCoordinator.renameFirstSegmentOnDisk` renames part 1 to `.part01` and, for the split layout, reports the renamed **system** file (`<stem>.part01.system.m4a`) as the completed segment; parts 2+ are reported by their bare URL (`<stem>.partNN.m4a`, which does not exist). `SessionExporter.expandAudioSources` took any URL that exists as the whole part, so for part 1 it returned only the system file and never looked for the mic. Every other part went through the "bare URL → system + mic" branch. Present since the initial snapshot; nothing was logged because no move failed — the mic was simply never on the list.
+- **Fix:** `SegmentNamer.audioFiles(forCompletedSegment:)` (`Sources/NtakkerUIKit/SegmentNamer.swift`) resolves both shapes to every file of the part (a `.system` / `.mic` URL → both siblings that exist); `SessionExporter` uses it. Tests in `SegmentNamerTests` (the part-1 case fails on the old logic). The user's file was moved into the session folder on 2026-10-19 and the session joined in the studio. Ships with the next ntakker release.
 
 ### ENV-NEWLINE-2026-10-18 (RESOLVED 2026-10-18) — shared settings file: a written value lost its final newline, so the next appended line was glued onto it
 

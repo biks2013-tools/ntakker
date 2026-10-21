@@ -26,6 +26,7 @@ struct LiveTranscriptPanel: View {
     @Environment(\.recordingController) private var recordingController
     @Environment(\.palette) private var palette
     @Environment(\.popoverBehavior) private var popoverBehavior
+    @AppStorage(SourceSplitTranscriptView.syncScrollKey) private var syncScroll = true
 
     /// Persisted source picker (com.ntakker-cli.ui.transcribeSource) —
     /// used by the Phase C6 three-way branch to switch into the
@@ -96,6 +97,19 @@ struct LiveTranscriptPanel: View {
                     .font(.caption)
                     .foregroundStyle(palette.secondary)
                 Spacer()
+                Button {
+                    syncScroll.toggle()
+                } label: {
+                    Image(systemName: syncScroll ? "arrow.up.and.down.square.fill" : "arrow.up.and.down.square")
+                        .imageScale(.small)
+                        .foregroundStyle(palette.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help(syncScroll
+                      ? String(localized: "System audio and Microphone scroll together — click to scroll them separately")
+                      : String(localized: "System audio and Microphone scroll separately — click to scroll them together"))
+                .accessibilityLabel(String(localized: "Scroll System audio and Microphone together"))
+                .accessibilityValue(syncScroll ? String(localized: "On") : String(localized: "Off"))
                 if !segments.isEmpty {
                     Button {
                         let body = SessionExporter.renderTranscriptMarkdown(segments: segments)
