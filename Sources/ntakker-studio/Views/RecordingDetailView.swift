@@ -20,7 +20,7 @@ struct RecordingDetailView: View {
             }
             PlayerBar(workspace: workspace)
             WaveformStrip(workspace: workspace)
-                .frame(height: 72)
+                .frame(height: workspace.canSilence ? 112 : 72)
                 .padding(.horizontal, 12)
                 .padding(.bottom, 8)
             Divider()
@@ -211,10 +211,68 @@ struct PlayerBar: View {
     }
 }
 
-/// Waveform with playhead, transcript-line ticks, cuts and the selection.
-/// Click to seek; drag to select a range for cutting.
+/// Waveform with playhead, cuts and the selection. Click to seek; drag
+/// to select a range for cutting. A split recording shows its two
+/// channels as separate lanes (2026-10-21): each can be muted while
+/// listening, and a range dragged on a lane can be silenced on that
+/// channel only (Cut ▸ Silence).
 struct WaveformStrip: View {
     @Bindable var workspace: RecordingWorkspace
+
+    var body: some View {
+        if workspace.canSilence, !workspace.channelWaveforms.isEmpty {
+            VStack(spacing: 4) {
+                ChannelLane(workspace: workspace, role: .system)
+                ChannelLane(workspace: workspace, role: .microphone)
+            }
+        } else {
+            WaveformLane(workspace: workspace, peaks: workspace.waveform.peaks, role: nil)
+        }
+    }
+}
+
+/// One channel of a split recording: its name, a listen / mute button
+/// and its waveform.
+private struct ChannelLane: View {
+    @Bindable var workspace: RecordingWorkspace
+    let role: AudioTrackRole
+
+    private var name: String { role == .microphone ? "Mic" : "System" }
+    private var muted: Bool { workspace.player.mutedRoles.contains(role) }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button {
+                if muted { workspace.player.mutedRoles.remove(role) } else { workspace.player.mutedRoles.insert(role) }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .foregroundStyle(muted ? Color.orange : Color.secondary)
+                        .frame(width: 16)
+                    Text(name).font(.caption).foregroundStyle(muted ? .secondary : .primary)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .frame(width: 70)
+            .help(muted
+                  ? "\(name) is muted while you listen. Click to hear it again. (The file is not changed.)"
+                  : "Click to mute \(name) while you listen, to hear the other channel alone. (The file is not changed.)")
+            .accessibilityLabel(muted ? "Unmute \(name)" : "Mute \(name)")
+            WaveformLane(workspace: workspace, peaks: workspace.channelWaveforms[role]?.peaks ?? [], role: role)
+                .opacity(muted ? 0.45 : 1)
+        }
+    }
+}
+
+/// A waveform with the playhead, cuts, the selection and — for a
+/// channel lane — the ranges silenced on that channel.
+private struct WaveformLane: View {
+    @Bindable var workspace: RecordingWorkspace
+    let peaks: [Float]
+    /// The channel this lane shows; `nil` for the whole recording.
+    let role: AudioTrackRole?
     @State private var dragStart: Double?
 
     var body: some View {
@@ -223,7 +281,6 @@ struct WaveformStrip: View {
             let w = geo.size.width, h = geo.size.height
             ZStack(alignment: .topLeading) {
                 Canvas { ctx, size in
-                    let peaks = workspace.waveform.peaks
                     guard !peaks.isEmpty else { return }
                     let mid = size.height / 2
                     let step = size.width / CGFloat(peaks.count)
@@ -235,18 +292,27 @@ struct WaveformStrip: View {
                     }
                     ctx.fill(path, with: .color(.accentColor.opacity(0.55)))
                 }
-                if workspace.waveform.peaks.isEmpty {
+                if peaks.isEmpty {
                     HStack { ProgressView().controlSize(.small); Text("Reading audio…").font(.caption).foregroundStyle(.secondary) }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 if duration > 0 {
+                    if let role {
+                        ForEach(workspace.silence.ranges(for: role)) { r in
+                            Rectangle().fill(Color.gray.opacity(0.55))
+                                .overlay(Rectangle().fill(Color.primary.opacity(0.5)).frame(height: 1))
+                                .frame(width: max(1, r.duration / duration * w), height: h)
+                                .offset(x: r.start / duration * w)
+                                .allowsHitTesting(false)
+                        }
+                    }
                     ForEach(workspace.cuts) { c in
                         Rectangle().fill(.red.opacity(0.28))
                             .frame(width: max(1, (c.end - c.start) / duration * w), height: h)
                             .offset(x: c.start / duration * w)
                             .allowsHitTesting(false)
                     }
-                    if let s = workspace.selection {
+                    if let s = workspace.selection, workspace.selectionRole == nil || workspace.selectionRole == role {
                         Rectangle().fill(.blue.opacity(0.25))
                             .overlay(Rectangle().stroke(.blue.opacity(0.6)))
                             .frame(width: max(1, s.duration / duration * w), height: h)
@@ -270,6 +336,7 @@ struct WaveformStrip: View {
                         if dragStart == nil { dragStart = max(0, min(duration, g.startLocation.x / w * duration)) }
                         if abs(g.translation.width) > 3, let s = dragStart {
                             workspace.selection = CutRange(start: s, end: t)
+                            workspace.selectionRole = role
                         }
                     }
                     .onEnded { g in
@@ -277,11 +344,14 @@ struct WaveformStrip: View {
                         guard duration > 0 else { return }
                         if abs(g.translation.width) <= 3 {
                             workspace.selection = nil
+                            workspace.selectionRole = nil
                             workspace.player.seek(to: max(0, min(duration, g.location.x / w * duration)))
                         }
                     }
             )
-            .help("Click to jump there; drag to select a range to cut")
+            .help(role == nil
+                  ? "Click to jump there; drag to select a range to cut"
+                  : "Click to jump there; drag to select a range — then cut it, or silence it on this channel (Cut ▸ Silence)")
         }
     }
 }

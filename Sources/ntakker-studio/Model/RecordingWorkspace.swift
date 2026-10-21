@@ -23,6 +23,8 @@ final class RecordingWorkspace {
     var visibleTranscripts: Set<URL> = [] { didSet { rebuildEntries() } }
     private(set) var entries: [TranscriptEntry] = []
     private(set) var waveform: WaveformPeaks = .empty
+    /// Per-channel envelopes of a split recording (mic and system lanes).
+    private(set) var channelWaveforms: [AudioTrackRole: WaveformPeaks] = [:]
     private(set) var isLoaded = false
 
     // Transcript pane
@@ -34,6 +36,14 @@ final class RecordingWorkspace {
 
     // Cut
     var selection: CutRange?
+    /// The channel lane the selection was dragged on (`nil`: the whole
+    /// recording's strip).
+    var selectionRole: AudioTrackRole?
+    /// Ranges of one channel to replace with silence in Export Copy;
+    /// heard as silence while listening (2026-10-21).
+    private(set) var silence = ChannelSilence() {
+        didSet { player.silence = silence }
+    }
     private(set) var cuts: [CutRange] = []
     var previewCuts = false { didSet { applySkipRanges() } }
     /// Clean the mic of the system track's echo in the exported copy.
@@ -41,6 +51,9 @@ final class RecordingWorkspace {
     var canRemoveEcho: Bool {
         recording.tracks.contains { $0.role == .microphone } && recording.tracks.contains { $0.role == .system }
     }
+    /// Whether the channels can be examined and silenced one by one
+    /// (a split recording: separate mic and system files).
+    var canSilence: Bool { canRemoveEcho }
     private(set) var exportProgress: Double?
     private(set) var lastExport: CutExportResult?
 
@@ -95,10 +108,17 @@ final class RecordingWorkspace {
         player.echoDelayOverride = metadata.echoDelayMs.map { $0 / 1000 }
         await player.load(tracks: rec.tracks)
         isLoaded = true
-        let urls = rec.tracks.map(\.url)
-        waveform = await Task.detached(priority: .utility) {
-            (try? WaveformPeaks.load(tracks: urls, bucketCount: 2400)) ?? .empty
+        let tracks = rec.tracks
+        let split = canSilence
+        let (lanes, combined) = await Task.detached(priority: .utility) { () -> ([AudioTrackRole: WaveformPeaks], WaveformPeaks) in
+            if split {
+                let lanes = (try? WaveformPeaks.loadPerTrack(tracks, bucketCount: 2400)) ?? [:]
+                return (lanes, WaveformPeaks.combined(Array(lanes.values)))
+            }
+            return ([:], (try? WaveformPeaks.load(tracks: tracks.map(\.url), bucketCount: 2400)) ?? .empty)
         }.value
+        channelWaveforms = lanes
+        waveform = combined
     }
 
     /// The library rescanned this recording. Load transcripts that are
@@ -305,10 +325,36 @@ final class RecordingWorkspace {
 
     var cutPlan: CutPlan { CutPlan(ranges: cuts, duration: duration) }
 
+    // MARK: - Silencing one channel
+
+    /// Silence the selection on `role` (the channel it was dragged on,
+    /// or the one chosen).
+    func silenceSelection(on role: AudioTrackRole) {
+        guard let s = selection, s.duration > 0.01 else { return }
+        silence.add(s, to: role, duration: duration)
+        selection = nil
+        selectionRole = nil
+    }
+
+    /// Silence `role` over the whole recording.
+    func silenceWholeTrack(_ role: AudioTrackRole) {
+        silence.add(CutRange(start: 0, end: duration), to: role, duration: duration)
+    }
+
+    func removeSilence(_ r: CutRange, from role: AudioTrackRole) {
+        silence.remove(r, from: role)
+    }
+
+    func clearSilences() { silence.clear() }
+
+    /// Whether Export Copy has anything to do.
+    var hasEdits: Bool { !cuts.isEmpty || !silence.isEmpty || (exportRemovesEcho && canRemoveEcho) }
+
     func exportCut() {
         let removeEcho = exportRemovesEcho && canRemoveEcho
-        guard exportProgress == nil, !cuts.isEmpty || removeEcho else { return }
+        guard exportProgress == nil, hasEdits else { return }
         let rec = recording, plan = cutPlan, start = audioStart, meta = metadata, echoSettings = player.echoSettings
+        let silence = self.silence
         var byFile: [TranscriptFile: [TranscriptEntry]] = [:]
         for (file, doc) in documents {
             byFile[file] = doc.entries(audioStart: start, exact: isExact(file), syncOffsetSec: meta.syncOffsetSec)
@@ -321,7 +367,8 @@ final class RecordingWorkspace {
                 let result = try await Task.detached(priority: .userInitiated) {
                     try RecordingCutExporter.export(
                         recording: rec, plan: plan, entriesByTranscript: entriesByFile,
-                        audioStart: start, metadata: meta, removeEcho: removeEcho, echoSettings: echoSettings
+                        audioStart: start, metadata: meta, removeEcho: removeEcho, echoSettings: echoSettings,
+                        silence: silence
                     ) { p in
                         Task { @MainActor in
                             if self.exportProgress != nil { self.exportProgress = p }

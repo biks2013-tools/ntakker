@@ -262,7 +262,9 @@ struct CutPanel: View {
         let long = workspace.duration >= 3600
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Drag across the waveform (or use a line's menu) to select a range, then add it as a cut. Export writes a new copy without the cuts, transcript times shifted to match, and optionally with the echo removed from the microphone. The original is never changed.")
+                Text(workspace.canSilence
+                     ? "Drag across the waveform (or use a line's menu) to select a range, then add it as a cut — or, dragged on the Mic or System lane, silence it on that channel only, to take out a noise heard on one side. Export writes a new copy without the cuts (transcript times shifted to match), with the silenced ranges silent, and optionally with the echo removed from the microphone. The original is never changed."
+                     : "Drag across the waveform (or use a line's menu) to select a range, then add it as a cut. Export writes a new copy without the cuts, transcript times shifted to match, and optionally with the echo removed from the microphone. The original is never changed.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -274,7 +276,23 @@ struct CutPanel: View {
                             Text(String(format: "(%.1f s)", s.duration)).foregroundStyle(.secondary)
                             Spacer()
                             Button("Play") { workspace.player.seek(to: s.start); workspace.player.play() }
-                            Button("Add as Cut") { workspace.addSelectionAsCut() }.buttonStyle(.borderedProminent)
+                            Button("Add as Cut") { workspace.addSelectionAsCut() }
+                                .buttonStyle(.borderedProminent)
+                        }
+                        if workspace.canSilence {
+                            HStack {
+                                Text("Silence on").foregroundStyle(.secondary)
+                                ForEach([AudioTrackRole.microphone, .system], id: \.self) { role in
+                                    let button = Button(role == .microphone ? "Mic" : "System") { workspace.silenceSelection(on: role) }
+                                        .help("Replace this range with silence on the \(role == .microphone ? "microphone" : "system") track only (in the exported copy; heard as silence now)")
+                                    if workspace.selectionRole == role {
+                                        button.buttonStyle(.borderedProminent)
+                                    } else {
+                                        button
+                                    }
+                                }
+                                Spacer()
+                            }
                         }
                     } else {
                         Text("Nothing selected").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
@@ -307,6 +325,10 @@ struct CutPanel: View {
                     }
                 }
 
+                if workspace.canSilence {
+                    SilencedBox(workspace: workspace, long: long)
+                }
+
                 if workspace.canRemoveEcho {
                     Toggle(isOn: Binding(get: { workspace.exportRemovesEcho }, set: { workspace.exportRemovesEcho = $0 })) {
                         VStack(alignment: .leading, spacing: 2) {
@@ -328,7 +350,7 @@ struct CutPanel: View {
                         Spacer()
                         Button("Export Copy") { workspace.exportCut() }
                             .buttonStyle(.borderedProminent)
-                            .disabled(workspace.cuts.isEmpty && !(workspace.exportRemovesEcho && workspace.canRemoveEcho))
+                            .disabled(!workspace.hasEdits)
                     }
                 }
 
@@ -361,7 +383,58 @@ private func exportSummary(_ r: CutExportResult) -> String {
     if let d = r.echoDelay {
         parts.append("Echo removed from the microphone (echo delay \(Int(d * 1000)) ms).")
     }
+    for (role, name) in [(AudioTrackRole.microphone, "microphone"), (.system, "system audio")] {
+        if let secs = r.silencedSeconds[role] {
+            parts.append("Silenced \(StudioAsk.timecode(secs, longForm: true)) of the \(name).")
+        }
+    }
     return parts.joined(separator: " ")
+}
+
+/// The ranges silenced on each channel, with "whole track" shortcuts.
+private struct SilencedBox: View {
+    let workspace: RecordingWorkspace
+    let long: Bool
+
+    var body: some View {
+        GroupBox("Silenced") {
+            VStack(alignment: .leading, spacing: 6) {
+                if workspace.silence.isEmpty {
+                    Text("Nothing silenced. Drag on the Mic or System lane, then press Silence on Mic / System.")
+                        .foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                ForEach([AudioTrackRole.microphone, .system], id: \.self) { role in
+                    let name = role == .microphone ? "Mic" : "System"
+                    ForEach(workspace.silence.ranges(for: role)) { r in
+                        HStack {
+                            Text(name).font(.caption.bold()).frame(width: 46, alignment: .leading)
+                            Text("\(StudioAsk.timecode(r.start, longForm: long)) – \(StudioAsk.timecode(r.end, longForm: long))").monospacedDigit()
+                            Text(String(format: "(%.1f s)", r.duration)).foregroundStyle(.secondary)
+                            Spacer()
+                            Button { workspace.player.seek(to: max(0, r.start - 3)); workspace.player.play() } label: { Image(systemName: "play.circle") }
+                                .help("Play from 3 s before")
+                            Button { workspace.removeSilence(r, from: role) } label: { Image(systemName: "trash") }
+                                .help("Hear this range again (remove the silence)")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+                Divider()
+                HStack {
+                    Button("Silence Whole Mic") { workspace.silenceWholeTrack(.microphone) }
+                        .help("Silence the microphone track over the whole recording in the copy")
+                    Button("Silence Whole System") { workspace.silenceWholeTrack(.system) }
+                        .help("Silence the system-audio track over the whole recording in the copy")
+                    Spacer()
+                    Button("Clear") { workspace.clearSilences() }.disabled(workspace.silence.isEmpty)
+                }
+                .controlSize(.small)
+                Text("Silenced ranges are heard as silence now and written silent by Export Copy. The transcript lines are kept.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
 }
 
 // MARK: - Re-transcribe

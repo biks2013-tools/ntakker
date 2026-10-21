@@ -19,6 +19,11 @@
 // `currentTime` is published 20 times a second for the transcript
 // follow and the waveform playhead. With `skipRanges` set (cut
 // preview), playback jumps over them.
+//
+// 2026-10-21: each channel of a split recording can be muted while
+// listening (`mutedRoles`, to hear one side alone), and ranges marked to
+// be silenced on one channel (`silence`) play as silence — the same
+// gain Export Copy applies. Both take effect from the next block.
 
 import AVFoundation
 import Foundation
@@ -55,6 +60,14 @@ final class PlayerController {
     }
     /// Ranges playback skips (the cut preview).
     var skipRanges: [ClosedRange<Double>] = []
+    /// Channels left out of what is heard (listening only).
+    var mutedRoles: Set<AudioTrackRole> = [] {
+        didSet { if mutedRoles != oldValue { reader?.setMuted(mutedRoles) } }
+    }
+    /// Ranges of a channel heard as silence (the marks for Export Copy).
+    var silence = ChannelSilence() {
+        didSet { if silence != oldValue { reader?.setSilence(silence) } }
+    }
 
     static let availableRates: [Float] = [0.75, 1, 1.25, 1.5, 1.75, 2]
 
@@ -98,6 +111,8 @@ final class PlayerController {
             }
             r.setEchoFilter(echoFilter)
             r.setSettings(echoSettings)
+            r.setMuted(mutedRoles)
+            r.setSilence(silence)
             applyEchoDelay()
             if r.hasEchoReference, let mic = tracks.first(where: { $0.role == .microphone }),
                let sys = tracks.first(where: { $0.role == .system }) {
@@ -213,6 +228,8 @@ final class BlockReader: @unchecked Sendable {
     private var queued = 0
     private var echoFilter = false
     private var filterPrimed = false
+    private var muted: Set<AudioTrackRole> = []
+    private var silence = ChannelSilence()
 
     init(tracks: [AudioTrack]) throws {
         let opened = try tracks.map { (file: try AVAudioFile(forReading: $0.url), role: $0.role) }
@@ -247,6 +264,10 @@ final class BlockReader: @unchecked Sendable {
     }
 
     func setEchoFilter(_ on: Bool) { queue.async { self.echoFilter = on } }
+
+    func setMuted(_ roles: Set<AudioTrackRole>) { queue.async { self.muted = roles } }
+
+    func setSilence(_ s: ChannelSilence) { queue.async { self.silence = s } }
 
     func start(at frame: AVAudioFramePosition) {
         queue.sync {
@@ -294,15 +315,20 @@ final class BlockReader: @unchecked Sendable {
         var mic: [Float]?
         var system: [Float]?
         var micStereo: [[Float]] = []
+        let rate = format.sampleRate
         for (file, role) in files {
             let chans = read(file, frames: n)
             switch role {
             case .microphone:
                 mic = mono(chans, n)
                 micStereo = chans
+                SilenceGain.apply(silence.ranges(for: .microphone), to: &micStereo, startFrame: position, rate: rate)
             case .system:
+                // The unsilenced track stays the echo reference.
                 system = mono(chans, n)
-                add(chans, to: out, n)
+                var heard = chans
+                SilenceGain.apply(silence.ranges(for: .system), to: &heard, startFrame: position, rate: rate)
+                if !muted.contains(.system) { add(heard, to: out, n) }
             case .mixed:
                 add(chans, to: out, n)
             }
@@ -314,9 +340,10 @@ final class BlockReader: @unchecked Sendable {
             if let echo, let reference {
                 // While the filter is off it keeps learning, so switching
                 // it on is instant.
-                let cleaned = echo.process(mic: mic, reference: reference, produceOutput: echoFilter)
-                add(echoFilter ? [cleaned] : micStereo, to: out, n)
-            } else {
+                var cleaned = [echo.process(mic: mic, reference: reference, produceOutput: echoFilter)]
+                SilenceGain.apply(silence.ranges(for: .microphone), to: &cleaned, startFrame: position, rate: rate)
+                if !muted.contains(.microphone) { add(echoFilter ? cleaned : micStereo, to: out, n) }
+            } else if !muted.contains(.microphone) {
                 add(micStereo, to: out, n)
             }
         }

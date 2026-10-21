@@ -6,6 +6,11 @@
 
 ## Pending items (most critical first)
 
+### Studio channel lanes / silencing — open items (2026-10-21)
+- **Not heard.** Lanes, the listen mute (icon, dimmed lane), lane-only selection, Silence on Mic and the Silenced list were checked live in a debug build on the real library (Export not pressed there); what is heard could not be checked here. Playback and export use the same `SilenceGain`, and the export is tested on files.
+- **Stereo-split recordings** (one stereo file, system left / mic right) are shown as one mix; the lanes and silencing are only for split recordings.
+- **Silences are not saved** with the recording (like cuts): closing it before Export Copy drops them.
+
 ### ntakker mute — open items (2026-10-21)
 - **The mute buttons were not clicked in the live popover.** The engine path is tested end to end (`RecordingSessionMuteTests`: fake sources → split WAV, muted stretch silent, unmuted stretch live, both tracks the same length), plus the aligner and coordinator tests; the status-bar button itself was only built, not clicked during a real recording.
 - **No marker of muted stretches** is written to the recording or its sidecars; the studio cannot show where a source was muted.

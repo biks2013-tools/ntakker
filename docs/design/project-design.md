@@ -12115,3 +12115,30 @@ per-layout code. Tests: `HostClockAlignerPlacementTests.muteSilencesOneSource`,
 `RecordingSessionMuteTests` (fake sources → split WAV on disk),
 `SessionCoordinatorTests.muteCarriesAcrossResume`.
 
+## Studio: the two channels apart (2026-10-21)
+
+- `ChannelSilence` (NtakkerStudioKit/Cutting): per-role
+  (`AudioTrackRole`) sorted, merged ranges on the original timeline,
+  normalised with `CutPlan`'s merge. `SilenceGain`: 0 inside a range,
+  1 outside, a linear ramp over `fadeSeconds` (10 ms; shorter for a
+  range under 20 ms) at both edges, applied in place to Float32
+  channel data.
+- One gain, two users: `BlockReader.produce()` applies it to each
+  block of the mic / system samples it is about to mix (the echo
+  filter still gets the unsilenced mic and reference), and
+  `AudioCutter.cut(…, silence:)` applies it to each chunk read from the
+  source before writing — so what is heard is what is written.
+  `RecordingCutExporter.export(…, silence:)` passes each track its
+  role's ranges; silences alone are a valid export (`-silenced`).
+- Listening mute: `PlayerController.mutedRoles` → `BlockReader` leaves
+  the role out of the mix (from the next block, ~0.17 s).
+- Lanes: `WaveformPeaks.loadPerTrack` (one envelope per track on the
+  longest track's timeline; `combined` = per-bucket max for the single
+  strip). `RecordingWorkspace` keeps `channelWaveforms`, `silence`
+  (mirrored to the player) and `selectionRole` (the lane a drag was
+  made on). Not offered for mixed / stereo-split recordings (one file;
+  the channels cannot be told apart reliably).
+- Tests: `ChannelSilenceTests` (gain and merging; export silences one
+  channel with a cut, the other untouched, the original unchanged;
+  silences alone export).
+

@@ -26,7 +26,7 @@ public enum AudioCutError: Error, LocalizedError {
         switch self {
         case .unreadable(let url, let why): return "Could not read \(url.lastPathComponent): \(why)"
         case .nothingLeft: return "The cut removes the whole recording."
-        case .nothingToDo: return "Add a cut or choose to remove the echo."
+        case .nothingToDo: return "Add a cut or a silence, or choose to remove the echo."
         }
     }
 }
@@ -41,11 +41,13 @@ public enum AudioCutter {
     }
 
     /// Copy `source` to `destination` keeping only `plan.keptRanges`, in
-    /// the source's own format. `progress` gets 0…1.
+    /// the source's own format, with `silence` (ranges on the original
+    /// timeline) replaced by silence. `progress` gets 0…1.
     public static func cut(
         _ source: URL,
         to destination: URL,
         plan: CutPlan,
+        silence: [CutRange] = [],
         progress: (Double) -> Void = { _ in }
     ) throws {
         let input: AVAudioFile
@@ -74,8 +76,14 @@ public enum AudioCutter {
             var remaining = to - from
             while remaining > 0 {
                 let want = AVAudioFrameCount(min(AVAudioFramePosition(chunkFrames), remaining))
+                let at = input.framePosition
                 try input.read(into: buffer, frameCount: want)
                 if buffer.frameLength == 0 { break }
+                if !silence.isEmpty, let data = buffer.floatChannelData {
+                    for c in 0..<Int(processing.channelCount) {
+                        SilenceGain.apply(silence, to: data[c], frames: Int(buffer.frameLength), startFrame: at, rate: rate)
+                    }
+                }
                 try output.write(from: buffer)
                 remaining -= AVAudioFramePosition(buffer.frameLength)
                 done += AVAudioFramePosition(buffer.frameLength)
@@ -92,6 +100,8 @@ public struct CutExportResult: Sendable {
     public let droppedLines: Int
     /// The echo delay used, when the echo was removed from the mic.
     public let echoDelay: Double?
+    /// Seconds replaced with silence, per channel.
+    public let silencedSeconds: [AudioTrackRole: Double]
 }
 
 public enum RecordingCutExporter {
@@ -107,6 +117,8 @@ public enum RecordingCutExporter {
     ///   - removeEcho: also clean the microphone track of the system
     ///     track's echo (`EchoCleaner`) — split recordings only. The
     ///     cleaning runs on the original timeline, before the cut.
+    ///   - silence: ranges of the mic / system track (original timeline)
+    ///     to replace with silence in the copy (2026-10-21).
     public static func export(
         recording: Recording,
         plan: CutPlan,
@@ -115,16 +127,18 @@ public enum RecordingCutExporter {
         metadata: StudioMetadata,
         removeEcho: Bool = false,
         echoSettings: EchoFilterSettings = .standard,
+        silence: ChannelSilence = ChannelSilence(),
         now: Date = Date(),
         progress: @escaping (Double) -> Void = { _ in }
     ) throws -> CutExportResult {
-        guard !plan.ranges.isEmpty || removeEcho else { throw AudioCutError.nothingToDo }
+        guard !plan.ranges.isEmpty || removeEcho || !silence.isEmpty else { throw AudioCutError.nothingToDo }
         guard plan.resultDuration > 0.05 else { throw AudioCutError.nothingLeft }
         let micTrack = recording.tracks.first { $0.role == .microphone }
         let sysTrack = recording.tracks.first { $0.role == .system }
         if removeEcho, micTrack == nil || sysTrack == nil { throw EchoCleanerError.notSplit }
         let fm = FileManager.default
-        let suffix = [plan.ranges.isEmpty ? nil : "cut", removeEcho ? "clean" : nil].compactMap { $0 }.joined(separator: "-")
+        let suffix = [plan.ranges.isEmpty ? nil : "cut", removeEcho ? "clean" : nil, silence.isEmpty ? nil : "silenced"]
+            .compactMap { $0 }.joined(separator: "-")
         let dest = destinationFolder(for: recording, suffix: suffix, now: now)
         try fm.createDirectory(at: dest, withIntermediateDirectories: true)
 
@@ -147,7 +161,7 @@ public enum RecordingCutExporter {
             for (i, track) in recording.tracks.enumerated() {
                 let out = dest.appendingPathComponent(track.url.lastPathComponent)
                 let source = track.role == .microphone ? (cleanedMic ?? track.url) : track.url
-                try AudioCutter.cut(source, to: out, plan: plan) { p in
+                try AudioCutter.cut(source, to: out, plan: plan, silence: silence.ranges(for: track.role)) { p in
                     progress(cleanShare + (Double(i) + p) / trackCount * (0.95 - cleanShare))
                 }
                 try? fm.setAttributes([.creationDate: audioStart], ofItemAtPath: out.path)
@@ -176,7 +190,10 @@ public enum RecordingCutExporter {
             return CutExportResult(
                 folder: dest, recordingStem: recording.stem,
                 removedSeconds: plan.removedDuration, droppedLines: dropped,
-                echoDelay: echoDelay
+                echoDelay: echoDelay,
+                silencedSeconds: silence.ranges.compactMapValues { r in
+                    r.isEmpty ? nil : r.reduce(0) { $0 + $1.duration }
+                }
             )
         } catch {
             try? fm.removeItem(at: dest)

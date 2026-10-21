@@ -167,6 +167,20 @@
 
         Click to seek; drag to select a range (the selection feeds Cut).
 
+        **The two channels apart (added 2026-10-21).** A split recording
+        (separate mic and system files) shows two lanes, **System** above
+        and **Mic** below, each with its own waveform on the same
+        timeline:
+
+        - The speaker button at a lane's left mutes that channel **while
+          you listen** — mute one to hear the other alone. Listening only:
+          the files and the export are not affected.
+        - A range dragged on a lane is selected on that channel; in the
+          Cut tab, **Silence on Mic / System** replaces it with silence on
+          that channel only (to take out a cough, typing, a notification
+          heard on one side). Silenced ranges show grey on their lane and
+          are heard as silence at once.
+
         ### Transcript pane
 
         Shows every transcript of the recording with time, speaker and
@@ -191,7 +205,10 @@
           (in `<stem>.studio.json`) and used in the transcript view, Ask
           and Minutes.
         - **Cut** - mark ranges on the waveform; preview mode skips them
-          during playback; Export writes a cut copy (see "Cut export").
+          during playback; on a split recording, silence ranges on one
+          channel (the **Silenced** box: per-range play / remove, *Silence
+          Whole Mic* / *Silence Whole System*, Clear); Export writes a
+          copy with all of it (see "Cut export").
         - **Re-transcribe** - see below.
         - **Info** - the recording's files, the audio-start/sync
           information, and a sync offset stepper (+/- 30 s).
@@ -218,6 +235,16 @@
         folder is then named `…-clean-…` (echo only) or `…-cut-clean-…`
         (both). Re-transcribing the cleaned copy gives a mic transcript
         without the other side's words in it.
+
+        **Silenced ranges** (split recordings, 2026-10-21): the same export
+        writes each silenced range of a channel as silence in that
+        channel's file (ranges on the original timeline, then the cut), with
+        a 10 ms fade at each edge so there is no click; the other channel
+        is untouched. The folder name gets `-silenced` (e.g.
+        `…-silenced-…`, `…-cut-silenced-…`). Transcript lines are kept — a
+        silenced range is not removed from the timeline. Silences, like
+        cuts, live in the open recording until exported; they are not
+        saved with it.
 
         ### Re-transcribe
 
@@ -267,7 +294,7 @@
         | `<stem>.studio-qa.md` | Ask used | question and answer log |
         | `<transcript>.orig` | first text edit of a transcript | backup of the unedited JSONL |
         | `<stem>[.<track>].<provider>-<yyyyMMdd-HHmm>.transcript.jsonl` | Re-transcribe | new exact-timing transcript |
-        | `<folder>-cut-<yyyy-MM-dd-HH-mm-ss>/` or `<stem>-cut-<yyyy-MM-dd-HH-mm-ss>/` | Cut export | cut audio, re-timed transcripts, studio metadata |
+        | `<folder>-cut-<yyyy-MM-dd-HH-mm-ss>/` or `<stem>-cut-<yyyy-MM-dd-HH-mm-ss>/` (also `-clean`, `-silenced` and combinations) | Cut export | cut / cleaned / silenced audio, re-timed transcripts, studio metadata |
 
         Original audio files are never modified. Edited transcript text
         is the only in-place change to an original sidecar, and it keeps

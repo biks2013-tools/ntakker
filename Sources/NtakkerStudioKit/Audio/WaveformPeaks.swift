@@ -21,7 +21,9 @@ public struct WaveformPeaks: Sendable, Equatable {
 
     /// Read every track and build the envelope. Reads the whole audio
     /// once, in 64k-frame blocks; cancellable between blocks.
-    public static func load(tracks: [URL], bucketCount: Int) throws -> WaveformPeaks {
+    /// `duration` sets the timeline the buckets span (default: the
+    /// longest track), so envelopes of separate tracks line up.
+    public static func load(tracks: [URL], bucketCount: Int, duration fixed: Double? = nil) throws -> WaveformPeaks {
         precondition(bucketCount > 0)
         var peaks = [Float](repeating: 0, count: bucketCount)
         var duration = 0.0
@@ -29,6 +31,7 @@ public struct WaveformPeaks: Sendable, Equatable {
             let file = try AVAudioFile(forReading: url)
             duration = max(duration, Double(file.length) / file.fileFormat.sampleRate)
         }
+        if let fixed { duration = fixed }
         guard duration > 0 else { return WaveformPeaks(peaks: peaks, duration: 0) }
 
         for url in tracks {
@@ -62,5 +65,31 @@ public struct WaveformPeaks: Sendable, Equatable {
             }
         }
         return WaveformPeaks(peaks: peaks, duration: duration)
+    }
+
+    /// One envelope per track, all on the timeline of the longest track
+    /// (2026-10-21: the studio shows mic and system as separate lanes).
+    public static func loadPerTrack(_ tracks: [AudioTrack], bucketCount: Int) throws -> [AudioTrackRole: WaveformPeaks] {
+        var duration = 0.0
+        for t in tracks {
+            let file = try AVAudioFile(forReading: t.url)
+            duration = max(duration, Double(file.length) / file.fileFormat.sampleRate)
+        }
+        var out: [AudioTrackRole: WaveformPeaks] = [:]
+        for t in tracks {
+            if Task.isCancelled { return [:] }
+            out[t.role] = try load(tracks: [t.url], bucketCount: bucketCount, duration: duration)
+        }
+        return out
+    }
+
+    /// The louder of the envelopes at each bucket (the combined view).
+    public static func combined(_ parts: [WaveformPeaks]) -> WaveformPeaks {
+        guard let first = parts.first else { return .empty }
+        var peaks = first.peaks
+        for p in parts.dropFirst() where p.peaks.count == peaks.count {
+            for i in peaks.indices { peaks[i] = max(peaks[i], p.peaks[i]) }
+        }
+        return WaveformPeaks(peaks: peaks, duration: parts.map(\.duration).max() ?? 0)
     }
 }

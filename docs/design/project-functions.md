@@ -1631,6 +1631,17 @@ with the disposition "validate during Phase 10".
   after plan-008 (`FilenameField.swift`, `FolderPicker.swift`,
   `SonioxKeyField.swift`, `GeminiKeyField.swift`, `ProviderKeyField.swift`).
 
+### Added 2026-10-21 — Studio: the two channels apart
+
+**FR-STU-15** — For a split recording the studio shows the mic and
+system channels as separate waveform lanes; each can be muted while
+listening (to hear the other alone, files untouched). A range selected
+on a lane can be replaced with silence on that channel only (or a whole
+channel silenced); silenced ranges are heard as silence at once and
+written silent — with short fades — by Export Copy, together with any
+cuts and echo removal, into a new copy (`-silenced`); the original is
+never changed and transcript lines are kept. IMPLEMENTED.
+
 ### Added 2026-10-21 — Muting a source during a recording
 
 **FR-MUTE-1** — While a recording runs or is paused, the user can mute
