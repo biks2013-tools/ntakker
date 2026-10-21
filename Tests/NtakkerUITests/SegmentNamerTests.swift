@@ -113,4 +113,39 @@ struct SegmentNamerTests {
         #expect(pair.system.lastPathComponent == "recording-2026-04-26-18-30.system")
         #expect(pair.mic.lastPathComponent == "recording-2026-04-26-18-30.mic")
     }
+
+    // MARK: - audioFiles(forCompletedSegment:) — the files Save moves
+
+    private func folderWith(_ names: [String]) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("segnamer-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        for n in names {
+            try Data([0]).write(to: dir.appendingPathComponent(n))
+        }
+        return dir
+    }
+
+    @Test("split part 1 reported as its renamed system file resolves to system AND mic (2026-10-21)")
+    func splitPartOneIncludesMic() throws {
+        let dir = try folderWith(["rec.part01.system.m4a", "rec.part01.mic.m4a"])
+        let files = SegmentNamer.audioFiles(forCompletedSegment: dir.appendingPathComponent("rec.part01.system.m4a"))
+        #expect(files.map(\.lastPathComponent) == ["rec.part01.system.m4a", "rec.part01.mic.m4a"])
+    }
+
+    @Test("split part 2+ reported as the bare URL resolves to both sides")
+    func splitLaterPartFromBareURL() throws {
+        let dir = try folderWith(["rec.part02.system.m4a", "rec.part02.mic.m4a"])
+        let files = SegmentNamer.audioFiles(forCompletedSegment: dir.appendingPathComponent("rec.part02.m4a"))
+        #expect(files.map(\.lastPathComponent) == ["rec.part02.system.m4a", "rec.part02.mic.m4a"])
+    }
+
+    @Test("a single-file part resolves to itself; a missing side is left out")
+    func singleFileAndMissingSide() throws {
+        let dir = try folderWith(["rec.part01.m4a", "solo.part01.system.m4a"])
+        #expect(SegmentNamer.audioFiles(forCompletedSegment: dir.appendingPathComponent("rec.part01.m4a"))
+            .map(\.lastPathComponent) == ["rec.part01.m4a"])
+        #expect(SegmentNamer.audioFiles(forCompletedSegment: dir.appendingPathComponent("solo.part01.system.m4a"))
+            .map(\.lastPathComponent) == ["solo.part01.system.m4a"])
+    }
 }

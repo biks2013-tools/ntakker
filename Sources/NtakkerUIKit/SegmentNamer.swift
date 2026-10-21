@@ -167,4 +167,28 @@ public enum SegmentNamer {
             mic: folder.appendingPathComponent(micName)
         )
     }
+
+    /// The audio files on disk for a URL from `.segmentCompleted`.
+    /// That URL is the bare output for every part except a split-layout
+    /// part 1, where the FR-34 rename reports the renamed SYSTEM file
+    /// (`<stem>.part01.system.<ext>`). Both shapes resolve to the same
+    /// set: the single file (mixed / stereo-split), or the system and
+    /// mic siblings that exist (split). Before 2026-10-21 Save took an
+    /// existing URL as the whole part and left part 1's mic behind.
+    public static func audioFiles(forCompletedSegment url: URL) -> [URL] {
+        let fm = FileManager.default
+        let ext = url.pathExtension
+        let stem = url.deletingPathExtension().lastPathComponent
+        var base = url
+        for side in [".system", ".mic"] where stem.hasSuffix(side) {
+            let bareStem = String(stem.dropLast(side.count))
+            let bareName = ext.isEmpty ? bareStem : "\(bareStem).\(ext)"
+            base = url.deletingLastPathComponent().appendingPathComponent(bareName)
+        }
+        if base == url, fm.fileExists(atPath: url.path) {
+            return [url]
+        }
+        let pair = splitSidecarURLs(baseURL: base)
+        return [pair.system, pair.mic].filter { fm.fileExists(atPath: $0.path) }
+    }
 }

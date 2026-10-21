@@ -29,6 +29,7 @@
 
 import Foundation
 import NtakkerCore
+import NtakkerUIKit
 import os
 
 /// Not main-actor bound: `RootView.performSessionSave` runs `write` on
@@ -135,34 +136,13 @@ enum SessionExporter {
     /// Expand a single audio source URL into the actual files on disk.
     ///
     /// The `SessionCoordinator` emits `.segmentCompleted` with the BARE
-    /// `options.output` URL (e.g. `recording.m4a`). For the `split`
-    /// layout the bare URL does not exist on disk — the engine wrote
-    /// `recording.system.m4a` and `recording.mic.m4a` side by side
-    /// (`SegmentNamer.splitSidecarURLs`). For `mixed` / `stereo-split`
-    /// the bare URL IS the actual file.
-    ///
-    /// Returns whatever exists on disk so the caller can iterate and
-    /// move the real files into the bundle.
+    /// `options.output` URL (e.g. `recording.m4a`), except for a
+    /// split-layout part 1, which it reports as the renamed
+    /// `recording.part01.system.m4a`. `SegmentNamer.audioFiles` resolves
+    /// both to every file of the part (the single file, or the system
+    /// and mic siblings), so Save moves part 1's mic too.
     private static func expandAudioSources(_ source: URL) -> [URL] {
-        let fm = FileManager.default
-        if fm.fileExists(atPath: source.path) {
-            return [source]
-        }
-        // Split layout — look for `<stem>.system.<ext>` + `<stem>.mic.<ext>`
-        // siblings. `SegmentNamer.splitSidecarURLs(baseURL:)` constructs
-        // exactly these two URLs; we inline that derivation here so
-        // SessionExporter does not need to import NtakkerUIKit just for
-        // a two-line URL transform.
-        let folder = source.deletingLastPathComponent()
-        let ext = source.pathExtension
-        let stem = source.deletingPathExtension().lastPathComponent
-        let systemName = ext.isEmpty ? "\(stem).system" : "\(stem).system.\(ext)"
-        let micName    = ext.isEmpty ? "\(stem).mic"    : "\(stem).mic.\(ext)"
-        let candidates = [
-            folder.appendingPathComponent(systemName),
-            folder.appendingPathComponent(micName),
-        ]
-        return candidates.filter { fm.fileExists(atPath: $0.path) }
+        SegmentNamer.audioFiles(forCompletedSegment: source)
     }
 
     /// Result of a successful bundle write.
