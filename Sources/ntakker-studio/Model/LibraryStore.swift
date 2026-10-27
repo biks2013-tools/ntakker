@@ -173,6 +173,87 @@ final class LibraryStore {
         }
     }
 
+    // MARK: - Rename and Trash
+
+    /// The last rename / Move to Trash that failed, for the alert.
+    var fileOpError: String?
+    /// The recording the rename sheet is open for.
+    var renameRequest: Recording?
+    /// The recordings the Move to Trash confirmation is asking about.
+    var trashRequest: [Recording] = []
+
+    /// Ask to rename the one selected recording (menu, context menu).
+    func requestRename(_ ids: Set<String>? = nil) {
+        let ids = ids ?? selection
+        guard ids.count == 1, let rec = recordings.first(where: { ids.contains($0.id) }) else { return }
+        renameRequest = rec
+    }
+
+    /// Ask to move recordings to the Trash (the selection by default).
+    func requestTrash(_ ids: Set<String>? = nil) {
+        let ids = ids ?? selection
+        trashRequest = recordings.filter { ids.contains($0.id) }
+    }
+
+    /// Show recordings in Finder.
+    func revealInFinder(_ ids: Set<String>) {
+        let urls = recordings.filter { ids.contains($0.id) }.flatMap { rec -> [URL] in
+            rec.sharesFolder ? rec.tracks.map(\.url) : [rec.folder]
+        }
+        if !urls.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(urls) }
+    }
+
+    /// The name a rename of `recording` edits (its folder's or its stem).
+    func renameName(of recording: Recording) -> String {
+        guard let root else { return recording.stem }
+        return RecordingFileOps.currentName(recording, libraryRoot: root)
+    }
+
+    /// Whether renaming `recording` renames its session folder, and with
+    /// it every part of the session.
+    func renameRenamesSession(_ recording: Recording) -> Bool {
+        guard let root, case .folder = RecordingFileOps.renameTarget(recording, libraryRoot: root) else { return false }
+        return recordings.contains {
+            $0.id != recording.id && $0.folder.standardizedFileURL == recording.folder.standardizedFileURL
+        }
+    }
+
+    /// Rename a recording, then keep it selected under its new name.
+    /// Returns why it could not, or nil when it was renamed.
+    func rename(_ recording: Recording, to name: String) async -> String? {
+        guard let root else { return "No library folder is chosen." }
+        let wasSelected = selection.contains(recording.id)
+        let wasOpen = workspace?.recording.id == recording.id
+        // The open recording's player holds its files.
+        if wasOpen { selection = [] }
+        do {
+            let (folder, stem) = try RecordingFileOps.rename(recording, to: name, libraryRoot: root)
+            await rescan()
+            let newID = folder.appendingPathComponent(stem).path
+            if wasSelected || wasOpen, recordings.contains(where: { $0.id == newID }) { selection = [newID] }
+            return nil
+        } catch {
+            if wasSelected || wasOpen { selection = [recording.id] }
+            return error.localizedDescription
+        }
+    }
+
+    /// Move recordings to the Trash (Finder's Put Back restores them).
+    func moveToTrash(_ recs: [Recording]) async {
+        guard let root, !recs.isEmpty else { return }
+        let ids = Set(recs.map(\.id))
+        if let open = workspace?.recording.id, ids.contains(open) { selection = [] }
+        selection.subtract(ids)
+        var failures: [String] = []
+        for rec in recs {
+            do { try RecordingFileOps.moveToTrash(rec, libraryRoot: root) } catch {
+                failures.append(error.localizedDescription)
+            }
+        }
+        await rescan()
+        if !failures.isEmpty { fileOpError = failures.joined(separator: "\n") }
+    }
+
     // MARK: - Join
 
     /// The join of the selected recordings, when two or more are selected.

@@ -31,6 +31,12 @@ struct NtakkerStudioApp: App {
                     .keyboardShortcut("o", modifiers: [.command, .shift])
                 Button("Rescan Library") { Task { await library.rescan() } }
                     .keyboardShortcut("r", modifiers: .command)
+                Divider()
+                Button("Rename Recording…") { library.requestRename() }
+                    .disabled(library.selection.count != 1)
+                Button("Move to Trash") { library.requestTrash() }
+                    .keyboardShortcut(.delete, modifiers: .command)
+                    .disabled(library.selection.isEmpty)
             }
             CommandGroup(after: .toolbar) {
                 StudioAppearancePicker()

@@ -6,6 +6,11 @@
 
 ## Pending items (most critical first)
 
+### Studio rename / Move to Trash — open items (2026-10-27)
+- **Not clicked through live.** The debug build showed the new File-menu items on the real library (with throwaway `zz-studio-test-…` recordings, removed afterwards), but the automation could not select a sidebar row, so the context menu, rename sheet and trash confirmation were built, not clicked. The file rules are unit-tested (`RecordingFileOpsTests`), including a real move to the Trash.
+- **"Still recording" is a 10 s modification-time check**, not a signal from ntakker. A recording paused for longer than that is not protected: renaming or trashing it before ntakker resumes may break the resume. Better fix: ntakker publishes the files it is writing (e.g. a state file) and the studio refuses those.
+- **No Undo inside the studio** for either action: rename back by hand, Put Back from the Trash.
+
 ### Studio channel lanes / silencing — open items (2026-10-21)
 - **Not heard.** Lanes, the listen mute (icon, dimmed lane), lane-only selection, Silence on Mic and the Silenced list were checked live in a debug build on the real library (Export not pressed there); what is heard could not be checked here. Playback and export use the same `SilenceGain`, and the export is tested on files.
 - **Stereo-split recordings** (one stereo file, system left / mic right) are shown as one mix; the lanes and silencing are only for split recordings.

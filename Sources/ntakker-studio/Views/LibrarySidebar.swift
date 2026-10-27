@@ -4,6 +4,9 @@
 // list shows the matching recordings and, below them, the transcript
 // lines that match across the whole library; clicking a line opens its
 // recording at that moment.
+//
+// 2026-10-27: right-click a recording to rename it, show it in Finder or
+// move it to the Trash (also the Delete key and the File menu).
 
 import NtakkerStudioKit
 import SwiftUI
@@ -50,6 +53,43 @@ struct LibrarySidebar: View {
             }
         }
         .listStyle(.sidebar)
+        .contextMenu(forSelectionType: String.self) { ids in
+            if !ids.isEmpty {
+                Button("Rename…") { library.requestRename(ids) }
+                    .disabled(ids.count != 1)
+                Button("Show in Finder") { library.revealInFinder(ids) }
+                Divider()
+                Button(ids.count == 1 ? "Move to Trash" : "Move \(ids.count) Recordings to Trash", role: .destructive) {
+                    library.requestTrash(ids)
+                }
+            }
+        }
+        .onDeleteCommand { library.requestTrash() }
+        .sheet(item: $library.renameRequest) { rec in
+            RenameRecordingSheet(recording: rec)
+        }
+        .confirmationDialog(
+            trashTitle,
+            isPresented: Binding(get: { !library.trashRequest.isEmpty }, set: { if !$0 { library.trashRequest = [] } }),
+            titleVisibility: .visible
+        ) {
+            Button("Move to Trash", role: .destructive) {
+                let recs = library.trashRequest
+                library.trashRequest = []
+                Task { await library.moveToTrash(recs) }
+            }
+            Button("Cancel", role: .cancel) { library.trashRequest = [] }
+        } message: {
+            Text(trashMessage)
+        }
+        .alert(
+            "Couldn't change the recording",
+            isPresented: Binding(get: { library.fileOpError != nil }, set: { if !$0 { library.fileOpError = nil } })
+        ) {
+            Button("OK", role: .cancel) { library.fileOpError = nil }
+        } message: {
+            Text(library.fileOpError ?? "")
+        }
         .overlay {
             if library.recordings.isEmpty, library.root != nil, !library.isScanning {
                 ContentUnavailableView("No recordings", systemImage: "tray",
@@ -70,6 +110,18 @@ struct LibrarySidebar: View {
         }
     }
 
+    private var trashTitle: String {
+        let recs = library.trashRequest
+        return recs.count == 1 ? "Move “\(recs[0].displayName)” to the Trash?" : "Move \(recs.count) recordings to the Trash?"
+    }
+
+    private var trashMessage: String {
+        let bytes = library.trashRequest.reduce(Int64(0)) { $0 + $1.byteSize }
+        let size = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        let whose = library.trashRequest.count == 1 ? "Its" : "Their"
+        return "\(whose) audio (\(size)), transcripts, minutes and notes go to the Trash. Finder's Put Back restores them."
+    }
+
     private var footer: String {
         "\(library.recordings.count) recordings · \(library.indexedLines) lines indexed"
     }
@@ -85,6 +137,71 @@ struct LibrarySidebar: View {
             groups[key, default: []].append(r)
         }
         return order.map { ($0, groups[$0]!) }
+    }
+}
+
+/// Rename a recording: its session folder, or its files when it shares
+/// its folder.
+struct RenameRecordingSheet: View {
+    @Environment(LibraryStore.self) private var library
+    @Environment(\.dismiss) private var dismiss
+    let recording: Recording
+
+    @State private var name = ""
+    @State private var working = false
+    @State private var error: String?
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Rename Recording").font(.headline)
+            TextField("Name", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .frame(minWidth: 360)
+                .focused($focused)
+                .onSubmit(save)
+            Text(note).font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let error {
+                Text(error).font(.caption).foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Rename", action: save)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(working || trimmed.isEmpty || trimmed == library.renameName(of: recording))
+            }
+        }
+        .padding(20)
+        .onAppear {
+            name = library.renameName(of: recording)
+            focused = true
+        }
+    }
+
+    private var trimmed: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    private var note: String {
+        if library.renameRenamesSession(recording) {
+            return "Renames the session folder, so every part of the session takes the new name."
+        }
+        return recording.sharesFolder
+            ? "Renames the recording's files (audio, transcripts, minutes and notes) in \(recording.folder.lastPathComponent)."
+            : "Renames the recording's folder."
+    }
+
+    private func save() {
+        guard !working, !trimmed.isEmpty else { return }
+        working = true
+        error = nil
+        Task {
+            error = await library.rename(recording, to: trimmed)
+            working = false
+            if error == nil { dismiss() }
+        }
     }
 }
 

@@ -90,6 +90,30 @@
           the library folder.
         - **Grouping.** The sidebar groups recordings by month, newest
           first.
+        - **Rename and Move to Trash (added 2026-10-27).** Right-click a
+          recording in the sidebar for *Rename…*, *Show in Finder* and
+          *Move to Trash* (also File > Rename Recording… and File > Move to
+          Trash, Cmd-Delete, or the Delete key in the list; several
+          selected recordings go to the Trash together).
+          - *Rename* renames what the sidebar shows: a recording with its
+            session folder to itself renames the **folder** (for a paused /
+            split session the folder holds every part, so all parts take the
+            new name, and the sheet says so); a recording that shares its
+            folder, or lies loose in the library folder, renames its
+            **files** — every `<stem>.…` file (audio, transcripts and their
+            `.orig` backups, `studio.json`, minutes, Q&A, ntakker's
+            `.questions.jsonl`), never another recording's longer stem
+            (`x.part01.…` is not `x`'s). Names with `/` or `:`, or starting
+            with a dot, and names already taken are refused; a failed file
+            rename is undone.
+          - *Move to Trash* asks first (name, size), then moves the whole
+            session folder to the Trash when no other recording lives in
+            it, otherwise only the recording's files. Finder's Put Back
+            restores it.
+          - The library folder itself is never renamed or trashed, and a
+            recording whose audio was written in the last 10 s (ntakker is
+            still recording it) is refused. An open recording is closed
+            first and, after a rename, reopened under its new name.
 
         ### What counts as a recording
 

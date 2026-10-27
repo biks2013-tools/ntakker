@@ -12142,3 +12142,30 @@ per-layout code. Tests: `HostClockAlignerPlacementTests.muteSilencesOneSource`,
   channel with a cut, the other untouched, the original unchanged;
   silences alone export).
 
+## Studio: rename and Move to Trash from the library (2026-10-27)
+
+- `RecordingFileOps` (NtakkerStudioKit/Library) holds the file rules;
+  `LibraryStore` (`rename`, `moveToTrash`, `requestRename`,
+  `requestTrash`, `revealInFinder`) and `LibrarySidebar`
+  (`contextMenu(forSelectionType:)`, `onDeleteCommand`, the
+  `RenameRecordingSheet`, the trash confirmation) drive it; the File
+  menu repeats the two commands.
+- A recording's files: every `<stem>.…` file of its folder minus those
+  of a longer stem of another recording in the same folder. This covers
+  sidecars the scanner does not model (`.orig`, `.questions.jsonl`).
+- Rename target: the folder when `!sharesFolder`, the folder is not the
+  library root and lies inside it; otherwise the files (`<stem>` prefix
+  replaced). Clash checks before any move; file renames are rolled back
+  on a failure. A case-only change of a folder name is allowed.
+- Trash: `FileManager.trashItem` — the folder when no other recording is
+  in it (never the root), otherwise the recording's files.
+- In-use guard: any track modified less than 10 s ago → refused
+  (`stillRecording`), since ntakker keeps writing the files while
+  recording.
+- The open recording is closed (player torn down) before its files
+  move; after a rename the store rescans and selects the new id
+  (`folder/stem`). The search index follows from the rescan.
+- Tests: `RecordingFileOpsTests` (files of a recording, folder and file
+  renames, never the root, refusals leave files untouched, what the
+  Trash takes, a real move to the Trash).
+

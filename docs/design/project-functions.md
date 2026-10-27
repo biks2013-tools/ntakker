@@ -1642,6 +1642,16 @@ written silent — with short fades — by Export Copy, together with any
 cuts and echo removal, into a new copy (`-silenced`); the original is
 never changed and transcript lines are kept. IMPLEMENTED.
 
+**FR-STU-16** — From the library sidebar (context menu, File menu,
+Delete / Cmd-Delete) the user can rename a recording and move one or
+several recordings to the Trash, without Finder. Rename renames the
+session folder when the recording has it to itself (every part of a
+session follows), otherwise the recording's own `<stem>.…` files; Move
+to Trash asks first and moves the session folder when nothing else
+lives in it, otherwise only the recording's files (recoverable with
+Put Back). The library folder is never renamed or trashed, and a
+recording still being written is refused. IMPLEMENTED.
+
 ### Added 2026-10-21 — Muting a source during a recording
 
 **FR-MUTE-1** — While a recording runs or is paused, the user can mute
